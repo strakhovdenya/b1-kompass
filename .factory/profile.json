@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/strakhovdenya/dark-factory/v0.1.3/profile/schema.json",
+  "branchTemplate": "task/ISSUE-{issue}-{slug}",
+  "apps": [
+    {
+      "name": "web",
+      "path": "apps/web"
+    }
+  ],
+  "docs": {
+    "prd": "docs/prd",
+    "plans": "docs/plans"
+  },
+  "ralph": {
+    "enabled": false
+  },
+  "judge": {
+    "enabled": false
+  }
+}
