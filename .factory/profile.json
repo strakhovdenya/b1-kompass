@@ -1,18 +1,62 @@
 {
   "$schema": "https://raw.githubusercontent.com/strakhovdenya/dark-factory/v0.1.3/profile/schema.json",
   "branchTemplate": "task/ISSUE-{issue}-{slug}",
+  "install": [{ "argv": ["npm", "ci"], "cwd": "." }],
+  "dependencySync": [{ "argv": ["npm", "install", "--ignore-scripts"], "cwd": "." }],
   "apps": [
     {
       "name": "web",
-      "path": "apps/web"
+      "path": "apps/web",
+      "gate": [
+        { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "apps/web/tsconfig.json", "--noEmit"], "cwd": "." },
+        { "argv": ["node", "node_modules/eslint/bin/eslint.js", "apps/web"], "cwd": "." },
+        { "argv": ["node", "node_modules/vitest/vitest.mjs", "run", "apps/web"], "cwd": "." },
+        { "argv": ["node", "node_modules/next/dist/bin/next", "build", "apps/web"], "cwd": "." }
+      ]
+    },
+    {
+      "name": "domain",
+      "path": "packages/domain",
+      "gate": [
+        { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "packages/domain/tsconfig.json", "--noEmit"], "cwd": "." },
+        { "argv": ["node", "node_modules/eslint/bin/eslint.js", "packages/domain"], "cwd": "." },
+        { "argv": ["node", "node_modules/vitest/vitest.mjs", "run", "packages/domain"], "cwd": "." }
+      ]
     }
   ],
   "docOnlyPathPatterns": ["**/*.md", "**/docs/"],
-  "protectedPaths": [".claude/", ".github/", ".git/"],
+  "protectedPaths": [".claude/", ".github/", ".git/", "supabase/migrations/"],
   "docs": {
     "prd": "docs/prd",
     "plans": "docs/plans"
   },
+  "hooks": {
+    "lint": [
+      {
+        "paths": ["apps/**/*.{ts,tsx}", "packages/**/*.ts", "scripts/**/*.ts"],
+        "command": { "argv": ["node", "node_modules/eslint/bin/eslint.js", "--fix", "{file}"], "cwd": "." }
+      }
+    ],
+    "typecheck": [
+      {
+        "paths": ["apps/web/**/*.{ts,tsx}"],
+        "command": { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "apps/web/tsconfig.json", "--noEmit"], "cwd": "." }
+      },
+      {
+        "paths": ["packages/domain/**/*.ts"],
+        "command": { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "packages/domain/tsconfig.json", "--noEmit"], "cwd": "." }
+      },
+      {
+        "paths": ["scripts/**/*.ts"],
+        "command": { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--noEmit"], "cwd": "." }
+      }
+    ]
+  },
+  "agentEnvironment": [
+    "No Docker and no local Supabase: the Playwright specs in apps/web/tests run only in CI (job Quality).",
+    "No running next dev or next start server; starting a server in the background is forbidden.",
+    "No access to the cloud Supabase project or Vercel."
+  ],
   "verifier": {
     "checks": [
       "spec-approval",
