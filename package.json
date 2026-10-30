@@ -1,0 +1,28 @@
+{
+  "name": "b1-kompass",
+  "version": "0.1.0",
+  "private": true,
+  "description": "B1 Kompass — online German A2–B1 exam trainer (DTZ Hören and Lesen). See apps/web and packages/domain.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "packages/domain",
+    "apps/web"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces && tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "build": "npm run build --workspace apps/web",
+    "test:e2e": "npm run test:e2e --workspace apps/web",
+    "db:start": "supabase start",
+    "db:reset": "supabase db reset",
+    "db:stop": "supabase stop",
+    "seed:pilot": "tsx scripts/seed-pilot-question.ts"
+  },
+  "devDependencies": {
+    "dark-factory": "github:strakhovdenya/dark-factory#v0.1.3"
+  }
+}

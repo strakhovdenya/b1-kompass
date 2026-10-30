@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# dark-factory — копии базового набора скиллов и агентов и их список, создаются setup
+# установленного пакета (postinstall node_modules/dark-factory). Только поимённо: setup не
+# принимает маски, а проектные скиллы в .claude/skills остаются tracked.
+.claude/.factory-installed.json
+.claude/skills/prd
+.claude/skills/plan
+.claude/skills/issues
+.claude/skills/task-lifecycle
+.claude/skills/epic-discovery
+.claude/skills/adr
+.claude/skills/js-conventions
+.claude/skills/js-gof
+.claude/skills/js-data-structures
+.claude/skills/error-handling
+.claude/skills/modern-javascript
+.claude/skills/data-structures
+.claude/agents/research.md
+.claude/agents/codebase-scan.md
+.claude/agents/verify.md
+.claude/agents/pr-writer.md
+
+# Personal local Claude Code permissions
+.claude/settings.local.json

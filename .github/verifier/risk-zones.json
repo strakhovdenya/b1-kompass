@@ -1,0 +1,7 @@
+{
+  "zones": [
+    { "name": "migrations", "description": "Supabase migrations, RLS policies, grants and Storage buckets" },
+    { "name": "guest_session", "description": "guest session token, fixed 30-day expiry and per-operation authorization" },
+    { "name": "answer_keys", "description": "private answer keys, exam sources and anything that could expose them before review" }
+  ]
+}
