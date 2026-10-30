@@ -1,0 +1,18 @@
+{
+  "test": [
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/tests/"
+  ],
+  "workflow": [".github/workflows/"],
+  "config": [
+    "**/eslint.config.*",
+    "**/vitest.config.*",
+    "**/playwright.config.*",
+    "**/tsconfig*.json",
+    "**/package.json",
+    "supabase/config.toml"
+  ]
+}

@@ -7,9 +7,22 @@
       "path": "apps/web"
     }
   ],
+  "docOnlyPathPatterns": ["**/*.md", "**/docs/"],
+  "protectedPaths": [".claude/", ".github/", ".git/"],
   "docs": {
     "prd": "docs/prd",
     "plans": "docs/plans"
+  },
+  "verifier": {
+    "checks": [
+      "spec-approval",
+      "affects-scope",
+      "computed-items",
+      "test-tampering-scan",
+      "references",
+      "ci-checks",
+      "allowed-model"
+    ]
   },
   "ralph": {
     "enabled": false
