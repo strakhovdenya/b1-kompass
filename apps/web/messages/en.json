@@ -7,6 +7,7 @@
     "title": "Practise for the German DTZ exam",
     "description": "Listening and reading tasks from a real practice exam. No email or password needed.",
     "continue": "Continue as guest",
+    "busy": "Too many people are starting right now. Please try again in a minute.",
     "note": "A guest session lasts 30 days from the first visit in this browser."
   },
   "locale": {

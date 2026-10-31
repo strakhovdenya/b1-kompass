@@ -2,8 +2,12 @@ import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServiceClient } from '../../src/server/db';
 import type { Clock, ServerDeps } from '../../src/server/db';
-import { hashGuestToken } from '../../src/server/guest-session/session';
-import { readTestSupabaseEnv } from './env';
+import {
+  createGuestSession,
+  hashGuestToken,
+} from '../../src/server/guest-session/session';
+import type { CreatedGuest } from '../../src/server/guest-session/session';
+import { TEST_GUEST_SESSIONS_PER_MINUTE, readTestSupabaseEnv } from './env';
 
 const env = readTestSupabaseEnv();
 
@@ -27,6 +31,13 @@ export const depsAt = (at: Date): ServerDeps => ({
 });
 
 export const depsNow = (): ServerDeps => depsAt(new Date());
+
+// A guest created through the real createGuestSession with the e2e limit.
+export const newGuest = async (deps: ServerDeps): Promise<CreatedGuest> => {
+  const result = await createGuestSession(deps, TEST_GUEST_SESSIONS_PER_MINUTE);
+  if (result.status !== 'created') throw new Error('Guest was rate-limited');
+  return result.created;
+};
 
 export interface StoredSession {
   id: string;

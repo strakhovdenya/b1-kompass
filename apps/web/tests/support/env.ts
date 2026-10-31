@@ -7,6 +7,11 @@ export interface TestSupabaseEnv {
   secretKey: string;
 }
 
+// The guest session limit is site-wide, so every spec of a run counts against
+// it. The e2e server and the direct calls of the specs use this value; the
+// limit spec fills the window up to it.
+export const TEST_GUEST_SESSIONS_PER_MINUTE = 500;
+
 const REPO_ROOT = path.join(import.meta.dirname, '..', '..', '..', '..');
 
 const readStatus = (): Record<string, string> => {

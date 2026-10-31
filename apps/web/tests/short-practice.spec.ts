@@ -16,12 +16,12 @@ import {
   saveAnswer,
 } from '../src/server/attempts/attempts';
 import { resolveAttemptAudio } from '../src/server/audio/audio';
-import { createGuestSession } from '../src/server/guest-session/session';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { getPublishedVersion } from '../src/server/material/published';
 import {
   createPublicClient,
   depsNow,
+  newGuest,
   readAnswers,
   readAttempts,
   readResults,
@@ -97,7 +97,7 @@ const objectPathOf = async (audio: Locator): Promise<string> => {
 
 // A guest created through the real server with the given saved answers.
 const guestWith = async (answers: Record<string, string>) => {
-  const created = await createGuestSession(depsNow());
+  const created = await newGuest(depsNow());
   const opened = await openPractice(depsNow(), created.guest);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const attemptId = opened.practice.attemptId;
