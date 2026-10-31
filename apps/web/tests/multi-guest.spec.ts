@@ -150,6 +150,20 @@ const PLANS: readonly GuestPlan[] = [
   { startSeconds: 17, hoeren: { 1: 'a', 6: 'a' }, lesen: { 3: 'b' } },
 ];
 
+// The starts are 5 s apart and all four play at once, so the actual
+// positions keep their order and every two of them stay seconds apart.
+const MIN_GAP_SECONDS = 2;
+
+const expectDistinctPositions = (snapshots: readonly MediaSnapshot[]) => {
+  const positions = snapshots.map((snapshot) => snapshot.currentTime);
+  expect(positions).toEqual(positions.toSorted((a, b) => a - b));
+  for (const [i, first] of positions.entries()) {
+    for (const second of positions.slice(i + 1)) {
+      expect(Math.abs(second - first)).toBeGreaterThanOrEqual(MIN_GAP_SECONDS);
+    }
+  }
+};
+
 const expectedAnswers = (plan: GuestPlan): Record<string, string> => {
   const entries = [
     ...Object.entries(plan.hoeren).map(([n, o]) => [`hoeren-${n}`, o]),
@@ -209,6 +223,7 @@ test('four isolated guests share audio object and retain independent state', asy
     expect(snapshot.currentTime).toBeGreaterThan(start);
     expect(snapshot.currentTime).toBeLessThan(start + 8);
   });
+  expectDistinctPositions(playing);
 
   // Each guest answers on its own, in Hören and in Lesen, while all play.
   await Promise.all(
@@ -236,6 +251,7 @@ test('four isolated guests share audio object and retain independent state', asy
       playing[index]?.currentTime ?? 0,
     );
   });
+  expectDistinctPositions(stillPlaying);
 
   for (const [index, guest] of guests.entries()) {
     const plan = PLANS[index];

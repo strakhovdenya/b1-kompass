@@ -57,7 +57,14 @@ CI: workflow `CI`, job `Quality` на head PR этой задачи — ссыл
 
 ## Deployed SHA
 
-⏳ Не проверено. Production URL `https://b1-kompass.vercel.app` и развёрнутый коммит в этой задаче не открывались: доступа к Vercel и облачной Supabase у исполнителя нет. На момент проверки `main` = `bc39023`. Фактический deployed SHA фиксирует P5-T2.
+Источник — статусы `Vercel` коммитов в GitHub (`gh api repos/strakhovdenya/b1-kompass/commits/<sha>/statuses`) и ответ сайта, проверено 2026-10-31 в 22:45 UTC:
+
+| Окружение | Deployed SHA | Факт |
+| --- | --- | --- |
+| Production `https://b1-kompass.vercel.app` | `bc390230956164a06c2efe14f83dd8290f5f7672` — последний коммит `main` (merge PR #32) | ✅ статус `Vercel: success` в 22:04 UTC. Главная отвечает `200`, в ней есть «Continue as guest», заголовок `Cache-Control: private, no-cache, no-store`, ответ из `fra1` |
+| Preview этого PR | head PR #33 | ✅ статус `Vercel: success` на head PR |
+
+⏳ Не проверено: в облаке не выполнялись вход гостя, прослушивание, сохранение и разбор, а также четыре сеанса. Полный пилот в облачной Supabase не опубликован. Что production alias указывает именно на `bc39023`, следует из статуса последнего коммита `main`; в Dashboard Vercel это не сверялось, доступа нет. Проверку на опубликованном URL выполняет P5-T2.
 
 ## Измеренный объём аудио и данных
 
