@@ -7,15 +7,22 @@ import {
   finishAttemptAction,
   resolveAudioAction,
 } from '../../server/next/actions';
-import { getOpenedPractice } from '../../server/next/request';
+import { getOpenedPractice } from '../../server/attempts/opened';
+import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
 export const dynamic = 'force-dynamic';
 
 // One attempt, two block pages: the shell around them keeps the recording and
 // the finish point while the guest moves between Hören and Lesen.
 const PracticeLayout = async ({ children }: { children: ReactNode }) => {
-  const opened = await getOpenedPractice();
-  if (!opened || opened.status === 'session-invalid') redirect('/');
+  const guest = await getCurrentGuest();
+  if (!guest) redirect('/');
+  const opened = await getOpenedPractice(
+    getServerDeps(),
+    guest,
+    process.env.PRACTICE_EXAM_SLUG,
+  );
+  if (opened.status === 'session-invalid') redirect('/');
   if (opened.status === 'no-material') {
     const t = await getTranslations('practice');
     return <Alert severity="warning">{t('unavailable')}</Alert>;

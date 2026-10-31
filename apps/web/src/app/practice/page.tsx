@@ -4,13 +4,20 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { HoerenSingleScreen } from '../../features/hoeren/HoerenSingleScreen';
 import { saveAnswerAction } from '../../server/next/actions';
-import { getOpenedPractice } from '../../server/next/request';
+import { getOpenedPractice } from '../../server/attempts/opened';
+import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
 export const dynamic = 'force-dynamic';
 
 const PracticePage = async () => {
-  const opened = await getOpenedPractice();
-  if (!opened || opened.status === 'session-invalid') redirect('/');
+  const guest = await getCurrentGuest();
+  if (!guest) redirect('/');
+  const opened = await getOpenedPractice(
+    getServerDeps(),
+    guest,
+    process.env.PRACTICE_EXAM_SLUG,
+  );
+  if (opened.status === 'session-invalid') redirect('/');
   if (opened.status === 'no-material') return null;
 
   const { practice } = opened;

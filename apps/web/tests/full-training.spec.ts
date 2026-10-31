@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
 import { FULL_PILOT } from './support/full-exam';
@@ -15,8 +16,42 @@ import {
   readResults,
   readSession,
   readSessionByToken,
-  serviceDb,
 } from './support/db';
+
+const DB_CONTAINER = 'supabase_db_b1-kompass';
+const LOCALE_CHECK = 'guest_sessions_locale_check';
+
+const psql = (sql: string) =>
+  execFileSync(
+    'docker',
+    [
+      'exec',
+      DB_CONTAINER,
+      'psql',
+      '-U',
+      'postgres',
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-c',
+      sql,
+    ],
+    { stdio: 'pipe' },
+  );
+
+// Stores a locale the application does not support. The check of the column
+// is replaced by an unvalidated copy in one transaction, so no row can slip
+// through meanwhile; restoreLocale validates it again.
+const storeUnsupportedLocale = (sessionId: string, locale: string) =>
+  psql(`begin;
+    alter table public.guest_sessions drop constraint ${LOCALE_CHECK};
+    update public.guest_sessions set locale = '${locale}' where id = '${sessionId}';
+    alter table public.guest_sessions add constraint ${LOCALE_CHECK}
+      check (locale in ('en', 'ru')) not valid;
+    commit;`);
+
+const restoreLocale = (sessionId: string) =>
+  psql(`update public.guest_sessions set locale = 'en' where id = '${sessionId}';
+    alter table public.guest_sessions validate constraint ${LOCALE_CHECK};`);
 
 // The synthetic full set: hoeren-1..20 and lesen-1..25 with the key in
 // FULL_PILOT. Answers are prepared through the real saveAnswer; the screens
@@ -403,42 +438,68 @@ test('active or foreign review remains private', async ({
 }) => {
   const ownerContext = await browser.newContext();
   const { page, attempt } = await openSeeded(ownerContext, MIXED);
-  const leaks = ['correctOptionId', 'review-solution', 'attempt-review'];
+  const leaks = [
+    'correctOptionId',
+    'correct_option_id',
+    'solutionOptionId',
+    'selectedOptionId',
+    'review-solution',
+    'attempt-review',
+    'data-outcome',
+    'hoeren_score',
+  ];
+  const expectNoLeak = (body: string) => {
+    for (const leak of leaks) expect(body).not.toContain(leak);
+  };
+  const ownerAnswers = await readAnswers(attempt.id);
 
   const active = await getAttemptReview(depsNow(), attempt.token, {
     attemptId: attempt.id,
   });
   expect(active).toEqual({ ok: false, error: 'not-completed' });
   for (const path of ['/practice', '/practice/lesen']) {
-    const html = await (await page.request.get(path)).text();
-    for (const leak of leaks) expect(html).not.toContain(leak);
+    expectNoLeak(await (await page.request.get(path)).text());
   }
 
-  const result = await finishAttempt(depsNow(), attempt.token, {
-    attemptId: attempt.id,
-  });
-  expect(result.ok).toBe(true);
-
   const stranger = await newGuest(depsNow());
-  const foreign = await getAttemptReview(depsNow(), stranger.token, {
-    attemptId: attempt.id,
-  });
-  expect(foreign).toEqual({ ok: false, error: 'attempt-not-found' });
-  expect(JSON.stringify(foreign)).not.toContain('correct');
+  const foreignInput = { attemptId: attempt.id };
+  const foreignResults = [
+    await getAttemptReview(depsNow(), stranger.token, foreignInput),
+    await finishAttempt(depsNow(), stranger.token, foreignInput),
+    await saveAnswer(depsNow(), stranger.token, {
+      ...foreignInput,
+      questionId: 'hoeren-1',
+      optionId: 'c',
+    }),
+  ];
+  for (const foreign of foreignResults) {
+    expect(foreign).toEqual({ ok: false, error: 'attempt-not-found' });
+  }
+  expect(await readAnswers(attempt.id)).toEqual(ownerAnswers);
+  expect(await readResults(attempt.id)).toEqual([]);
+
+  const result = await finishAttempt(depsNow(), attempt.token, foreignInput);
+  expect(result.ok).toBe(true);
+  const completed = await getAttemptReview(
+    depsNow(),
+    stranger.token,
+    foreignInput,
+  );
+  expect(completed).toEqual({ ok: false, error: 'attempt-not-found' });
+  const foreignJson = JSON.stringify(completed);
+  for (const leak of leaks) expect(foreignJson).not.toContain(leak);
+  expect(foreignJson).not.toContain(attempt.id);
 
   const strangerContext = await browser.newContext();
   await strangerContext.addCookies([
-    {
-      name: GUEST_COOKIE,
-      value: stranger.token,
-      url: baseURL,
-    },
+    { name: GUEST_COOKIE, value: stranger.token, url: baseURL },
   ]);
   const strangerPage = await strangerContext.newPage();
   for (const path of ['/practice', '/practice/lesen']) {
     const body = await (await strangerPage.request.get(path)).text();
-    for (const leak of leaks) expect(body).not.toContain(leak);
-    expect(body).not.toContain('data-outcome');
+    expectNoLeak(body);
+    expect(body).not.toContain(attempt.id);
+    expect(body).not.toContain('checked=""');
   }
   await strangerContext.close();
   await ownerContext.close();
@@ -551,21 +612,26 @@ test('unsupported locale preserves training state', async ({ browser }) => {
   const { page, attempt } = await openSeeded(context, MIXED);
   const stored = await readAnswers(attempt.id);
 
-  // The database itself refuses a locale other than en and ru; the guest
-  // therefore keeps the stored one and the interface stays English.
-  const refused = await serviceDb
-    .from('guest_sessions')
-    .update({ locale: 'de' })
-    .eq('id', attempt.sessionId);
-  expect(refused.error).not.toBeNull();
-  expect((await readSession(attempt.sessionId)).locale).toBe('en');
+  storeUnsupportedLocale(attempt.sessionId, 'de');
+  try {
+    expect((await readSession(attempt.sessionId)).locale).toBe('de');
 
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await expect(page.getByTestId('finish-attempt')).toHaveText('Finish attempt');
-  await expect(card(page, 'hoeren-1')).toContainText(byId('hoeren-1').prompt);
-  await checked(page, 'hoeren-1', keyOf(byId('hoeren-1')));
-  expect(await readAnswers(attempt.id)).toEqual(stored);
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.getByTestId('finish-attempt')).toHaveText(
+      'Finish attempt',
+    );
+    await expect(card(page, 'hoeren-1')).toContainText(byId('hoeren-1').prompt);
+    await checked(page, 'hoeren-1', keyOf(byId('hoeren-1')));
+    expect(await readAnswers(attempt.id)).toEqual(stored);
+    await goToLesen(page);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await checked(page, 'lesen-1', keyOf(byId('lesen-1')));
+    expect((await readSession(attempt.sessionId)).locale).toBe('de');
+  } finally {
+    restoreLocale(attempt.sessionId);
+  }
+  expect((await readSession(attempt.sessionId)).locale).toBe('en');
   await context.close();
 });
 

@@ -4,7 +4,6 @@ import { cookies } from 'next/headers';
 import { createServiceClient, readServiceConfig, systemClock } from '../db';
 import type { ServerDeps } from '../db';
 import { GUEST_COOKIE } from '../guest-session/cookie';
-import { openPractice } from '../attempts/attempts';
 import { resolveGuestSession } from '../guest-session/session';
 import type { CreatedGuest, GuestContext } from '../guest-session/session';
 
@@ -58,12 +57,4 @@ export const getCurrentGuest = cache(async (): Promise<GuestContext | null> => {
     console.error({ error });
     return null;
   }
-});
-
-// The practice of the current guest, opened once per request: the shared
-// layout and the block page read the same attempt.
-export const getOpenedPractice = cache(async () => {
-  const guest = await getCurrentGuest();
-  if (!guest) return null;
-  return openPractice(getServerDeps(), guest, process.env.PRACTICE_EXAM_SLUG);
 });
