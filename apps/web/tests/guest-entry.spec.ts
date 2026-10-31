@@ -2,16 +2,14 @@ import { expect, test } from '@playwright/test';
 import type { BrowserContext, Page } from '@playwright/test';
 import type { ExamQuestion } from '@b1k/domain';
 import { openPractice, saveAnswer } from '../src/server/attempts/attempts';
-import {
-  createGuestSession,
-  resolveGuestSession,
-} from '../src/server/guest-session/session';
+import { resolveGuestSession } from '../src/server/guest-session/session';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   createPublicClient,
   depsAt,
   depsNow,
+  newGuest,
   readAnswers,
   readAttempts,
   readResults,
@@ -77,7 +75,7 @@ const firstQuestion = (practice: { questions: readonly ExamQuestion[] }) => {
 // A guest with an active attempt and a saved answer, created through the
 // real server functions.
 const guestWithAnswer = async (optionId: string) => {
-  const created = await createGuestSession(depsNow());
+  const created = await newGuest(depsNow());
   const practice = await openReady(depsNow(), created.guest);
   const saved = await saveAnswer(depsNow(), created.token, {
     attemptId: practice.attemptId,
@@ -131,7 +129,7 @@ test('ignores browser and previous account locale', async ({
   baseURL,
 }) => {
   // A previous guest of this browser used Russian; its session has ended.
-  const previous = await createGuestSession(
+  const previous = await newGuest(
     depsAt(new Date(Date.now() - 31 * DAY_MS)),
   );
   await serviceDb
@@ -227,8 +225,8 @@ test('failed save retains selection without false saved status', async ({
 });
 
 test('authorized guest reads and saves scoped attempt', async () => {
-  const first = await createGuestSession(depsNow());
-  const second = await createGuestSession(depsNow());
+  const first = await newGuest(depsNow());
+  const second = await newGuest(depsNow());
 
   const practice = await openReady(depsNow(), first.guest);
   expect(Object.keys(firstQuestion(practice)).sort()).toEqual(
@@ -405,7 +403,7 @@ test('denies foreign attempt secret and direct API mutations', async ({
 
 const createdAtStart = async (): Promise<{ start: Date; created: CreatedGuest }> => {
   const start = new Date();
-  return { start, created: await createGuestSession(depsAt(start)) };
+  return { start, created: await newGuest(depsAt(start)) };
 };
 
 test('guest expiry remains fixed before deadline', async () => {

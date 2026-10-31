@@ -1,11 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
-import {
-  DEFAULT_LOCALE,
-  computeGuestExpiry,
-  isGuestActive,
-  isLocale,
-} from '@b1k/domain';
+import { DEFAULT_LOCALE, isGuestActive, isLocale } from '@b1k/domain';
 import type { Locale } from '@b1k/domain';
+import { ruleViolation } from '../db';
 import type { ServerDeps } from '../db';
 
 export interface GuestContext {
@@ -43,25 +39,34 @@ const toContext = (row: GuestSessionRow): GuestContext => ({
   expiresAt: new Date(row.expires_at),
 });
 
+export type CreateGuestResult =
+  | { status: 'created'; created: CreatedGuest }
+  | { status: 'rate-limited' };
+
 // A new guest always starts in English, whatever the browser or an earlier
-// session used.
+// session used. The database counts and inserts in one call
+// (create_guest_session), so the whole site creates at most `perMinute`
+// sessions in any minute.
 export const createGuestSession = async (
   deps: ServerDeps,
-): Promise<CreatedGuest> => {
+  perMinute: number,
+): Promise<CreateGuestResult> => {
   const token = randomBytes(32).toString('base64url');
-  const createdAt = deps.clock.now();
   const { data, error } = await deps.db
-    .from('guest_sessions')
-    .insert({
-      token_hash: hashGuestToken(token),
-      locale: DEFAULT_LOCALE,
-      created_at: createdAt.toISOString(),
-      expires_at: computeGuestExpiry(createdAt).toISOString(),
+    .rpc('create_guest_session', {
+      p_token_hash: hashGuestToken(token),
+      p_now: deps.clock.now().toISOString(),
+      p_limit: perMinute,
     })
     .select(SESSION_COLUMNS)
     .single<GuestSessionRow>();
-  if (error) throw new Error('Guest session was not created', { cause: error });
-  return { token, guest: toContext(data) };
+  if (error) {
+    if (ruleViolation(error) === 'guest_rate_limited') {
+      return { status: 'rate-limited' };
+    }
+    throw new Error('Guest session was not created', { cause: error });
+  }
+  return { status: 'created', created: { token, guest: toContext(data) } };
 };
 
 // The single check of guest credentials. Handlers get a verified context or

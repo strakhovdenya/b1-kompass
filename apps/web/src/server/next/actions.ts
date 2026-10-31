@@ -12,12 +12,23 @@ import {
   resolveGuestSession,
   setGuestLocale,
 } from '../guest-session/session';
-import { getServerDeps, readGuestToken, writeGuestCookie } from './request';
+import {
+  getServerDeps,
+  readGuestSessionsPerMinute,
+  readGuestToken,
+  writeGuestCookie,
+} from './request';
 
+// Over the site-wide limit no session and no cookie are created; the home
+// page shows the busy notice instead.
 export const continueAsGuest = async (): Promise<void> => {
   const deps = getServerDeps();
   const current = await resolveGuestSession(deps, await readGuestToken());
-  if (!current) await writeGuestCookie(await createGuestSession(deps));
+  if (!current) {
+    const result = await createGuestSession(deps, readGuestSessionsPerMinute());
+    if (result.status === 'rate-limited') redirect('/?busy=1');
+    await writeGuestCookie(result.created);
+  }
   redirect('/practice');
 };
 

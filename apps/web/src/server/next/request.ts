@@ -17,6 +17,16 @@ export const getServerDeps = (): ServerDeps => {
   return deps;
 };
 
+const DEFAULT_GUEST_SESSIONS_PER_MINUTE = 30;
+
+// The site-wide number of new guest sessions per minute; a missing or
+// invalid value falls back to the default.
+export const readGuestSessionsPerMinute = (): number => {
+  const value = Number(process.env.GUEST_SESSIONS_PER_MINUTE);
+  const isValid = Number.isSafeInteger(value) && value > 0;
+  return isValid ? value : DEFAULT_GUEST_SESSIONS_PER_MINUTE;
+};
+
 export const readGuestToken = async (): Promise<string | null> => {
   const store = await cookies();
   return store.get(GUEST_COOKIE)?.value ?? null;
