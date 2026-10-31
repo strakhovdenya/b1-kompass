@@ -42,4 +42,8 @@ describe('PracticeSet', () => {
     expect(html).toContain('aria-current="step"');
     expect(html).not.toContain('data-testid="finish-attempt"');
   });
+
+  it('has no review before completion', () => {
+    expect(render()).not.toContain('data-testid="attempt-review"');
+  });
 });
