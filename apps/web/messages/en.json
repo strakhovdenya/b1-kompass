@@ -22,8 +22,7 @@
       "lesen": "Lesen"
     },
     "unavailable": "The practice is not available right now. Please try again later.",
-    "source": "Source: {publisher}, {title}, page {page}",
-    "lesenLink": "Go to Lesen (reading)"
+    "source": "Source: {publisher}, {title}, page {page}"
   },
   "save": {
     "idle": "Choose one answer.",
@@ -63,14 +62,11 @@
     "goTo": "{count, plural, one {Go to question {number}} other {Go to questions {number}}}",
     "previous": "Previous",
     "next": "Next",
-    "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped.",
-    "finish": "Finish practice",
-    "finishing": "Checking…",
-    "finishError": "The practice was not finished. Your answers are kept. Please try again."
+    "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped."
   },
   "results": {
-    "title": "Result of the short practice",
-    "score": "{score} of {maxScore} points ({percent}%)",
+    "title": "Result",
+    "score": "{score} of {maxScore} points ({percent})",
     "counts": "Right: {right} · Wrong: {wrong} · Skipped: {skipped}",
     "noLevel": "This is a short practice of a few tasks. Its points are not an official DTZ level.",
     "outcome": {
@@ -80,10 +76,33 @@
     },
     "yourAnswer": "Your answer:",
     "noAnswer": "no answer",
-    "solution": "Solution:"
+    "solution": "Solution:",
+    "skill": {
+      "hoeren": "Hören: {score} of {maxScore} points",
+      "lesen": "Lesen: {score} of {maxScore} points"
+    },
+    "level": "Level: {level}",
+    "levelName": {
+      "belowA2": "below A2",
+      "a2": "A2",
+      "b1": "B1"
+    }
   },
   "error": {
     "message": "Something went wrong. Your saved answers are kept.",
     "retry": "Try again"
+  },
+  "training": {
+    "blocks": "Exam blocks",
+    "hoeren": "Hören (listening)",
+    "lesen": "Lesen (reading)",
+    "finish": "Finish attempt",
+    "finishing": "Checking…",
+    "finishError": "The attempt was not finished. Your answers are kept. Please try again.",
+    "confirmTitle": "Some tasks are unanswered",
+    "confirmBody": "Unanswered: Hören {hoeren}, Lesen {lesen}. Unanswered tasks count as skipped and cannot be answered afterwards.",
+    "confirm": "Finish anyway",
+    "cancel": "Back to the tasks",
+    "answered": "Answered in total: {answered} of {total}."
   }
 }

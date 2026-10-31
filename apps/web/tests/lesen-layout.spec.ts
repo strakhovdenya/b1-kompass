@@ -36,7 +36,7 @@ const openGuest = async (browser: Browser) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
   await page.waitForURL('**/practice');
-  await page.getByTestId('lesen-link').click();
+  await page.getByTestId('block-link-lesen').click();
   await page.waitForURL('**/practice/lesen');
   await expect(page.getByTestId('reading-text')).toBeVisible();
   return { context, page };

@@ -5,17 +5,12 @@ import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type {
-  AttemptReview,
   ExamGroup,
   ExamQuestion,
-  FinishAttemptResult,
   SaveAnswerResult,
   Selections,
 } from '@b1k/domain';
-import { AudioPlayer } from '../audio/AudioPlayer';
-import type { AudioAccess } from '../audio/AudioPlayer';
 import { PracticeSet } from '../practice/PracticeSet';
-import type { FinishAttemptInput } from '../practice/PracticeSet';
 import type { SaveAnswerInput } from '../practice/QuestionCard';
 import { HoerenPairView } from './HoerenPairView';
 import { HoerenSharedSetView } from './HoerenSharedSetView';
@@ -87,37 +82,24 @@ export const selectQuestions = (
   );
 };
 
-export interface ResolveAudioInput {
-  attemptId: string;
-  trackId: string;
-}
-
 interface HoerenSingleScreenProps {
   attemptId: string;
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
-  trackIds: readonly string[];
   initialSelections: Selections;
-  initialReview: AttemptReview | null;
-  resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
-  finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
 }
 
 // Hören Teil 1–4: single questions, the Teil 3 pairs and the Teil 4 shared
-// set of the material contract. The
-// players sit beside the question set, not inside it, so moving between
-// questions or switching the language never recreates or restarts them.
+// set of the material contract. The recording is played by the training
+// shell around the block, so moving between questions, blocks or languages
+// never recreates or restarts it.
 export const HoerenSingleScreen = ({
   attemptId,
   questions,
   groups = [],
-  trackIds,
   initialSelections,
-  initialReview,
-  resolveAudio,
   saveAnswer,
-  finishAttempt,
 }: HoerenSingleScreenProps) => {
   const t = useTranslations('hoeren');
   const tPractice = useTranslations('practice');
@@ -130,16 +112,10 @@ export const HoerenSingleScreen = ({
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
   return (
-    <Stack spacing={3}>
+    <Stack spacing={3} data-testid="hoeren-screen">
       <Typography variant="body2" color="text.secondary">
         {t('intro', { count: shown.length })}
       </Typography>
-      {trackIds.map((trackId) => (
-        <AudioPlayer
-          key={trackId}
-          resolveAudio={() => resolveAudio({ attemptId, trackId })}
-        />
-      ))}
       <PracticeSet
         attemptId={attemptId}
         questions={shown}
@@ -160,9 +136,7 @@ export const HoerenSingleScreen = ({
           )
         }
         initialSelections={initialSelections}
-        initialReview={initialReview}
         saveAnswer={saveAnswer}
-        finishAttempt={finishAttempt}
       />
     </Stack>
   );

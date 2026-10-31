@@ -1,32 +1,22 @@
 import { redirect } from 'next/navigation';
-import { getTranslations } from 'next-intl/server';
-import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { LesenScreen } from '../../../features/lesen/LesenScreen';
-import { openPractice } from '../../../server/attempts/attempts';
 import { saveAnswerAction } from '../../../server/next/actions';
-import { getCurrentGuest, getServerDeps } from '../../../server/next/request';
+import { getOpenedPractice } from '../../../server/next/request';
 
 export const dynamic = 'force-dynamic';
 
 const LesenPage = async () => {
-  const guest = await getCurrentGuest();
-  if (!guest) redirect('/');
-  const t = await getTranslations('practice');
-  const opened = await openPractice(
-    getServerDeps(),
-    guest,
-    process.env.PRACTICE_EXAM_SLUG,
-  );
-  if (opened.status === 'session-invalid') redirect('/');
-  if (opened.status === 'no-material') {
-    return <Alert severity="warning">{t('unavailable')}</Alert>;
-  }
+  const opened = await getOpenedPractice();
+  if (!opened || opened.status === 'session-invalid') redirect('/');
+  if (opened.status === 'no-material') return null;
 
   const { practice } = opened;
   const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
-  if (!hasLesen || practice.review) redirect('/practice');
+  if (!hasLesen) redirect('/practice');
+  // A completed attempt shows its review from the shell at this address.
+  if (practice.review) return null;
 
   return (
     <Stack spacing={3}>

@@ -15,6 +15,7 @@ import type {
   Selections,
 } from '@b1k/domain';
 import { QuestionCard } from '../practice/QuestionCard';
+import { useTraining } from '../training/TrainingContext';
 import type { SaveAnswerInput, SaveStatus } from '../practice/QuestionCard';
 
 // The reading position: the paragraph of a text the guest has read up to.
@@ -150,6 +151,11 @@ export const LesenScreen = ({
     Readonly<Record<string, UnsavedChoice>>
   >({});
   const [isSaving, setIsSaving] = useState(false);
+  const { recordAnswer, setSaving } = useTraining();
+  useEffect(() => {
+    setSaving(isSaving);
+    return () => setSaving(false);
+  }, [isSaving, setSaving]);
   const [anchors, setAnchors] = useState<Anchors>(
     initialAnchor ? { [initialAnchor.textId]: initialAnchor } : {},
   );
@@ -229,6 +235,7 @@ export const LesenScreen = ({
   ) => {
     if (status === 'saved') {
       setSelections((current) => ({ ...current, [questionId]: optionId }));
+      recordAnswer(questionId, optionId);
     }
     setUnsaved((current) => {
       const { [questionId]: _previous, ...rest } = current;
