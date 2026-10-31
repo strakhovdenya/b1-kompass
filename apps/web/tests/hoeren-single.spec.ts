@@ -62,11 +62,7 @@ const mediaState = (audio: Locator) =>
   }));
 
 const goTo = (page: Page, number: number) =>
-  page
-    .getByRole('button', {
-      name: new RegExp(`^(Go to question|Перейти к вопросу) ${number}$`),
-    })
-    .click();
+  page.getByTestId(`go-to-question-${number}`).click();
 
 const answer = async (page: Page, number: number, text: string) => {
   await goTo(page, number);

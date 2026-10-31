@@ -126,6 +126,7 @@ export const PracticeSet = ({
               variant={itemIndex === index ? 'contained' : 'outlined'}
               aria-current={itemIndex === index ? 'step' : undefined}
               aria-label={t('goTo', { number: item.number })}
+              data-testid={`go-to-question-${item.number}`}
               disabled={isSaving}
               onClick={() => goTo(itemIndex)}
               sx={{ minWidth: 40 }}

@@ -41,3 +41,5 @@ From the repository root: `npm run build`, `npm run test:e2e` (needs `npm run db
 ## Tests
 
 `tests/guest-entry.spec.ts` drives the browser against `next start` on port 3100 and calls server functions directly with `tests/support/db.ts` (service client, publishable-key client, fixed clock). `globalSetup` publishes the real pilot question through `scripts/seed-pilot-question.ts` with a test-only key. Test names are referenced by Issue Acceptance Criteria: do not rename them.
+
+Locators in Playwright specs must not depend on translated UI text when the page language can change in the test (EN/RU switch, a guest with another locale). Use `getByTestId` for controls that need it (for example `go-to-question-<number>`, `save-status`, `set-position`, `audio-element`); a missing test id is added to the component in the same change. Matching visible text is acceptable only for German material (it is never translated) and for steps that run strictly in one known language. Never copy a translation from `messages/*.json` into a test regex.
