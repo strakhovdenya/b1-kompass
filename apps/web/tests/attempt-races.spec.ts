@@ -112,9 +112,6 @@ const isSaveOf = (request: Request, questionId: string): boolean =>
   request.method() === 'POST' &&
   (request.postData() ?? '').includes(`"questionId":"${questionId}"`);
 
-const optionOf = (request: Request): string | null =>
-  /"optionId":"([^"]+)"/.exec(request.postData() ?? '')?.[1] ?? null;
-
 const REPLAY_HEADERS = [
   'accept',
   'content-type',
@@ -266,19 +263,20 @@ test('out of order saves keep newest accepted choice', async ({ browser }) => {
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
 
-  // Both saves reach the server in the order of the clicks; the response to
-  // the newer one is delivered first, the older one only after it.
-  const newer = signal();
-  const older = signal();
+  // Next runs server actions one at a time: the second save waits until the
+  // first one returns. Each save is executed by the server at once, and its
+  // response is held until the test releases it.
+  const releases = [signal(), signal()];
+  const delivered = [signal(), signal()];
+  let saves = 0;
   await context.route('**/practice', async (route: Route) => {
     const request = route.request();
     if (!isSaveOf(request, TARGET)) return route.continue();
-    const option = optionOf(request);
+    const index = saves++;
     const response = await route.fetch();
-    if (option === 'a') await newer.done;
+    await releases[index]?.done;
     await route.fulfill({ response });
-    if (option === 'a') older.resolve();
-    else newer.resolve();
+    delivered[index]?.resolve();
   });
 
   await optionIn(target, 'a').check();
@@ -286,14 +284,29 @@ test('out of order saves keep newest accepted choice', async ({ browser }) => {
     .poll(() => readStoredAnswers(attemptId, TARGET))
     .toEqual([{ option_id: 'a', revision: 1 }]);
   await optionIn(target, 'c').check();
-  await older.done;
-
   await expect(optionIn(target, 'c')).toBeChecked();
+  await expectStatus(target, 'saving');
+
+  // The late confirmation of the older choice changes nothing on screen.
+  releases[0]?.resolve();
+  await delivered[0]?.done;
+  await expect
+    .poll(() => readStoredAnswers(attemptId, TARGET))
+    .toEqual([{ option_id: 'c', revision: 2 }]);
+  await expect(optionIn(target, 'c')).toBeChecked();
+  await expectStatus(target, 'saving');
+
+  releases[1]?.resolve();
+  await delivered[1]?.done;
   await expectStatus(target, 'saved');
+  await expect(optionIn(target, 'c')).toBeChecked();
+  expect(saves).toBe(2);
   expect(await readStoredAnswers(attemptId, TARGET)).toEqual([
     { option_id: 'c', revision: 2 },
   ]);
   expect(await readAnswers(attemptId)).toEqual({ [TARGET]: 'c' });
+  await page.reload();
+  await expect(optionIn(target, 'c')).toBeChecked();
   await context.close();
 });
 
