@@ -231,6 +231,8 @@ export const AudioPlayer = ({
             variant="contained"
             onClick={togglePlay}
             disabled={!canPlay}
+            data-testid="audio-toggle"
+            data-playing={isPlaying}
             sx={{ minWidth: 104 }}
           >
             {isPlaying ? `❚❚ ${t('pause')}` : `▶ ${t('play')}`}

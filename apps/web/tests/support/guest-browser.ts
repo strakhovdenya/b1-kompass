@@ -96,11 +96,13 @@ export const seekTo = (page: Page, seconds: number) =>
     element.currentTime = at;
   }, seconds);
 
-// Starts the player of an English page, moves it to the given second and
-// marks the element, so that a replaced element is noticed later.
+const toggleOf = (page: Page): Locator => page.getByTestId('audio-toggle');
+
+// Starts the player, moves it to the given second and marks the element, so
+// that a replaced element is noticed later.
 export const playFrom = async (page: Page, seconds: number, marker: string) => {
-  await page.getByRole('button', { name: /Play/ }).click();
-  await expect(page.getByRole('button', { name: /Pause/ })).toBeVisible();
+  await toggleOf(page).click();
+  await expect(toggleOf(page)).toHaveAttribute('data-playing', 'true');
   await audioOf(page).evaluate(
     (element: HTMLAudioElement, input: { at: number; marker: string }) => {
       element.currentTime = input.at;
@@ -114,8 +116,8 @@ export const playFrom = async (page: Page, seconds: number, marker: string) => {
 };
 
 export const pausePlayer = async (page: Page) => {
-  await page.getByRole('button', { name: /Pause/ }).click();
-  await expect(page.getByRole('button', { name: /Play/ })).toBeVisible();
+  await toggleOf(page).click();
+  await expect(toggleOf(page)).toHaveAttribute('data-playing', 'false');
   await expect.poll(async () => (await snapshotOf(page)).paused).toBe(true);
 };
 

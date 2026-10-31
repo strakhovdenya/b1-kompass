@@ -363,7 +363,7 @@ test('one guest actions never reset three others', async ({ browser }) => {
   ]);
 
   // 1. Language.
-  await actor.page.getByRole('button', { name: 'Русский' }).click();
+  await actor.page.getByTestId('locale-ru').click();
   await expect(actor.page.locator('html')).toHaveAttribute('lang', 'ru');
   observed = await expectUntouched(observed);
 
