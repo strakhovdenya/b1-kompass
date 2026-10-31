@@ -6,9 +6,9 @@ import type { AttemptReview } from '@b1k/domain';
 import {
   PILOT_CONTENT,
   PILOT_EXAM,
+  publishExamVersion,
   publishPilotShortSet,
 } from '../../../scripts/seed-pilot-question';
-import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
   finishAttempt,
   getAttemptReview,

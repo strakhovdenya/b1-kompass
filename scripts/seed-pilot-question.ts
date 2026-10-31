@@ -26,6 +26,9 @@ import {
 } from './lib/publish-exam-version';
 import type { AudioContentType } from './lib/publish-exam-version';
 
+// Kept for callers of the former location; the implementation is shared.
+export { publishExamVersion };
+
 export const PILOT_EXAM = {
   slug: 'telc-ajf-b12-dtz',
   title: 'Auf jeden Fall! B1.2 — Übungstest Deutsch-Test für Zuwanderer',
