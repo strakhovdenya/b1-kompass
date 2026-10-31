@@ -6,6 +6,7 @@ import {
 import type { PilotAudio } from '../../../../scripts/seed-pilot-question';
 import { publishExamVersion } from '../../../../scripts/lib/publish-exam-version';
 import { serviceDb } from './db';
+import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './full-exam';
 import { PAIR_CONTENT, PAIR_EXAM, PAIR_KEYS, PAIR_TRACK_ID } from './pair-exam';
 
 // The test database gets the real pilot short set through the trusted owner
@@ -68,6 +69,12 @@ const globalSetup = async () => {
     content: PAIR_CONTENT,
     keys: PAIR_KEYS,
     audio: [{ trackId: PAIR_TRACK_ID, ...createTestRecording() }],
+  });
+  await publishExamVersion(serviceDb, {
+    ...FULL_EXAM,
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...createTestRecording() }],
   });
 };
 

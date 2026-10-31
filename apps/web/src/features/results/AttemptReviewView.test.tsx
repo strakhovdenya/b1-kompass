@@ -30,6 +30,8 @@ const review: AttemptReview = {
   correct: 1,
   incorrect: 0,
   skipped: 1,
+  skills: null,
+  level: null,
   completedAt: '2026-10-31T10:00:00.000Z',
   items: [
     {

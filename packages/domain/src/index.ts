@@ -42,7 +42,17 @@ export type {
   ReviewItem,
   ScoringInput,
   ScoringPolicy,
+  SkillScore,
+  SkillTotals,
 } from './scoring/policy';
+export {
+  DTZ_FULL_INVENTORY,
+  DTZ_FULL_MAX_SCORE,
+  gradeDtzTotal,
+  isFullDtzInventory,
+  selectAttemptScope,
+} from './scoring/dtz';
+export type { DtzLevel } from './scoring/dtz';
 export type {
   AttemptReview,
   FinishAttemptError,
