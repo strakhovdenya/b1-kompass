@@ -37,6 +37,43 @@ describe('complete pilot structure', () => {
     expect(examContentSchema.safeParse(content).success).toBe(true);
   });
 
+  it('synthetic lesen mirrors pilot structure', () => {
+    const { content, keys } = buildSyntheticPilot();
+    expect(findMaterialProblems(content, keys, { trackIds: TRACKS })).toEqual(
+      [],
+    );
+    const lesen = content.questions.filter((q) => q.skill === 'lesen');
+    const teile = [1, 2, 3, 4, 5].map((teil) =>
+      lesen.filter((q) => q.teil === teil),
+    );
+    expect(teile.map((items) => items.length)).toEqual([5, 5, 6, 3, 6]);
+    for (const q of teile[1] ?? []) {
+      expect(q.options.map((o) => o.id).join('')).toBe('abcdefghx');
+    }
+    for (const index of [2, 3]) {
+      for (const q of teile[index] ?? []) {
+        expect(q.options.map((o) => o.text)).toEqual(['Richtig', 'Falsch']);
+      }
+    }
+    expect(lesen.every((q) => q.kind === 'single-choice')).toBe(true);
+    const gapText = content.texts?.find((t) => t.id === 'lesen-text-5');
+    for (const mark of [40, 41, 42, 43, 44, 45]) {
+      expect(gapText?.body).toContain(`[${mark}]`);
+    }
+  });
+
+  it('lesen task with unknown text is rejected', () => {
+    const { content, keys } = buildSyntheticPilot();
+    const broken = withQuestions(content, (questions) =>
+      questions.map((q) =>
+        q.id === 'lesen-12' ? { ...q, textId: 'gone' } : q,
+      ),
+    );
+    expect(findMaterialProblems(broken, keys, { trackIds: TRACKS })).toEqual([
+      { code: 'broken-reference', questionId: 'lesen-12' },
+    ]);
+  });
+
   it('numbers the skills independently', () => {
     const { content, keys } = buildSyntheticPilot();
     const numbers = content.questions.map((q) => `${q.skill}:${q.number}`);
