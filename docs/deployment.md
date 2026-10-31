@@ -89,6 +89,17 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 
 Скрипт сначала проверяет материал, ключ и файл записи. Только после этого он загружает запись в `exam-sources` и публикует версию, ключи и дорожку одной транзакцией `publish_exam_version`. Повторный запуск с тем же содержимым сообщает `already published` и возвращает прежнюю версию.
 
+### Полный пилот
+
+Полный пилот (20 Hören, 25 Lesen) владелец готовит и загружает так же, с компьютера и без веб-админки. Подготовленный JSON и ключ лежат в `private/`, в Git и CI не попадают:
+
+```sh
+PILOT_DRAFT_FILE=private/pilot-draft.json npm run prepare:pilot
+SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILOT_CONTENT_FILE=private/pilot-content.json PILOT_KEYS_FILE=private/pilot-keys.json PILOT_AUDIO_FILE=private/track-127.mp3 npm run publish:pilot
+```
+
+Скрипт проверяет контракт и число заданий до записи и публикует версию общей функцией. Повтор с тем же содержимым возвращает прежнюю версию. Подробности и статус сверки с оригиналом — `docs/pilot-material.md`.
+
 ### Vercel
 
 - Root Directory: `apps/web`, Framework: Next.js, Node.js 24.x.
@@ -105,6 +116,7 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 | Реальное задание пилота | ✅ опубликовано доверенной загрузкой с ключом издателя |
 | Миграция `20261101000000_short_practice.sql` (P1-T2) в облаке | ✅ применена владельцем: `supabase migration list --linked` показывает `20261101000000` в Local и Remote. Seed из `main` после неё не работает: 5-аргументная `publish_exam_version` удалена |
 | Короткий набор Hören Teil 1 с оригинальной записью в облаке | ✅ опубликован владельцем 2026-10-31: `npm run seed:pilot` → `Pilot short set published: version 2de7ca2f-fc8b-4c62-bbfe-bc10e4f5c5fc`. Ключ — официальный ключ telc (Lösungen KB/AB, стр. 6). Запись — telc Track 127 (весь Hören DTZ, Teil 1 в начале). Ни ключ, ни запись в Git не хранятся |
+| Полный пилот (20 Hören, 25 Lesen) в облаке | ⏳ не опубликован; подготовка и загрузка описаны выше, сверку с оригиналом делает владелец |
 | Прослушивание и разбор в облаке | ⏳ не проверены |
 | Отказы publishable-ключа в облаке | ✅ 7 таблиц, запись балла, 3 функции, бакет `exam-sources` (чтение, список, загрузка), GraphQL — все отклонены |
 | Проект Vercel `b1-kompass` | ✅ создан: Root Directory `apps/web`, Node.js 24.x, GitHub `strakhovdenya/b1-kompass`, переменные Production/Preview (sensitive) |

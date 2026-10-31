@@ -1,5 +1,10 @@
-import { publishPilotShortSet } from '../../../../scripts/seed-pilot-question';
+import {
+  PILOT_CONTENT,
+  PILOT_EXAM,
+  PILOT_TRACK_ID,
+} from '../../../../scripts/seed-pilot-question';
 import type { PilotAudio } from '../../../../scripts/seed-pilot-question';
+import { publishExamVersion } from '../../../../scripts/lib/publish-exam-version';
 import { serviceDb } from './db';
 
 // The test database gets the real pilot short set through the trusted owner
@@ -51,7 +56,12 @@ export const createTestRecording = (): PilotAudio => {
 };
 
 const globalSetup = async () => {
-  await publishPilotShortSet(serviceDb, TEST_PILOT_KEYS, createTestRecording());
+  await publishExamVersion(serviceDb, {
+    ...PILOT_EXAM,
+    content: PILOT_CONTENT,
+    keys: TEST_PILOT_KEYS,
+    audio: [{ trackId: PILOT_TRACK_ID, ...createTestRecording() }],
+  });
 };
 
 export default globalSetup;

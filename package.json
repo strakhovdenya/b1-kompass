@@ -20,7 +20,9 @@
     "db:start": "supabase start",
     "db:reset": "supabase db reset",
     "db:stop": "supabase stop",
-    "seed:pilot": "tsx scripts/seed-pilot-question.ts"
+    "seed:pilot": "tsx scripts/seed-pilot-question.ts",
+    "publish:pilot": "tsx scripts/publish-pilot.ts",
+    "prepare:pilot": "tsx scripts/prepare-pilot/prepare-pilot.ts"
   },
   "devDependencies": {
     "@supabase/supabase-js": "2.118.0",

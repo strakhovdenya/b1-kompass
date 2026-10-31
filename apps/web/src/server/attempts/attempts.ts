@@ -23,10 +23,16 @@ import { ruleViolation } from '../db';
 import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import type { GuestContext } from '../guest-session/session';
-import { PILOT_EXAM_SLUG, getPublishedVersion } from '../material/published';
+import {
+  PILOT_EXAM_SLUG,
+  getPublishedVersion,
+  getVersionById,
+} from '../material/published';
+import type { PublishedVersion } from '../material/published';
 
 export interface PracticeState {
   attemptId: string;
+  versionId: string;
   examTitle: string;
   source: ExamContent['source'];
   questions: ExamQuestion[];
@@ -231,15 +237,50 @@ const openAttempt = async (
   return data;
 };
 
-// Opens the short pilot set: all published questions of the pilot version
-// and the guest's latest attempt for it (open_attempt): a completed attempt
-// comes with its review, otherwise the active attempt is continued or
-// started.
+// The guest's active attempt for the exam on any version. Several are
+// possible after a correction: the latest created wins, the highest id breaks
+// a tie.
+const findActiveVersionId = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  slug: string,
+): Promise<string | null> => {
+  const { data, error } = await deps.db
+    .from('attempts')
+    .select('exam_version_id, exam_versions!inner(exams!inner(slug))')
+    .eq('guest_session_id', guest.sessionId)
+    .eq('status', 'active')
+    .eq('exam_versions.exams.slug', slug)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle<{ exam_version_id: string }>();
+  if (error) throw new Error('Active attempt lookup failed', { cause: error });
+  return data ? data.exam_version_id : null;
+};
+
+// An active attempt stays on its own version, even after a correction was
+// published; the latest version is taken only without one.
+const chooseVersion = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  slug: string,
+): Promise<PublishedVersion | null> => {
+  const activeVersionId = await findActiveVersionId(deps, guest, slug);
+  if (activeVersionId) return getVersionById(deps, activeVersionId);
+  return getPublishedVersion(deps, slug);
+};
+
+// Opens the short pilot set: the material of the guest's active attempt, or of
+// the latest published version without one, and the guest's latest attempt
+// for it (open_attempt): a completed attempt comes with its review, otherwise
+// the active attempt is continued or started.
 export const openPractice = async (
   deps: ServerDeps,
   guest: GuestContext,
+  slug: string = PILOT_EXAM_SLUG,
 ): Promise<OpenPracticeResult> => {
-  const version = await getPublishedVersion(deps, PILOT_EXAM_SLUG);
+  const version = await chooseVersion(deps, guest, slug);
   if (!version) return { status: 'no-material' };
   const attempt = await openAttempt(deps, guest, version.versionId);
   if (!attempt) return { status: 'session-invalid' };
@@ -258,6 +299,7 @@ export const openPractice = async (
       : null;
   const practice: PracticeState = {
     attemptId: attempt.id,
+    versionId: version.versionId,
     examTitle: version.examTitle,
     source: version.content.source,
     questions: version.content.questions,
