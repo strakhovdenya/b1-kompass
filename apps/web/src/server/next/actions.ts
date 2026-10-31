@@ -5,12 +5,14 @@ import { revalidatePath } from 'next/cache';
 import { isLocale } from '@b1k/domain';
 import type {
   FinishAttemptResult,
+  RestartAttemptResult,
   SaveAnswerResult,
   SaveProgressResult,
 } from '@b1k/domain';
 import {
   finishAttempt,
   readActiveProgress,
+  restartAttempt,
   saveAnswer,
   saveProgress,
 } from '../attempts/attempts';
@@ -70,6 +72,23 @@ export const finishAttemptAction = async (
   input: unknown,
 ): Promise<FinishAttemptResult> =>
   finishAttempt(getServerDeps(), await readGuestToken(), input);
+
+// A new run opens at the start of Hören. The redirect carries the fresh
+// layout, so the shell of the completed attempt is replaced by the new one.
+export const restartAttemptAction = async (
+  input: unknown,
+): Promise<RestartAttemptResult> => {
+  const result = await restartAttempt(
+    getServerDeps(),
+    await readGuestToken(),
+    input,
+  );
+  // An ended session cannot run again: the guest enters anew.
+  if (!result.ok && result.error === 'session-invalid') redirect('/');
+  if (!result.ok) return result;
+  revalidatePath('/practice', 'layout');
+  redirect('/practice');
+};
 
 export const resolveAudioAction = async (
   input: unknown,

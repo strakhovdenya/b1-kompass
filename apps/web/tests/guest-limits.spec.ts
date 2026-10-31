@@ -212,6 +212,38 @@ test('keeps sessions with attempts or before expiry', async () => {
   await deleteSessions(kept);
 });
 
+const countEvents = async (): Promise<number> => {
+  const { count, error } = await serviceDb
+    .from('guest_events')
+    .select('*', { count: 'exact', head: true });
+  if (error) throw error;
+  return count ?? 0;
+};
+
+test('purge keeps accumulated events', async () => {
+  const now = new Date(Date.UTC(2034, 5, 1));
+  const start = new Date(now.getTime() - 40 * DAY_MS);
+  const created = await createGuestSession(depsAt(start), LIMIT);
+  const sessionId = createdIdOf(created);
+  if (created.status !== 'created') throw new Error('guest was rate-limited');
+  const { visitorId } = created.created.guest;
+  const entries = await serviceDb
+    .from('guest_events')
+    .select('kind, attempt_id')
+    .eq('visitor_id', visitorId);
+  expect(entries.data).toEqual([{ kind: 'entry', attempt_id: null }]);
+  const before = await countEvents();
+
+  expect(await purge(now)).toBeGreaterThanOrEqual(1);
+  expect(await findSessionIds([sessionId])).toEqual([]);
+  expect(await countEvents()).toBe(before);
+  const kept = await serviceDb
+    .from('guest_events')
+    .select('kind, attempt_id')
+    .eq('visitor_id', visitorId);
+  expect(kept.data).toEqual(entries.data);
+});
+
 test('denies anon execution of limit and purge functions', async () => {
   const anon = createPublicClient();
   const expired = await insertSessions(1, new Date(Date.now() - 40 * DAY_MS));

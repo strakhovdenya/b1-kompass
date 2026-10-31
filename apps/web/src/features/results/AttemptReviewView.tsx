@@ -2,6 +2,7 @@
 
 import { useLocale, useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
+import Button from '@mui/material/Button';
 import Divider from '@mui/material/Divider';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
@@ -16,11 +17,16 @@ import type {
 
 export type ReviewBlock = 'hoeren' | 'lesen';
 
+export type RestartStatus = 'idle' | 'restarting' | 'error';
+
 interface AttemptReviewViewProps {
   review: AttemptReview;
   questions: readonly ExamQuestion[];
   // Only the tasks of this block are listed; the totals are always shown.
   block?: ReviewBlock;
+  // Without a handler the result is shown without a new run.
+  onRestart?: () => void;
+  restartStatus?: RestartStatus;
 }
 
 const LEVEL_KEY: Readonly<Record<DtzLevel, string>> = {
@@ -67,6 +73,8 @@ export const AttemptReviewView = ({
   review,
   questions,
   block,
+  onRestart,
+  restartStatus = 'idle',
 }: AttemptReviewViewProps) => {
   const t = useTranslations('results');
   const locale = useLocale();
@@ -126,6 +134,23 @@ export const AttemptReviewView = ({
             {t('noLevel')}
           </Alert>
         )}
+        {onRestart ? (
+          <Stack spacing={1} sx={{ alignItems: 'flex-start' }}>
+            <Button
+              variant="contained"
+              data-testid="restart-attempt"
+              disabled={restartStatus === 'restarting'}
+              onClick={onRestart}
+            >
+              {restartStatus === 'restarting' ? t('restarting') : t('restart')}
+            </Button>
+            {restartStatus === 'error' ? (
+              <Alert severity="error" role="alert" data-testid="restart-status">
+                {t('restartError')}
+              </Alert>
+            ) : null}
+          </Stack>
+        ) : null}
         <Divider />
         <Stack
           component="ol"

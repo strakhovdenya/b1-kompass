@@ -29,6 +29,9 @@
 | Записать готовый балл или статус | ❌ лишние поля → `invalid-input` | ❌ нет прав на `attempt_results`, `attempts` | — |
 | Изменить ответ или результат завершённой попытки | ❌ поздний ответ → `attempt-not-found`; триггеры `attempt_answers_frozen`, `attempt_results_final`, `attempts_keep_completed` | ❌ | ❌ триггеры действуют и для `service_role` |
 | Повторное или параллельное завершение | ✅ возвращает прежний результат, второй не создаётся | ❌ | — |
+| Начать заново (`restart_attempt`) | ✅ только со своей завершённой попытки до истечения сеанса; если активная попытка уже есть, возвращается она и новая не создаётся | ❌ нет прав на `restart_attempt` (`42501`) | — |
+| Начать заново с чужой или активной попытки | ❌ `attempt-not-found` / `not-completed`, попытки и события не меняются | ❌ | — |
+| Прочитать или записать журнал событий (`guest_events`) | ❌ гость журнал не видит, события пишут только функции БД | ❌ нет прав на таблицу (`42501`) | ✅ только чтение и добавление; `update`/`delete`/`truncate` запрещены правами и триггерами |
 | Опубликовать материал и запись | ❌ | ❌ `publish_exam_version` не исполняется для anon | ✅ `npm run seed:pilot`: версия, ключи и дорожки одной транзакцией, объект записи должен существовать |
 | Зарегистрироваться (Supabase Auth) | ❌ | ❌ регистрация выключена (`enable_signup = false`) | — |
 
@@ -48,13 +51,17 @@
 - Триггеры `attempts_keep_completed`, `attempt_answers_frozen` и `attempt_results_final` запрещают возвращать завершённую попытку в `active`, менять её ответы и менять результат.
 - Миграция `supabase/migrations/20261103000000_full_exam_scope.sql` (#8) заменяет `start_attempt`, `open_attempt` (новый параметр `p_scope`) и `finish_attempt` (итоги по навыкам, процент и уровень) новыми сигнатурами и удаляет прежние. Права на новые функции выданы только `service_role`, у `public`/`anon`/`authenticated` отозваны; вызов с publishable-ключом отклоняется по правам (`42501`). Область задаёт сервер по составу версии, клиентские `scope`, `score`, `level` и `role` отклоняются строгой схемой ввода. Новые столбцы `attempt_results` закрыты так же, как вся таблица.
 - Миграция `supabase/migrations/20261104000000_attempt_progress.sql` (#10) добавляет столбец `attempts.progress` (закрыт правами таблицы) и функцию `save_attempt_progress`: права только у `service_role`, у `public`/`anon`/`authenticated` отозваны; вызов с publishable-ключом отклоняется по правам и место не меняется. Функция проверяет срок сеанса, владельца, статус `active` и принадлежность id версии попытки; клиентские `role`, `score`, `guestSessionId` отклоняются строгой схемой.
+- Миграция `supabase/migrations/20261106000000_guest_renewal.sql` (#12) добавляет таблицу `guest_events` и функцию `restart_attempt`.
+  - `guest_events`: RLS включён, политик нет. У `public`/`anon`/`authenticated` прав нет, у `service_role` только `select` и `insert`; триггеры запрещают `update`/`delete`/`truncate`. Журнал хранит только вид события, `visitor_id`, `attempt_id` и время, без IP, user agent и отпечатка.
+  - `restart_attempt`: права только у `service_role`, у `public`/`anon`/`authenticated` отозваны.
+  - `create_guest_session`, `start_attempt` и `finish_attempt` заменены с прежними сигнатурами и правами.
 - Миграция `supabase/migrations/20261102000000_guest_session_limits.sql` (#18) добавляет функции `create_guest_session` и `purge_expired_empty_guest_sessions`; исполнять их может только `service_role`, у `public`/`anon`/`authenticated` права отозваны.
 
 ## Лимит и очистка гостевых сеансов
 
 - Новый сеанс создаётся только через `create_guest_session`: подсчёт и вставка в одном вызове под транзакционной advisory-блокировкой. На весь сайт — не больше 30 новых сеансов за минуту (`GUEST_SESSIONS_PER_MINUTE`, по умолчанию 30). Сверх лимита сеанс и cookie не создаются, посетитель видит на главной уведомление попробовать снова через минуту.
 - Лимит считает только `guest_sessions.created_at`. IP-адрес, user agent и отпечаток устройства не используются и не хранятся (PRD, инварианты 4–5).
-- Раз в сутки задача pg_cron `purge-expired-empty-guest-sessions` удаляет сеансы, у которых истёк срок (`expires_at <= now`) и нет ни одной попытки. Сеанс с попыткой сохраняется ради накопленной статистики.
+- Раз в сутки задача pg_cron `purge-expired-empty-guest-sessions` удаляет сеансы, у которых истёк срок (`expires_at <= now`) и нет ни одной попытки. Сеанс с попыткой сохраняется. Накопленные события лежат в `guest_events` без ссылки на сеанс, поэтому очистка их не уменьшает.
 - Объекты записи лежат в том же приватном бакете по пути `audio/<sha256>.<ext>`. Браузер получает подписанный URL со сроком 10 минут только от `server/audio` после проверки сеанса и владельца попытки; сам путь не отдаётся. Подробнее: `docs/architecture.md`, `docs/deployment.md`.
 
 ## Данные в браузере и кэш

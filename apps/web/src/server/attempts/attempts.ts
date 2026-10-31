@@ -18,6 +18,8 @@ import type {
   ExamQuestion,
   FinishAttemptError,
   FinishAttemptResult,
+  RestartAttemptError,
+  RestartAttemptResult,
   ReviewResult,
   SaveAnswerError,
   SaveAnswerResult,
@@ -596,6 +598,85 @@ export const finishAttempt = async (
       }
     }
     return { ok: false, error: 'unavailable' };
+  } catch (error) {
+    console.error({ error });
+    return { ok: false, error: 'unavailable' };
+  }
+};
+
+const RESTART_RULE_ERRORS: Readonly<Record<string, RestartAttemptError>> = {
+  guest_session_invalid: 'session-invalid',
+  attempt_not_found: 'attempt-not-found',
+  attempt_not_completed: 'not-completed',
+  // The server picks the version itself; a mismatch is not the guest's input.
+  version_not_allowed: 'attempt-not-found',
+};
+
+interface LatestVersion {
+  versionId: string;
+  scope: AttemptScope;
+}
+
+// The latest published version of the exam that the given version belongs
+// to, chosen by the same rule as a new practice (getPublishedVersion), with
+// the scope the server derives from its composition.
+const readLatestVersionOfExam = async (
+  deps: ServerDeps,
+  versionId: string,
+): Promise<LatestVersion> => {
+  const { data, error } = await deps.db
+    .from('exam_versions')
+    .select('exams!inner(slug, format)')
+    .eq('id', versionId)
+    .single<{ exams: { slug: string; format: string } }>();
+  if (error) throw new Error('Version lookup failed', { cause: error });
+  const latest = await getPublishedVersion(deps, data.exams.slug);
+  if (!latest) throw new Error('Published version is missing');
+  return {
+    versionId: latest.versionId,
+    scope: selectAttemptScope(data.exams.format, latest.content),
+  };
+};
+
+// Starts a new run from the guest's own completed attempt, on the latest
+// version of its exam. The completed attempt, its answers and its result stay
+// as they are. With an active attempt already there, that one is returned.
+export const restartAttempt = async (
+  deps: ServerDeps,
+  token: string | null | undefined,
+  input: unknown,
+): Promise<RestartAttemptResult> => {
+  const parsed = attemptInput.safeParse(input);
+  if (!parsed.success) return { ok: false, error: 'invalid-input' };
+  const guest = await resolveGuestSession(deps, token);
+  if (!guest) return { ok: false, error: 'session-invalid' };
+  try {
+    const attempt = await readOwnedAttempt(
+      deps,
+      guest.sessionId,
+      parsed.data.attemptId,
+    );
+    if (!attempt) return { ok: false, error: 'attempt-not-found' };
+    if (attempt.status !== 'completed') {
+      return { ok: false, error: 'not-completed' };
+    }
+    const latest = await readLatestVersionOfExam(deps, attempt.exam_version_id);
+    const { data, error } = await deps.db
+      .rpc('restart_attempt', {
+        p_session_id: guest.sessionId,
+        p_attempt_id: attempt.id,
+        p_exam_version_id: latest.versionId,
+        p_now: deps.clock.now().toISOString(),
+        p_scope: latest.scope,
+      })
+      .single<AttemptRow>();
+    if (error) {
+      const rule = ruleViolation(error);
+      const known = rule ? RESTART_RULE_ERRORS[rule] : undefined;
+      if (known) return { ok: false, error: known };
+      throw new Error('Attempt was not restarted', { cause: error });
+    }
+    return { ok: true, attemptId: data.id };
   } catch (error) {
     console.error({ error });
     return { ok: false, error: 'unavailable' };

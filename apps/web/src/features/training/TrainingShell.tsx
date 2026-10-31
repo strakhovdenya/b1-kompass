@@ -15,6 +15,7 @@ import type {
   AttemptReview,
   ExamQuestion,
   FinishAttemptResult,
+  RestartAttemptResult,
   SaveAnswerResult,
   SaveProgressResult,
   Selections,
@@ -22,7 +23,7 @@ import type {
 import { AudioPlayer } from '../audio/AudioPlayer';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
-import type { ReviewBlock } from '../results/AttemptReviewView';
+import type { RestartStatus, ReviewBlock } from '../results/AttemptReviewView';
 import { hasSaving, hasUnsaved, isUnsaved, useAnswerStore } from './answers';
 import type { PendingAnswers, SaveAnswerInput } from './answers';
 import { TrainingContext } from './TrainingContext';
@@ -34,6 +35,10 @@ export interface ResolveAudioInput {
 }
 
 export interface FinishAttemptInput {
+  attemptId: string;
+}
+
+export interface RestartAttemptInput {
   attemptId: string;
 }
 
@@ -66,6 +71,7 @@ interface TrainingShellProps {
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
   saveProgress: (input: SaveProgressInput) => Promise<SaveProgressResult>;
+  restartAttempt: (input: RestartAttemptInput) => Promise<RestartAttemptResult>;
   children: ReactNode;
 }
 
@@ -109,6 +115,7 @@ export const TrainingShell = ({
   saveAnswer,
   finishAttempt,
   saveProgress,
+  restartAttempt,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
@@ -127,6 +134,7 @@ export const TrainingShell = ({
   });
   const [review, setReview] = useState(initialReview);
   const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
+  const [restartStatus, setRestartStatus] = useState<RestartStatus>('idle');
   const isSaving = hasSaving(pending);
   // Once the finish request is sent no answer is changed: the server scores
   // the answers it holds at that moment.
@@ -274,6 +282,21 @@ export const TrainingShell = ({
     setFinishStatus('error');
   };
 
+  // The server starts the new run and sends the guest to its beginning; the
+  // layout then mounts a new shell for the new attempt, so nothing of this
+  // one is carried over.
+  const restart = async () => {
+    setRestartStatus('restarting');
+    try {
+      const result = await restartAttempt({ attemptId });
+      // A redirected action resolves without a result.
+      setRestartStatus(result?.ok === false ? 'error' : 'idle');
+    } catch (error) {
+      console.error({ error });
+      setRestartStatus('error');
+    }
+  };
+
   const requestFinish = () => {
     if (isUnsavedLeft) setFinishStatus('unsaved');
     else if (hasUnanswered) setFinishStatus('confirming');
@@ -303,12 +326,18 @@ export const TrainingShell = ({
   if (review) {
     return (
       <TrainingContext.Provider value={state}>
-        <Stack spacing={3}>
+        <Stack
+          spacing={3}
+          data-testid="training-shell"
+          data-attempt-id={attemptId}
+        >
           {nav}
           <AttemptReviewView
             review={review}
             questions={questions}
             block={blocks.length > 1 ? current : undefined}
+            onRestart={() => void restart()}
+            restartStatus={restartStatus}
           />
         </Stack>
       </TrainingContext.Provider>
@@ -322,7 +351,11 @@ export const TrainingShell = ({
 
   return (
     <TrainingContext.Provider value={state}>
-      <Stack spacing={3}>
+      <Stack
+        spacing={3}
+        data-testid="training-shell"
+        data-attempt-id={attemptId}
+      >
         {nav}
         {trackIds.map((trackId, trackIndex) => (
           <AudioPlayer
