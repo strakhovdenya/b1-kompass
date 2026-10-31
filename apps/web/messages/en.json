@@ -1,0 +1,38 @@
+{
+  "app": {
+    "name": "B1 Kompass",
+    "tagline": "German A2–B1 practice: DTZ Hören and Lesen"
+  },
+  "home": {
+    "title": "Practise for the German DTZ exam",
+    "description": "Listening and reading tasks from a real practice exam. No email or password needed.",
+    "continue": "Continue as guest",
+    "note": "A guest session lasts 30 days from the first visit in this browser."
+  },
+  "locale": {
+    "label": "Interface language",
+    "en": "English",
+    "ru": "Русский"
+  },
+  "practice": {
+    "partial": "Part of the exam: {skill} Teil {teil}, task {number}. Short practice — no official level is shown.",
+    "skill": {
+      "hoeren": "Hören",
+      "lesen": "Lesen"
+    },
+    "unavailable": "The practice is not available right now. Please try again later.",
+    "source": "Source: {publisher}, {title}, page {page}"
+  },
+  "save": {
+    "idle": "Choose one answer.",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "error": "Your answer was not saved. Your choice is still selected.",
+    "retry": "Try again",
+    "sessionInvalid": "Your guest session has ended. Start a new guest session to continue."
+  },
+  "error": {
+    "message": "Something went wrong. Your saved answers are kept.",
+    "retry": "Try again"
+  }
+}

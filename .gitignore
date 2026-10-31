@@ -37,3 +37,22 @@ Thumbs.db
 
 # Personal local Claude Code permissions
 .claude/settings.local.json
+
+# Next.js and test output
+.next/
+next-env.d.ts
+*.tsbuildinfo
+playwright-report/
+test-results/
+coverage/
+
+# Supabase CLI local state
+supabase/.branches/
+supabase/.temp/
+supabase/.env.keys
+
+# Private material and answer keys of the trusted owner tools
+private/
+
+# Vercel CLI link of this machine
+.vercel/
