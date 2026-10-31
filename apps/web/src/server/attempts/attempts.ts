@@ -5,6 +5,7 @@ import type {
   AttemptReview,
   AttemptScope,
   ExamContent,
+  ExamGroup,
   ExamQuestion,
   FinishAttemptError,
   FinishAttemptResult,
@@ -32,6 +33,7 @@ export interface PracticeState {
   examTitle: string;
   source: ExamContent['source'];
   questions: ExamQuestion[];
+  groups: ExamGroup[];
   selections: Selections;
   trackIds: string[];
   review: AttemptReview | null;
@@ -299,6 +301,7 @@ export const openPractice = async (
     examTitle: version.examTitle,
     source: version.content.source,
     questions: version.content.questions,
+    groups: version.content.groups ?? [],
     selections,
     trackIds,
     review,

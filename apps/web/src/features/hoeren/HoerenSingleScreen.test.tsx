@@ -1,10 +1,11 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it } from 'vitest';
-import type { ExamQuestion } from '@b1k/domain';
+import type { ExamGroup, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import {
   HoerenSingleScreen,
+  selectQuestions,
   selectSingleQuestions,
 } from './HoerenSingleScreen';
 
@@ -60,5 +61,77 @@ describe('HoerenSingleScreen', () => {
     expect(html).toContain('Question 1 of 2');
     expect(html).toContain('Frage h1?');
     expect(html).toContain('data-testid="audio-element"');
+  });
+});
+
+const pair: ExamGroup = {
+  id: 'pair-3',
+  kind: 'pair',
+  teil: 3,
+  trackId: 'track-127',
+  questionIds: ['h3', 'h4'],
+};
+
+describe('selectQuestions', () => {
+  it('adds the members of a Teil 3 pair to the single questions', () => {
+    const ids = selectQuestions(questions, [pair]).map((item) => item.id);
+    expect(ids).toEqual(['h1', 'h2', 'h3', 'h4']);
+  });
+
+  it('leaves out a pair with a member missing from the material', () => {
+    const broken = { ...pair, questionIds: ['h3', 'missing'] };
+    const ids = selectQuestions(questions, [broken]).map((item) => item.id);
+    expect(ids).toEqual(['h1', 'h2']);
+  });
+
+  it('ignores pairs of another Teil or of another size', () => {
+    const otherTeil = { ...pair, teil: 2 };
+    const threeMembers = { ...pair, questionIds: ['h3', 'h4', 'h5'] };
+    for (const group of [otherTeil, threeMembers]) {
+      const ids = selectQuestions(questions, [group]).map((item) => item.id);
+      expect(ids).toEqual(['h1', 'h2']);
+    }
+  });
+
+  it('does not show the members of a shared set', () => {
+    const shared: ExamGroup = {
+      id: 'set-4',
+      kind: 'shared-set',
+      teil: 4,
+      trackId: 'track-127',
+      options: [
+        { id: 'a', text: 'Erste' },
+        { id: 'b', text: 'Zweite' },
+      ],
+      questionIds: ['h5'],
+    };
+    const ids = selectQuestions(questions, [shared]).map((item) => item.id);
+    expect(ids).toEqual(['h1', 'h2']);
+  });
+});
+
+describe('HoerenSingleScreen with a pair', () => {
+  const renderAt = (initial: Record<string, string>) =>
+    renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <HoerenSingleScreen
+          attemptId="00000000-0000-4000-8000-000000000000"
+          questions={questions}
+          groups={[pair]}
+          trackIds={['track-127']}
+          initialSelections={initial}
+          initialReview={null}
+          resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
+          saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
+          finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
+        />
+      </NextIntlClientProvider>,
+    );
+
+  it('counts the pair as one step and every member as an answer', () => {
+    const html = renderAt({ h1: 'a', h3: 'b' });
+    expect(html).toContain('Question 1 of 3');
+    expect(html).toContain('Answered: 2 of 4');
+    expect(html).toContain('data-testid="go-to-question-3"');
   });
 });

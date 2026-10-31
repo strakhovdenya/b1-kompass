@@ -18,7 +18,11 @@ const PracticePage = async () => {
   const guest = await getCurrentGuest();
   if (!guest) redirect('/');
   const t = await getTranslations('practice');
-  const opened = await openPractice(getServerDeps(), guest);
+  const opened = await openPractice(
+    getServerDeps(),
+    guest,
+    process.env.PRACTICE_EXAM_SLUG,
+  );
   if (opened.status === 'session-invalid') redirect('/');
   if (opened.status === 'no-material') {
     return <Alert severity="warning">{t('unavailable')}</Alert>;
@@ -35,6 +39,7 @@ const PracticePage = async () => {
       <HoerenSingleScreen
         attemptId={practice.attemptId}
         questions={practice.questions}
+        groups={practice.groups}
         trackIds={practice.trackIds}
         initialSelections={practice.selections}
         initialReview={practice.review}

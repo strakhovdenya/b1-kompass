@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -9,6 +10,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type {
   AttemptReview,
+  ExamGroup,
   ExamQuestion,
   FinishAttemptResult,
   SaveAnswerResult,
@@ -17,6 +19,8 @@ import type {
 import { AttemptReviewView } from '../results/AttemptReviewView';
 import { QuestionCard } from './QuestionCard';
 import type { SaveAnswerInput, SaveStatus } from './QuestionCard';
+import { buildSteps } from './steps';
+import type { PracticeStep } from './steps';
 
 export interface FinishAttemptInput {
   attemptId: string;
@@ -34,19 +38,24 @@ interface UnsavedChoice {
 interface PracticeSetProps {
   attemptId: string;
   questions: readonly ExamQuestion[];
+  groups?: readonly ExamGroup[];
+  // Lays out the cards of a group step; without it they are stacked.
+  renderGroup?: (step: PracticeStep, cards: ReactNode[]) => ReactNode;
   initialSelections: Selections;
   initialReview: AttemptReview | null;
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
 }
 
-// The short set: one question at a time with navigation, then a server-side
-// completion. Only the attempt id goes to the server on finish; points come
-// back from it. While an answer is being saved neither navigation nor finish
+// The short set: one step at a time with navigation (a question, or the
+// questions of a pair shown together), then a server-side completion. Only
+// the attempt id goes to the server on finish; points come back from it. While an answer is being saved neither navigation nor finish
 // is possible, so a finish never overtakes the guest's last answer.
 export const PracticeSet = ({
   attemptId,
   questions,
+  groups = [],
+  renderGroup,
   initialSelections,
   initialReview,
   saveAnswer,
@@ -58,16 +67,19 @@ export const PracticeSet = ({
   const [unsaved, setUnsaved] = useState<
     Readonly<Record<string, UnsavedChoice>>
   >({});
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [saveStatus, setSaveStatus] = useState<
+    Readonly<Record<string, SaveStatus>>
+  >({});
   const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
   const [review, setReview] = useState(initialReview);
 
   if (review)
     return <AttemptReviewView review={review} questions={questions} />;
 
-  const question = questions[index];
-  if (!question) return null;
-  const total = questions.length;
+  const steps = buildSteps(questions, groups);
+  const step = steps[index];
+  if (!step) return null;
+  const total = steps.length;
   const answered = questions.filter((item) =>
     Object.hasOwn(selections, item.id),
   ).length;
@@ -90,7 +102,7 @@ export const PracticeSet = ({
 
   const goTo = (next: number) => {
     setIndex(next);
-    setSaveStatus('idle');
+    setSaveStatus({});
   };
 
   const finish = async () => {
@@ -106,11 +118,27 @@ export const PracticeSet = ({
     else setFinishStatus('error');
   };
 
-  const isSaving = saveStatus === 'saving';
+  const isSaving = Object.values(saveStatus).includes('saving');
   const isBusy = isSaving || finishStatus === 'finishing';
-  const choice = Object.hasOwn(unsaved, question.id)
-    ? unsaved[question.id]
-    : undefined;
+  const cards = step.questions.map((question) => {
+    const choice = Object.hasOwn(unsaved, question.id)
+      ? unsaved[question.id]
+      : undefined;
+    return (
+      <QuestionCard
+        key={question.id}
+        attemptId={attemptId}
+        question={question}
+        initialOptionId={choice?.optionId ?? selections[question.id] ?? null}
+        initialStatus={choice?.status}
+        saveAnswer={saveAnswer}
+        onSettled={handleSettled}
+        onStatusChange={(status) =>
+          setSaveStatus((current) => ({ ...current, [question.id]: status }))
+        }
+      />
+    );
+  });
 
   return (
     <Stack spacing={2}>
@@ -124,33 +152,40 @@ export const PracticeSet = ({
           <Typography data-testid="set-position" sx={{ mr: 1 }}>
             {t('position', { current: index + 1, total })}
           </Typography>
-          {questions.map((item, itemIndex) => (
-            <Button
-              key={item.id}
-              size="small"
-              variant={itemIndex === index ? 'contained' : 'outlined'}
-              aria-current={itemIndex === index ? 'step' : undefined}
-              aria-label={t('goTo', { number: item.number })}
-              data-testid={`go-to-question-${item.number}`}
-              disabled={isSaving}
-              onClick={() => goTo(itemIndex)}
-              sx={{ minWidth: 40 }}
-            >
-              {item.number}
-            </Button>
-          ))}
+          {steps.map((item, itemIndex) => {
+            const first = item.questions[0];
+            const last = item.questions[item.questions.length - 1];
+            if (!first || !last) return null;
+            const label =
+              first === last
+                ? `${first.number}`
+                : `${first.number}–${last.number}`;
+            return (
+              <Button
+                key={item.key}
+                size="small"
+                variant={itemIndex === index ? 'contained' : 'outlined'}
+                aria-current={itemIndex === index ? 'step' : undefined}
+                aria-label={t('goTo', {
+                  number: label,
+                  count: item.questions.length,
+                })}
+                data-testid={`go-to-question-${first.number}`}
+                disabled={isSaving}
+                onClick={() => goTo(itemIndex)}
+                sx={{ minWidth: 40 }}
+              >
+                {label}
+              </Button>
+            );
+          })}
         </Stack>
       </nav>
-      <QuestionCard
-        key={question.id}
-        attemptId={attemptId}
-        question={question}
-        initialOptionId={choice?.optionId ?? selections[question.id] ?? null}
-        initialStatus={choice?.status}
-        saveAnswer={saveAnswer}
-        onSettled={handleSettled}
-        onStatusChange={setSaveStatus}
-      />
+      {step.group && renderGroup ? (
+        renderGroup(step, cards)
+      ) : (
+        <Stack spacing={2}>{cards}</Stack>
+      )}
       <Stack direction="row" spacing={1}>
         <Button
           variant="outlined"
@@ -170,7 +205,7 @@ export const PracticeSet = ({
       <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
         <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
           <Typography data-testid="set-answered">
-            {t('answered', { answered, total })}
+            {t('answered', { answered, total: questions.length })}
           </Typography>
           <Button
             variant="contained"

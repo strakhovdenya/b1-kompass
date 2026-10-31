@@ -44,12 +44,13 @@
     "retry": "Load again"
   },
   "hoeren": {
-    "intro": "Hören, parts 1 and 2: {count, plural, one {# question} other {# questions}}, one answer each. You can change an answer at any time while the recording keeps playing."
+    "intro": "Hören, parts 1 to 3: {count, plural, one {# question} other {# questions}}, one answer each. In part 3 the two questions of one conversation are shown together. You can change an answer at any time while the recording keeps playing.",
+    "pairLegend": "One conversation, two questions: {first} and {second}. Answer each one separately."
   },
   "set": {
     "navigation": "Questions",
     "position": "Question {current} of {total}",
-    "goTo": "Go to question {number}",
+    "goTo": "{count, plural, one {Go to question {number}} other {Go to questions {number}}}",
     "previous": "Previous",
     "next": "Next",
     "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped.",
