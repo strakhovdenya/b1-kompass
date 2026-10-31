@@ -10,6 +10,7 @@ B1 Kompass is an online German A2–B1 exam trainer (DTZ Hören and Lesen) for p
 
 - The active GitHub Issue is the execution spec. Task branches follow `branchTemplate` of `.factory/profile.json` (`task/ISSUE-<n>-<slug>`).
 - Read the sections the Issue lists in `## Docs to Read`; read further or stop and ask when the context is not enough to satisfy the Acceptance Criteria.
+- Before writing a new PRD, plan or Issue, read `docs/architecture-evolution.md` and the current affected code. Carry applicable `ARC-xx` prerequisites into the PRD's architectural impact, the plan's dependencies, and the Issue's Docs to Read / Key Invariants / Affects; explain non-applicability. Deferred extensions are not automatically added to M1.
 - When an approved plan enters implementation, load `task-lifecycle` before Issue/branch changes or the first edit; reload it before closure, commit and PR.
 - Load the metaskills the skill gate asks for before editing `.ts`/`.tsx` files.
 
@@ -22,6 +23,7 @@ B1 Kompass is an online German A2–B1 exam trainer (DTZ Hören and Lesen) for p
 | PRD / plan / next epic | `prd`, `plan`, `epic-discovery` skills; documents in `docs/prd`, `docs/plans` |
 | Product scope and decisions | `docs/project-overview.md`, `docs/project-decisions.md` (large: read only the needed section), `docs/roadmap.md` |
 | Modules, material/version/attempt, guest session | `docs/architecture.md` |
+| Architecture prerequisites for future PRDs, plans and Issues | `docs/architecture-evolution.md` |
 | Access matrix, RLS, grants, Storage | `docs/security.md` |
 | Stack, env vars, local run, CI, Supabase/Vercel | `docs/deployment.md` |
 | Web app structure, commands, UI rules | `apps/web/CLAUDE.md` |
