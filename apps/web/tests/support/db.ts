@@ -94,9 +94,7 @@ export const readAnswers = async (
     .eq('attempt_id', attemptId)
     .returns<{ question_id: string; option_id: string }[]>();
   if (error) throw error;
-  return Object.fromEntries(
-    data.map((row) => [row.question_id, row.option_id]),
-  );
+  return Object.fromEntries(data.map((row) => [row.question_id, row.option_id]));
 };
 
 export const readResults = async (attemptId: string): Promise<unknown[]> => {

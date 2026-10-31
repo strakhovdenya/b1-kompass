@@ -89,9 +89,8 @@ describe('material contract', () => {
   });
 
   it('accepts a complete key and reports every broken one', () => {
-    expect(
-      findMaterialProblems(content, { 'hoeren-1': 'b', 'hoeren-2': 'a' }),
-    ).toEqual([]);
+    expect(findMaterialProblems(content, { 'hoeren-1': 'b', 'hoeren-2': 'a' }))
+      .toEqual([]);
     const duplicated = {
       ...content,
       questions: [first, second, { ...second }],
