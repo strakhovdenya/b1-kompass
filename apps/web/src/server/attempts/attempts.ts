@@ -1,9 +1,15 @@
 import { z } from 'zod';
-import { examContentSchema, selectScoringPolicy, toPercent } from '@b1k/domain';
+import {
+  examContentSchema,
+  selectAttemptScope,
+  selectScoringPolicy,
+  toPercent,
+} from '@b1k/domain';
 import type {
   AnswerKeys,
   AttemptReview,
   AttemptScope,
+  DtzLevel,
   ExamContent,
   ExamGroup,
   ExamQuestion,
@@ -14,6 +20,7 @@ import type {
   SaveAnswerResult,
   ScoringPolicy,
   Selections,
+  SkillTotals,
 } from '@b1k/domain';
 import { listVersionTrackIds } from '../audio/audio';
 import { ruleViolation } from '../db';
@@ -84,6 +91,12 @@ interface ResultRow {
   incorrect_count: number;
   skipped_count: number;
   computed_at: string;
+  percent: number | string | null;
+  hoeren_score: number | null;
+  hoeren_max: number | null;
+  lesen_score: number | null;
+  lesen_max: number | null;
+  level: DtzLevel | null;
 }
 
 interface VersionMaterial {
@@ -92,8 +105,11 @@ interface VersionMaterial {
 }
 
 const ATTEMPT_COLUMNS = 'id, status, scope, exam_version_id';
-const RESULT_COLUMNS =
-  'scope, score, max_score, correct_count, incorrect_count, skipped_count, computed_at';
+const RESULT_COLUMNS = [
+  'scope, score, max_score, correct_count, incorrect_count, skipped_count',
+  'computed_at, percent, hoeren_score, hoeren_max, lesen_score, lesen_max',
+  'level',
+].join(', ');
 
 const readSelections = async (
   deps: ServerDeps,
@@ -142,6 +158,19 @@ const readVersionMaterial = async (
   };
 };
 
+const readVersionFormat = async (
+  deps: ServerDeps,
+  versionId: string,
+): Promise<string> => {
+  const { data, error } = await deps.db
+    .from('exam_versions')
+    .select('exams!inner(format)')
+    .eq('id', versionId)
+    .single<{ exams: { format: string } }>();
+  if (error) throw new Error('Version lookup failed', { cause: error });
+  return data.exams.format;
+};
+
 // The closed key of one version. It is read only to score or to review a
 // completed attempt and never goes into the practice state.
 const readAnswerKeys = async (
@@ -169,6 +198,23 @@ const policyFor = (
   }
   return policy;
 };
+
+const storedSkills = (row: ResultRow): SkillTotals | null => {
+  const { hoeren_score, hoeren_max, lesen_score, lesen_max } = row;
+  if (hoeren_score === null || hoeren_max === null) return null;
+  if (lesen_score === null || lesen_max === null) return null;
+  return {
+    hoeren: { score: hoeren_score, maxScore: hoeren_max },
+    lesen: { score: lesen_score, maxScore: lesen_max },
+  };
+};
+
+// Results stored before the percentage column have none; the same rounding
+// gives their value.
+const storedPercent = (row: ResultRow): number =>
+  row.percent === null
+    ? toPercent(row.score, row.max_score)
+    : Number(row.percent);
 
 // The review of a completed attempt: stored totals plus the per-task view of
 // its frozen answers against the key of its own version.
@@ -202,10 +248,12 @@ const buildReview = async (
     showsLevel: policy.showsLevel,
     score: data.score,
     maxScore: data.max_score,
-    percent: toPercent(data.score, data.max_score),
+    percent: storedPercent(data),
     correct: data.correct_count,
     incorrect: data.incorrect_count,
     skipped: data.skipped_count,
+    skills: storedSkills(data),
+    level: data.level,
     completedAt: data.computed_at,
     items: scored.items,
   };
@@ -216,16 +264,20 @@ export type OpenPracticeResult =
   | { status: 'session-invalid' }
   | { status: 'no-material' };
 
+// The scope comes from the composition of the version, never from the
+// client; the database writes it only into a newly created attempt.
 const openAttempt = async (
   deps: ServerDeps,
   guest: GuestContext,
   versionId: string,
+  scope: AttemptScope,
 ): Promise<AttemptRow | null> => {
   const { data, error } = await deps.db
     .rpc('open_attempt', {
       p_session_id: guest.sessionId,
       p_exam_version_id: versionId,
       p_now: deps.clock.now().toISOString(),
+      p_scope: scope,
     })
     .single<AttemptRow>();
   if (error) {
@@ -269,10 +321,10 @@ const chooseVersion = async (
   return getPublishedVersion(deps, slug);
 };
 
-// Opens the short pilot set: the material of the guest's active attempt, or of
+// Opens the practice set: the material of the guest's active attempt, or of
 // the latest published version without one, and the guest's latest attempt
 // for it (open_attempt): a completed attempt comes with its review, otherwise
-// the active attempt is continued or started.
+// the active attempt is continued or started with the scope of the version.
 export const openPractice = async (
   deps: ServerDeps,
   guest: GuestContext,
@@ -280,7 +332,12 @@ export const openPractice = async (
 ): Promise<OpenPracticeResult> => {
   const version = await chooseVersion(deps, guest, slug);
   if (!version) return { status: 'no-material' };
-  const attempt = await openAttempt(deps, guest, version.versionId);
+  const material: VersionMaterial = {
+    format: await readVersionFormat(deps, version.versionId),
+    content: version.content,
+  };
+  const scope = selectAttemptScope(material.format, material.content);
+  const attempt = await openAttempt(deps, guest, version.versionId, scope);
   if (!attempt) return { status: 'session-invalid' };
   const [selections, trackIds] = await Promise.all([
     readSelections(deps, attempt.id),
@@ -288,12 +345,7 @@ export const openPractice = async (
   ]);
   const review =
     attempt.status === 'completed'
-      ? await buildReview(
-          deps,
-          attempt,
-          await readVersionMaterial(deps, attempt.exam_version_id),
-          selections,
-        )
+      ? await buildReview(deps, attempt, material, selections)
       : null;
   const practice: PracticeState = {
     attemptId: attempt.id,
@@ -376,6 +428,12 @@ const finishRound = async (
       p_correct: scored.correct,
       p_incorrect: scored.incorrect,
       p_skipped: scored.skipped,
+      p_percent: scored.percent,
+      p_hoeren_score: scored.skills?.hoeren.score ?? null,
+      p_hoeren_max: scored.skills?.hoeren.maxScore ?? null,
+      p_lesen_score: scored.skills?.lesen.score ?? null,
+      p_lesen_max: scored.skills?.lesen.maxScore ?? null,
+      p_level: scored.level,
     })
     .single();
   if (!error) return { status: 'done' };

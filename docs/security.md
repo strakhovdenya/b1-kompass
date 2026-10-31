@@ -46,6 +46,7 @@
 - Опубликованные версии и ключи неизменяемы (триггеры), срок Guest зафиксирован CHECK и триггером.
 - P1-T2 добавляет таблицу `exam_version_audio` (дорожки версии, неизменяема триггером, RLS включён, права только у `service_role`) и функции `open_attempt` и `finish_attempt`. Права на них выданы только `service_role`, у `public`/`anon`/`authenticated` они отозваны. Обе функции проверяют срок сеанса и владельца. `finish_attempt` работает под блокировкой строки попытки и возвращает сохранённый результат при повторном вызове.
 - Триггеры `attempts_keep_completed`, `attempt_answers_frozen` и `attempt_results_final` запрещают возвращать завершённую попытку в `active`, менять её ответы и менять результат.
+- Миграция `supabase/migrations/20261103000000_full_exam_scope.sql` (#8) заменяет `start_attempt`, `open_attempt` (новый параметр `p_scope`) и `finish_attempt` (итоги по навыкам, процент и уровень) новыми сигнатурами и удаляет прежние. Права на новые функции выданы только `service_role`, у `public`/`anon`/`authenticated` отозваны; вызов с publishable-ключом отклоняется по правам (`42501`). Область задаёт сервер по составу версии, клиентские `scope`, `score`, `level` и `role` отклоняются строгой схемой ввода. Новые столбцы `attempt_results` закрыты так же, как вся таблица.
 - Миграция `supabase/migrations/20261102000000_guest_session_limits.sql` (#18) добавляет функции `create_guest_session` и `purge_expired_empty_guest_sessions`; исполнять их может только `service_role`, у `public`/`anon`/`authenticated` права отозваны.
 
 ## Лимит и очистка гостевых сеансов

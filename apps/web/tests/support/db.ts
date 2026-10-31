@@ -105,3 +105,62 @@ export const readResults = async (attemptId: string): Promise<unknown[]> => {
   if (error) throw error;
   return data;
 };
+
+export const readAttemptScope = async (attemptId: string): Promise<string> => {
+  const { data, error } = await serviceDb
+    .from('attempts')
+    .select('scope')
+    .eq('id', attemptId)
+    .single<{ scope: string }>();
+  if (error) throw error;
+  return data.scope;
+};
+
+export interface RawVersionInput {
+  slug: string;
+  content: unknown;
+  keys: Readonly<Record<string, string>>;
+}
+
+// Writes a version straight into the test database, past the checks of the
+// publication: a broken version that the owner path would never publish.
+export const insertRawVersion = async (
+  input: RawVersionInput,
+): Promise<string> => {
+  const exam = await serviceDb
+    .from('exams')
+    .insert({ slug: input.slug, title: 'Broken version', format: 'DTZ' })
+    .select('id')
+    .single<{ id: string }>();
+  if (exam.error) throw exam.error;
+  const version = await serviceDb
+    .from('exam_versions')
+    .insert({ exam_id: exam.data.id, version: 1, content: input.content })
+    .select('id')
+    .single<{ id: string }>();
+  if (version.error) throw version.error;
+  const rows = Object.entries(input.keys).map(([questionId, optionId]) => ({
+    exam_version_id: version.data.id,
+    question_id: questionId,
+    correct_option_id: optionId,
+  }));
+  const keys = await serviceDb.from('answer_keys').insert(rows);
+  if (keys.error) throw keys.error;
+  return version.data.id;
+};
+
+// An active attempt written straight into the test database, for a version
+// the server cannot open.
+export const insertActiveAttempt = async (
+  sessionId: string,
+  versionId: string,
+  scope: 'short-set' | 'full-exam',
+): Promise<string> => {
+  const { data, error } = await serviceDb
+    .from('attempts')
+    .insert({ guest_session_id: sessionId, exam_version_id: versionId, scope })
+    .select('id')
+    .single<{ id: string }>();
+  if (error) throw error;
+  return data.id;
+};

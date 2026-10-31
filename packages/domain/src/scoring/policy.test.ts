@@ -108,12 +108,12 @@ describe('short-set scoring policy', () => {
   });
 
   it('has no policy for scopes without a scale', () => {
-    expect(selectScoringPolicy('DTZ', 'full-exam')).toBeNull();
+    expect(selectScoringPolicy('DTZ', 'full-exam')?.showsLevel).toBe(true);
     expect(selectScoringPolicy('OTHER', 'short-set')).toBeNull();
   });
 
   it('rounds the percentage of points', () => {
-    expect(toPercent(2, 3)).toBe(67);
+    expect(toPercent(2, 3)).toBe(66.7);
     expect(toPercent(0, 4)).toBe(0);
     expect(toPercent(4, 4)).toBe(100);
   });
