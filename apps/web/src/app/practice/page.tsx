@@ -1,16 +1,10 @@
 import { redirect } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
-import Alert from '@mui/material/Alert';
-import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { HoerenSingleScreen } from '../../features/hoeren/HoerenSingleScreen';
-import { openPractice } from '../../server/attempts/attempts';
-import {
-  finishAttemptAction,
-  resolveAudioAction,
-  saveAnswerAction,
-} from '../../server/next/actions';
+import { saveAnswerAction } from '../../server/next/actions';
+import { getOpenedPractice } from '../../server/attempts/opened';
 import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
 export const dynamic = 'force-dynamic';
@@ -18,20 +12,20 @@ export const dynamic = 'force-dynamic';
 const PracticePage = async () => {
   const guest = await getCurrentGuest();
   if (!guest) redirect('/');
-  const t = await getTranslations('practice');
-  const opened = await openPractice(
+  const opened = await getOpenedPractice(
     getServerDeps(),
     guest,
     process.env.PRACTICE_EXAM_SLUG,
   );
   if (opened.status === 'session-invalid') redirect('/');
-  if (opened.status === 'no-material') {
-    return <Alert severity="warning">{t('unavailable')}</Alert>;
-  }
+  if (opened.status === 'no-material') return null;
 
   const { practice } = opened;
+  // A completed attempt shows its review from the shell; the block is not
+  // rendered, so the key-free material is not sent a second time.
+  if (practice.review) return null;
+  const t = await getTranslations('practice');
   const { source } = practice;
-  const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
 
   return (
     <Stack spacing={3}>
@@ -42,23 +36,9 @@ const PracticePage = async () => {
         attemptId={practice.attemptId}
         questions={practice.questions}
         groups={practice.groups}
-        trackIds={practice.trackIds}
         initialSelections={practice.selections}
-        initialReview={practice.review}
-        resolveAudio={resolveAudioAction}
         saveAnswer={saveAnswerAction}
-        finishAttempt={finishAttemptAction}
       />
-      {hasLesen && !practice.review ? (
-        <Button
-          href="/practice/lesen"
-          variant="outlined"
-          data-testid="lesen-link"
-          sx={{ alignSelf: 'flex-start' }}
-        >
-          {t('lesenLink')}
-        </Button>
-      ) : null}
       <Typography variant="body2" color="text.secondary">
         {t('source', {
           publisher: source.publisher,

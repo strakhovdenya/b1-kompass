@@ -312,10 +312,11 @@ test('short attempt gets scoped server result', async ({ page }) => {
   expect(html).not.toContain('review-solution');
   expect(html).not.toContain('correctOptionId');
 
-  await page.getByRole('button', { name: 'Finish practice' }).click();
+  await page.getByTestId('finish-attempt').click();
+  await page.getByTestId('finish-confirm').click();
   const review = page.getByTestId('attempt-review');
   await expect(review).toBeVisible();
-  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50%)');
+  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50.0%)');
   await expect(page.getByTestId('result-counts')).toHaveText(
     'Right: 2 · Wrong: 1 · Skipped: 1',
   );
@@ -352,7 +353,7 @@ test('short attempt gets scoped server result', async ({ page }) => {
 
   // The stored result is what the page shows after a reload.
   await page.reload();
-  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50%)');
+  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50.0%)');
   expect(await readAttempts(session.id)).toHaveLength(1);
   expect(await storedResults(attempt.id)).toHaveLength(1);
 });
@@ -600,8 +601,9 @@ test('empty short attempt finishes as all skipped', async ({ page }) => {
   expect(await readAnswers(attempt.id)).toEqual({});
   await expect(page.getByTestId('set-answered')).toContainText('Answered: 0 of 4');
 
-  await page.getByRole('button', { name: 'Finish practice' }).click();
-  await expect(page.getByTestId('result-score')).toHaveText('0 of 4 points (0%)');
+  await page.getByTestId('finish-attempt').click();
+  await page.getByTestId('finish-confirm').click();
+  await expect(page.getByTestId('result-score')).toHaveText('0 of 4 points (0.0%)');
   await expect(page.getByTestId('result-counts')).toHaveText(
     'Right: 0 · Wrong: 0 · Skipped: 4',
   );

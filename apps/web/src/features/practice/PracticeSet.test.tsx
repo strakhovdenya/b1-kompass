@@ -27,9 +27,7 @@ const render = () =>
         attemptId="00000000-0000-4000-8000-000000000000"
         questions={questions}
         initialSelections={{ 'hoeren-2': 'a' }}
-        initialReview={null}
         saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
-        finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
       />
     </NextIntlClientProvider>,
   );
@@ -42,7 +40,7 @@ describe('PracticeSet', () => {
     expect(html).toContain('Question 1 of 2');
     expect(html).toContain('Answered: 1 of 2');
     expect(html).toContain('aria-current="step"');
-    expect(html).toContain('Finish practice');
+    expect(html).not.toContain('data-testid="finish-attempt"');
   });
 
   it('has no review before completion', () => {

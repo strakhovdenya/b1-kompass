@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it } from 'vitest';
 import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
+import ruMessages from '../../../messages/ru.json';
 import { AttemptReviewView } from './AttemptReviewView';
 
 const question = (id: string, number: number): ExamQuestion => ({
@@ -49,9 +50,12 @@ const review: AttemptReview = {
   ],
 };
 
-const render = (value: AttemptReview) =>
+const render = (value: AttemptReview, locale = 'en') =>
   renderToStaticMarkup(
-    <NextIntlClientProvider locale="en" messages={messages}>
+    <NextIntlClientProvider
+      locale={locale}
+      messages={locale === 'ru' ? ruMessages : messages}
+    >
       <AttemptReviewView review={value} questions={questions} />
     </NextIntlClientProvider>,
   );
@@ -59,7 +63,7 @@ const render = (value: AttemptReview) =>
 describe('AttemptReviewView', () => {
   it('shows points, counts and the scope note instead of a level', () => {
     const html = render(review);
-    expect(html).toContain('1 of 2 points (50%)');
+    expect(html).toContain('1 of 2 points (50.0%)');
     expect(html).toContain('Right: 1 · Wrong: 0 · Skipped: 1');
     expect(html).toContain('not an official DTZ level');
     expect(html).toContain('data-outcome="correct"');
@@ -78,5 +82,75 @@ describe('AttemptReviewView', () => {
     expect(render({ ...review, showsLevel: true })).not.toContain(
       'data-testid="result-scope"',
     );
+  });
+
+  const full: AttemptReview = {
+    ...review,
+    scope: 'full-exam',
+    showsLevel: true,
+    score: 33,
+    maxScore: 45,
+    percent: 73.3,
+    skills: {
+      hoeren: { score: 15, maxScore: 20 },
+      lesen: { score: 18, maxScore: 25 },
+    },
+    level: 'B1',
+  };
+
+  it('shows the stored totals per skill, the level and a localized percent', () => {
+    const html = render(full);
+    expect(html).toContain('33 of 45 points (73.3%)');
+    expect(html).toContain('Hören: 15 of 20 points');
+    expect(html).toContain('Lesen: 18 of 25 points');
+    expect(html).toContain('Level: B1');
+    expect(html).not.toContain('data-testid="result-scope"');
+    const ru = render(full, 'ru');
+    expect(ru).toContain('73,3');
+    expect(ru).toContain('Уровень: B1');
+  });
+
+  it('lists only the tasks of the requested block', () => {
+    const lesen = { ...question('lesen-1', 1), skill: 'lesen' as const };
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AttemptReviewView
+          review={{
+            ...review,
+            items: [
+              ...review.items,
+              {
+                questionId: 'lesen-1',
+                selectedOptionId: null,
+                correctOptionId: 'a',
+                outcome: 'skipped',
+              },
+            ],
+          }}
+          questions={[...questions, lesen]}
+          block="lesen"
+        />
+      </NextIntlClientProvider>,
+    );
+    expect(html.match(/data-testid="review-item"/g)).toHaveLength(1);
+    expect(html).toContain('data-question-id="lesen-1"');
+  });
+
+  it('escapes a script in the task text and in the options', () => {
+    const hostile: ExamQuestion = {
+      ...question('hoeren-1', 1),
+      prompt: '<script>window.__xss=1</script>',
+      options: [
+        { id: 'a', text: '<script>alert(1)</script>' },
+        { id: 'b', text: 'Zweite' },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AttemptReviewView review={review} questions={[hostile]} />
+      </NextIntlClientProvider>,
+    );
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;window.__xss=1&lt;/script&gt;');
   });
 });

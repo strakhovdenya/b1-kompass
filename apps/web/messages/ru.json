@@ -22,8 +22,7 @@
       "lesen": "Lesen"
     },
     "unavailable": "Тренировка сейчас недоступна. Попробуйте позже.",
-    "source": "Источник: {publisher}, {title}, страница {page}",
-    "lesenLink": "Перейти к Lesen (чтение)"
+    "source": "Источник: {publisher}, {title}, страница {page}"
   },
   "save": {
     "idle": "Выберите один ответ.",
@@ -63,14 +62,11 @@
     "goTo": "{count, plural, one {Перейти к вопросу {number}} other {Перейти к вопросам {number}}}",
     "previous": "Назад",
     "next": "Далее",
-    "answered": "Отвечено: {answered} из {total}. Вопросы без ответа считаются пропущенными.",
-    "finish": "Завершить тренировку",
-    "finishing": "Проверка…",
-    "finishError": "Тренировка не завершена. Ответы сохранены. Попробуйте ещё раз."
+    "answered": "Отвечено: {answered} из {total}. Вопросы без ответа считаются пропущенными."
   },
   "results": {
-    "title": "Результат короткой тренировки",
-    "score": "{score} из {maxScore} баллов ({percent}%)",
+    "title": "Результат",
+    "score": "{score} из {maxScore} баллов ({percent})",
     "counts": "Верно: {right} · Неверно: {wrong} · Пропущено: {skipped}",
     "noLevel": "Это короткая тренировка из нескольких заданий. Её баллы не являются официальным уровнем DTZ.",
     "outcome": {
@@ -80,10 +76,33 @@
     },
     "yourAnswer": "Ваш ответ:",
     "noAnswer": "нет ответа",
-    "solution": "Правильный ответ:"
+    "solution": "Правильный ответ:",
+    "skill": {
+      "hoeren": "Hören: {score} из {maxScore} баллов",
+      "lesen": "Lesen: {score} из {maxScore} баллов"
+    },
+    "level": "Уровень: {level}",
+    "levelName": {
+      "belowA2": "ниже A2",
+      "a2": "A2",
+      "b1": "B1"
+    }
   },
   "error": {
     "message": "Что-то пошло не так. Сохранённые ответы не потеряны.",
     "retry": "Повторить"
+  },
+  "training": {
+    "blocks": "Части экзамена",
+    "hoeren": "Hören (аудирование)",
+    "lesen": "Lesen (чтение)",
+    "finish": "Завершить попытку",
+    "finishing": "Проверка…",
+    "finishError": "Попытка не завершена. Ответы сохранены. Попробуйте ещё раз.",
+    "confirmTitle": "Есть задания без ответа",
+    "confirmBody": "Без ответа: Hören {hoeren}, Lesen {lesen}. Задания без ответа считаются пропущенными, ответить на них после завершения нельзя.",
+    "confirm": "Всё равно завершить",
+    "cancel": "Вернуться к заданиям",
+    "answered": "Всего отвечено: {answered} из {total}."
   }
 }

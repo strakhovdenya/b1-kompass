@@ -49,18 +49,15 @@ describe('HoerenSingleScreen', () => {
         <HoerenSingleScreen
           attemptId="00000000-0000-4000-8000-000000000000"
           questions={questions}
-          trackIds={['track-127']}
           initialSelections={{}}
-          initialReview={null}
-          resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
           saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
-          finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
         />
       </NextIntlClientProvider>,
     );
     expect(html).toContain('Question 1 of 2');
     expect(html).toContain('Frage h1?');
-    expect(html).toContain('data-testid="audio-element"');
+    expect(html).not.toContain('data-testid="audio-element"');
+    expect(html).not.toContain('Finish');
   });
 });
 
@@ -118,12 +115,8 @@ describe('HoerenSingleScreen with a pair', () => {
           attemptId="00000000-0000-4000-8000-000000000000"
           questions={questions}
           groups={[pair]}
-          trackIds={['track-127']}
           initialSelections={initial}
-          initialReview={null}
-          resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
           saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
-          finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
         />
       </NextIntlClientProvider>,
     );

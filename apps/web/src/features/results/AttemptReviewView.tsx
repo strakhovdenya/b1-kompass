@@ -1,6 +1,6 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Divider from '@mui/material/Divider';
 import Paper from '@mui/material/Paper';
@@ -8,15 +8,34 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type {
   AttemptReview,
+  DtzLevel,
   ExamQuestion,
   QuestionOutcome,
   ReviewItem,
 } from '@b1k/domain';
 
+export type ReviewBlock = 'hoeren' | 'lesen';
+
 interface AttemptReviewViewProps {
   review: AttemptReview;
   questions: readonly ExamQuestion[];
+  // Only the tasks of this block are listed; the totals are always shown.
+  block?: ReviewBlock;
 }
+
+const LEVEL_KEY: Readonly<Record<DtzLevel, string>> = {
+  'below-A2': 'belowA2',
+  A2: 'a2',
+  B1: 'b1',
+};
+
+// The stored percent has one decimal; only its notation follows the locale.
+const formatPercent = (locale: string, percent: number): string =>
+  new Intl.NumberFormat(locale, {
+    style: 'percent',
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(percent / 100);
 
 const OUTCOME_MARK: Readonly<Record<QuestionOutcome, string>> = {
   correct: '✓',
@@ -41,13 +60,17 @@ const OUTCOME_COLOR: Readonly<Record<QuestionOutcome, string>> = {
 const optionText = (question: ExamQuestion, optionId: string): string =>
   question.options.find((option) => option.id === optionId)?.text ?? '';
 
-// Server result of a completed attempt. The short set gets points and the
-// per-task review only; an official level is never shown for it.
+// Server result of a completed attempt, shown as stored. The full exam shows
+// the totals per skill and the level; the short set gets points and the
+// per-task review only, an official level is never shown for it.
 export const AttemptReviewView = ({
   review,
   questions,
+  block,
 }: AttemptReviewViewProps) => {
   const t = useTranslations('results');
+  const locale = useLocale();
+  const { skills } = review;
   const byId = new Map(questions.map((question) => [question.id, question]));
 
   return (
@@ -66,9 +89,31 @@ export const AttemptReviewView = ({
           {t('score', {
             score: review.score,
             maxScore: review.maxScore,
-            percent: review.percent,
+            percent: formatPercent(locale, review.percent),
           })}
         </Typography>
+        {skills ? (
+          <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 0 }}>
+            {(['hoeren', 'lesen'] as const).map((skill) => {
+              const { score, maxScore } = skills[skill];
+              return (
+                <Typography
+                  key={skill}
+                  component="li"
+                  sx={{ listStyle: 'none' }}
+                  data-testid={`result-${skill}`}
+                >
+                  {t(`skill.${skill}`, { score, maxScore })}
+                </Typography>
+              );
+            })}
+          </Stack>
+        ) : null}
+        {review.level ? (
+          <Typography data-testid="result-level" sx={{ fontWeight: 600 }}>
+            {t('level', { level: t(`levelName.${LEVEL_KEY[review.level]}`) })}
+          </Typography>
+        ) : null}
         <Typography data-testid="result-counts">
           {t('counts', {
             right: review.correct,
@@ -89,7 +134,8 @@ export const AttemptReviewView = ({
         >
           {review.items.map((item) => {
             const question = byId.get(item.questionId);
-            return question ? (
+            const isShown = question && (!block || question.skill === block);
+            return question && isShown ? (
               <ReviewEntry
                 key={item.questionId}
                 item={item}
