@@ -46,12 +46,7 @@ describe('HoerenSingleScreen', () => {
   it('renders the first question and the count of Teil 1–2 only', () => {
     const html = renderToStaticMarkup(
       <NextIntlClientProvider locale="en" messages={messages}>
-        <HoerenSingleScreen
-          attemptId="00000000-0000-4000-8000-000000000000"
-          questions={questions}
-          initialSelections={{}}
-          saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
-        />
+        <HoerenSingleScreen questions={questions} initialSelections={{}} />
       </NextIntlClientProvider>,
     );
     expect(html).toContain('Question 1 of 2');
@@ -112,11 +107,9 @@ describe('HoerenSingleScreen with a pair', () => {
     renderToStaticMarkup(
       <NextIntlClientProvider locale="en" messages={messages}>
         <HoerenSingleScreen
-          attemptId="00000000-0000-4000-8000-000000000000"
           questions={questions}
           groups={[pair]}
           initialSelections={initial}
-          saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
         />
       </NextIntlClientProvider>,
     );

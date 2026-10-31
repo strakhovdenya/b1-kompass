@@ -106,6 +106,7 @@ const guestWith = async (answers: Record<string, string>) => {
       attemptId,
       questionId,
       optionId,
+      revision: 1,
     });
     expect(saved.ok).toBe(true);
   }
@@ -372,6 +373,7 @@ test('duplicate finish and late save cannot change result', async () => {
       attemptId: guest.attemptId,
       questionId: 'hoeren-3',
       optionId: 'b',
+      revision: 1,
     }),
   ]);
   const reviews = raced.slice(0, 2).map((result) => {
@@ -403,6 +405,7 @@ test('duplicate finish and late save cannot change result', async () => {
     attemptId: guest.attemptId,
     questionId: 'hoeren-2',
     optionId: 'a',
+    revision: 2,
   });
   expect(late).toEqual({ ok: false, error: 'attempt-not-found' });
   const again = await finish();

@@ -81,6 +81,7 @@ const guestWithAnswer = async (optionId: string) => {
     attemptId: practice.attemptId,
     questionId: firstQuestion(practice).id,
     optionId,
+    revision: 1,
   });
   expect(saved.ok).toBe(true);
   return { ...created, attemptId: practice.attemptId };
@@ -239,6 +240,7 @@ test('authorized guest reads and saves scoped attempt', async () => {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
     optionId: 'b',
+    revision: 1,
   });
   expect(saved).toMatchObject({ ok: true, questionId: 'hoeren-1', optionId: 'b' });
   expect(await readAnswers(practice.attemptId)).toEqual({ 'hoeren-1': 'b' });
@@ -255,6 +257,7 @@ test('authorized guest reads and saves scoped attempt', async () => {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
     optionId: 'x',
+    revision: 2,
   });
   expect(notAnOption).toEqual({ ok: false, error: 'option-not-allowed' });
   expect(await readAnswers(practice.attemptId)).toEqual({ 'hoeren-1': 'b' });
@@ -266,7 +269,12 @@ test('denies foreign attempt secret and direct API mutations', async ({
   const owner = await guestWithAnswer('a');
   const stranger = await guestWithAnswer('b');
   const anon = createPublicClient();
-  const valid = { attemptId: owner.attemptId, questionId: 'hoeren-1', optionId: 'c' };
+  const valid = {
+    attemptId: owner.attemptId,
+    questionId: 'hoeren-1',
+    optionId: 'c',
+    revision: 2,
+  };
   const ownerAnswerStays = async () =>
     expect(await readAnswers(owner.attemptId)).toEqual({ 'hoeren-1': 'a' });
 
@@ -313,6 +321,7 @@ test('denies foreign attempt secret and direct API mutations', async ({
       p_attempt_id: owner.attemptId,
       p_question_id: 'hoeren-1',
       p_option_id: 'c',
+      p_revision: 2,
       p_now: new Date().toISOString(),
     });
     expect(rpc.error).not.toBeNull();
@@ -422,6 +431,7 @@ test('guest expiry remains fixed before deadline', async () => {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
     optionId: 'b',
+    revision: 1,
   });
   expect(saved.ok).toBe(true);
 
@@ -443,6 +453,7 @@ test('rejects guest at expiry boundary', async () => {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
     optionId: 'a',
+    revision: 1,
   });
   const atExpiry = depsAt(created.guest.expiresAt);
 
@@ -452,6 +463,7 @@ test('rejects guest at expiry boundary', async () => {
       attemptId: practice.attemptId,
       questionId: 'hoeren-1',
       optionId: 'b',
+      revision: 2,
     }),
   ).toEqual({ ok: false, error: 'session-invalid' });
 
@@ -469,6 +481,7 @@ test('rejects guest at expiry boundary', async () => {
     p_attempt_id: practice.attemptId,
     p_question_id: 'hoeren-1',
     p_option_id: 'b',
+    p_revision: 2,
     p_now: created.guest.expiresAt.toISOString(),
   });
   expect(direct.error?.hint).toBe('guest_session_invalid');

@@ -48,6 +48,8 @@ export interface PracticeState {
   groups: ExamGroup[];
   texts: ExamText[];
   selections: Selections;
+  // The revision of every stored answer: the next choice continues above it.
+  revisions: Readonly<Record<string, number>>;
   trackIds: string[];
   review: AttemptReview | null;
   // Where the guest stopped; null for a new or a completed attempt.
@@ -59,6 +61,7 @@ const saveAnswerInput = z.strictObject({
   attemptId: z.uuid(),
   questionId: z.string().min(1).max(100),
   optionId: z.string().min(1).max(10),
+  revision: z.int().min(1).max(2_147_483_647),
 });
 
 const saveProgressInput = z.strictObject({
@@ -72,6 +75,7 @@ const RULE_ERRORS: Readonly<Record<string, SaveAnswerError>> = {
   guest_session_invalid: 'session-invalid',
   attempt_not_found: 'attempt-not-found',
   option_not_allowed: 'option-not-allowed',
+  revision_invalid: 'invalid-input',
 };
 
 const PROGRESS_RULE_ERRORS: Readonly<Record<string, SaveProgressError>> = {
@@ -100,7 +104,13 @@ interface AttemptRow {
 interface AnswerRow {
   question_id: string;
   option_id: string;
+  revision: number;
   updated_at: string;
+}
+
+interface StoredAnswers {
+  selections: Selections;
+  revisions: Readonly<Record<string, number>>;
 }
 
 interface ResultRow {
@@ -131,20 +141,29 @@ const RESULT_COLUMNS = [
   'level',
 ].join(', ');
 
-const readSelections = async (
+const readAnswers = async (
   deps: ServerDeps,
   attemptId: string,
-): Promise<Selections> => {
+): Promise<StoredAnswers> => {
   const { data, error } = await deps.db
     .from('attempt_answers')
-    .select('question_id, option_id, updated_at')
+    .select('question_id, option_id, revision, updated_at')
     .eq('attempt_id', attemptId)
     .returns<AnswerRow[]>();
   if (error) throw new Error('Answers lookup failed', { cause: error });
   const selections: Record<string, string> = {};
-  for (const row of data) selections[row.question_id] = row.option_id;
-  return selections;
+  const revisions: Record<string, number> = {};
+  for (const row of data) {
+    selections[row.question_id] = row.option_id;
+    revisions[row.question_id] = row.revision;
+  }
+  return { selections, revisions };
 };
+
+const readSelections = async (
+  deps: ServerDeps,
+  attemptId: string,
+): Promise<Selections> => (await readAnswers(deps, attemptId)).selections;
 
 // The owner check is part of the query: a foreign attempt is not found.
 const readOwnedAttempt = async (
@@ -366,8 +385,8 @@ export const openPractice = async (
   const scope = selectAttemptScope(material.format, material.content);
   const attempt = await openAttempt(deps, guest, version.versionId, scope);
   if (!attempt) return { status: 'session-invalid' };
-  const [selections, trackIds] = await Promise.all([
-    readSelections(deps, attempt.id),
+  const [{ selections, revisions }, trackIds] = await Promise.all([
+    readAnswers(deps, attempt.id),
     listVersionTrackIds(deps, version.versionId),
   ]);
   const review =
@@ -383,6 +402,7 @@ export const openPractice = async (
     groups: version.content.groups ?? [],
     texts: version.content.texts ?? [],
     selections,
+    revisions,
     trackIds,
     review,
     progress: review ? null : parseStoredProgress(attempt.progress),
@@ -435,6 +455,32 @@ export const saveProgress = async (
   return { ok: true, progress };
 };
 
+// The database returns the stored answer. It is this request's choice when
+// the revision and the option match: a new write or a repeat of the same
+// request. A higher stored revision means the request is stale; the same
+// revision with another option is a conflict. Neither is a confirmation;
+// both return the stored answer.
+const settleSave = (
+  stored: AnswerRow,
+  optionId: string,
+  revision: number,
+): SaveAnswerResult => {
+  const current = { optionId: stored.option_id, revision: stored.revision };
+  if (stored.revision > revision) {
+    return { ok: false, error: 'stale', ...current };
+  }
+  if (stored.option_id !== optionId) {
+    return { ok: false, error: 'conflict', ...current };
+  }
+  return {
+    ok: true,
+    questionId: stored.question_id,
+    optionId: stored.option_id,
+    revision: stored.revision,
+    savedAt: stored.updated_at,
+  };
+};
+
 export const saveAnswer = async (
   deps: ServerDeps,
   token: string | null | undefined,
@@ -444,13 +490,14 @@ export const saveAnswer = async (
   if (!parsed.success) return { ok: false, error: 'invalid-input' };
   const guest = await resolveGuestSession(deps, token);
   if (!guest) return { ok: false, error: 'session-invalid' };
-  const { attemptId, questionId, optionId } = parsed.data;
+  const { attemptId, questionId, optionId, revision } = parsed.data;
   const { data, error } = await deps.db
     .rpc('save_attempt_answer', {
       p_session_id: guest.sessionId,
       p_attempt_id: attemptId,
       p_question_id: questionId,
       p_option_id: optionId,
+      p_revision: revision,
       p_now: deps.clock.now().toISOString(),
     })
     .single<AnswerRow>();
@@ -461,12 +508,7 @@ export const saveAnswer = async (
     console.error({ error });
     return { ok: false, error: 'unavailable' };
   }
-  return {
-    ok: true,
-    questionId: data.question_id,
-    optionId: data.option_id,
-    savedAt: data.updated_at,
-  };
+  return settleSave(data, optionId, revision);
 };
 
 type FinishRound =

@@ -146,6 +146,7 @@ const seed = async (
       attemptId,
       questionId: question.id,
       optionId,
+      revision: 1,
     });
     if (!saved.ok) throw new Error(`seed ${question.id}: ${saved.error}`);
   }
@@ -470,6 +471,7 @@ test('active or foreign review remains private', async ({
       ...foreignInput,
       questionId: 'hoeren-1',
       optionId: 'c',
+      revision: 1,
     }),
   ];
   for (const foreign of foreignResults) {
@@ -515,12 +517,14 @@ test('completed attempt refuses block changes', async ({ browser }) => {
     attemptId: attempt.id,
     questionId: 'hoeren-1',
     optionId: 'c',
+    revision: 2,
   });
   expect(changed.ok).toBe(false);
   const added = await saveAnswer(depsNow(), attempt.token, {
     attemptId: attempt.id,
     questionId: 'hoeren-20',
     optionId: 'a',
+    revision: 2,
   });
   expect(added.ok).toBe(false);
   expect(await readAnswers(attempt.id)).toEqual(stored);

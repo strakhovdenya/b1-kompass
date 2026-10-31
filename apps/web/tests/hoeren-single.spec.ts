@@ -247,7 +247,12 @@ test('single answer refuses unknown question and invalid option', async () => {
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const { attemptId } = opened.practice;
   const save = (questionId: string, optionId: string) =>
-    saveAnswer(depsNow(), created.token, { attemptId, questionId, optionId });
+    saveAnswer(depsNow(), created.token, {
+      attemptId,
+      questionId,
+      optionId,
+      revision: 1,
+    });
 
   expect((await save('hoeren-1', 'b')).ok).toBe(true);
   expect((await save('hoeren-2', 'a')).ok).toBe(true);

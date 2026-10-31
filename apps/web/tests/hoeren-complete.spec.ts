@@ -243,6 +243,7 @@ test('unknown shared pool option is refused without change', async ({
     attemptId: attempt.id,
     questionId: 'hoeren-19',
     optionId: 'z',
+    revision: 1,
   });
   expect(refused).toEqual({ ok: false, error: 'option-not-allowed' });
   expect(await readAnswers(attempt.id)).toEqual(before);

@@ -56,9 +56,11 @@ const render = (initialReview: AttemptReview | null) =>
         questions={questions}
         trackIds={['track-1']}
         initialSelections={{ 'hoeren-1': 'a' }}
+        initialRevisions={{ 'hoeren-1': 1 }}
         initialReview={initialReview}
         initialProgress={null}
         resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
+        saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
         finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
         saveProgress={async () => ({ ok: false, error: 'unavailable' })}
       >

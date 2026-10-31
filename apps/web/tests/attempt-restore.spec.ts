@@ -195,6 +195,7 @@ const seedAnswers = async (token: string, attemptId: string) => {
       attemptId,
       questionId,
       optionId: keyOf(questionId),
+      revision: 1,
     });
     if (!saved.ok) throw new Error(`seed ${questionId}: ${saved.error}`);
   }

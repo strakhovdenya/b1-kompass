@@ -1,6 +1,5 @@
 'use client';
 
-import { useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -12,80 +11,35 @@ import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { ExamQuestion, SaveAnswerResult } from '@b1k/domain';
+import type { ExamQuestion } from '@b1k/domain';
 
+// 'error' can be retried; 'refused' cannot be saved any more (the attempt is
+// no longer active).
 export type SaveStatus =
-  'idle' | 'saving' | 'saved' | 'error' | 'session-invalid';
-
-export interface SaveAnswerInput {
-  attemptId: string;
-  questionId: string;
-  optionId: string;
-}
+  'idle' | 'saving' | 'saved' | 'error' | 'refused' | 'session-invalid';
 
 interface QuestionCardProps {
-  attemptId: string;
   question: ExamQuestion;
-  initialOptionId: string | null;
-  initialStatus?: SaveStatus;
-  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
-  onSettled?: (
-    questionId: string,
-    optionId: string,
-    status: SaveStatus,
-  ) => void;
-  onStatusChange?: (status: SaveStatus) => void;
+  // The choice on screen: the unconfirmed one if there is one, otherwise the
+  // answer the server confirmed.
+  selectedOptionId: string | null;
+  // Without a status the selected answer is a confirmed one.
+  status?: SaveStatus;
+  onChoose: (optionId: string) => void;
+  onRetry?: () => void;
 }
 
+// One task with its options and the save state of its answer. The answer
+// itself is kept and saved by the training shell, in the order of choices.
 export const QuestionCard = ({
-  attemptId,
   question,
-  initialOptionId,
-  initialStatus,
-  saveAnswer,
-  onSettled,
-  onStatusChange,
+  selectedOptionId,
+  status,
+  onChoose,
+  onRetry,
 }: QuestionCardProps) => {
   const t = useTranslations();
-  const [selected, setSelected] = useState(initialOptionId);
-  const [status, setStatus] = useState<SaveStatus>(
-    initialStatus ?? (initialOptionId ? 'saved' : 'idle'),
-  );
-  const requestSeq = useRef(0);
-
-  const changeStatus = (next: SaveStatus) => {
-    setStatus(next);
-    onStatusChange?.(next);
-  };
-
-  const submit = async (optionId: string) => {
-    const seq = ++requestSeq.current;
-    changeStatus('saving');
-    let result: SaveAnswerResult;
-    try {
-      result = await saveAnswer({
-        attemptId,
-        questionId: question.id,
-        optionId,
-      });
-    } catch (error) {
-      console.error({ error });
-      result = { ok: false, error: 'unavailable' };
-    }
-    if (seq !== requestSeq.current) return;
-    let settled: SaveStatus = 'error';
-    if (result.ok && result.optionId === optionId) settled = 'saved';
-    else if (!result.ok && result.error === 'session-invalid') {
-      settled = 'session-invalid';
-    }
-    changeStatus(settled);
-    onSettled?.(question.id, optionId, settled);
-  };
-
-  const handleChange = (optionId: string) => {
-    setSelected(optionId);
-    void submit(optionId);
-  };
+  const shownStatus = status ?? (selectedOptionId ? 'saved' : 'idle');
 
   const labelId = `question-${question.id}`;
 
@@ -113,8 +67,8 @@ export const QuestionCard = ({
           <RadioGroup
             aria-labelledby={labelId}
             name={labelId}
-            value={selected ?? ''}
-            onChange={(event) => handleChange(event.target.value)}
+            value={selectedOptionId ?? ''}
+            onChange={(event) => onChoose(event.target.value)}
           >
             {question.options.map((option) => (
               <FormControlLabel
@@ -130,10 +84,7 @@ export const QuestionCard = ({
             ))}
           </RadioGroup>
         </FormControl>
-        <SaveStatusLine
-          status={status}
-          onRetry={selected ? () => void submit(selected) : null}
-        />
+        <SaveStatusLine status={shownStatus} onRetry={onRetry ?? null} />
       </Stack>
     </Paper>
   );
@@ -162,6 +113,18 @@ const SaveStatusLine = ({ status, onRetry }: SaveStatusLineProps) => {
         }
       >
         {t('error')}
+      </Alert>
+    );
+  }
+  if (status === 'refused') {
+    return (
+      <Alert
+        severity="error"
+        role="alert"
+        data-testid="save-status"
+        data-status={status}
+      >
+        {t('refused')}
       </Alert>
     );
   }

@@ -3,7 +3,6 @@ import { getTranslations } from 'next-intl/server';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { HoerenSingleScreen } from '../../features/hoeren/HoerenSingleScreen';
-import { saveAnswerAction } from '../../server/next/actions';
 import { getOpenedPractice } from '../../server/attempts/opened';
 import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
@@ -33,11 +32,9 @@ const PracticePage = async () => {
         {practice.examTitle}
       </Typography>
       <HoerenSingleScreen
-        attemptId={practice.attemptId}
         questions={practice.questions}
         groups={practice.groups}
         initialSelections={practice.selections}
-        saveAnswer={saveAnswerAction}
       />
       <Typography variant="body2" color="text.secondary">
         {t('source', {

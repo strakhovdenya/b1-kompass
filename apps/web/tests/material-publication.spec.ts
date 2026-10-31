@@ -311,6 +311,7 @@ test('published correction never mutates active pinned version', async () => {
     attemptId: first.attemptId,
     questionId: 'hoeren-2',
     optionId: 'b',
+    revision: 1,
   });
   expect(saved.ok).toBe(true);
   const storedBefore = await storedVersion(original.versionId);
@@ -356,6 +357,7 @@ test('finished attempt does not pin guest to old version', async () => {
     attemptId: first.attemptId,
     questionId: 'hoeren-1',
     optionId: 'c',
+    revision: 1,
   });
   const finished = await finishAttempt(depsNow(), guest.token, {
     attemptId: first.attemptId,

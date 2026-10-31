@@ -29,6 +29,7 @@
     "saving": "Saving…",
     "saved": "Saved",
     "error": "Your answer was not saved. Your choice is still selected.",
+    "refused": "This answer cannot be saved because the attempt is no longer open. Reload the page.",
     "retry": "Try again",
     "sessionInvalid": "Your guest session has ended. Start a new guest session to continue."
   },
@@ -98,6 +99,7 @@
     "lesen": "Lesen (reading)",
     "finish": "Finish attempt",
     "finishing": "Checking…",
+    "unsaved": "Not every answer is saved yet (Hören: {hoeren}, Lesen: {lesen}). Retry saving them before you finish; the attempt was not finished.",
     "finishError": "The attempt was not finished. Your answers are kept. Please try again.",
     "confirmTitle": "Some tasks are unanswered",
     "confirmBody": "Unanswered: Hören {hoeren}, Lesen {lesen}. Unanswered tasks count as skipped and cannot be answered afterwards.",

@@ -15,6 +15,7 @@ import type {
   AttemptReview,
   ExamQuestion,
   FinishAttemptResult,
+  SaveAnswerResult,
   SaveProgressResult,
   Selections,
 } from '@b1k/domain';
@@ -22,6 +23,8 @@ import { AudioPlayer } from '../audio/AudioPlayer';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
 import type { ReviewBlock } from '../results/AttemptReviewView';
+import { hasSaving, hasUnsaved, isUnsaved, useAnswerStore } from './answers';
+import type { PendingAnswers, SaveAnswerInput } from './answers';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
 
@@ -39,7 +42,7 @@ export interface SaveProgressInput {
   progress: AttemptProgress;
 }
 
-type FinishStatus = 'idle' | 'confirming' | 'finishing' | 'error';
+type FinishStatus = 'idle' | 'confirming' | 'finishing' | 'unsaved' | 'error';
 
 const LESEN_PATH = '/practice/lesen';
 
@@ -56,9 +59,11 @@ interface TrainingShellProps {
   questions: readonly ExamQuestion[];
   trackIds: readonly string[];
   initialSelections: Selections;
+  initialRevisions: Readonly<Record<string, number>>;
   initialReview: AttemptReview | null;
   initialProgress: AttemptProgress | null;
   resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
+  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
   saveProgress: (input: SaveProgressInput) => Promise<SaveProgressResult>;
   children: ReactNode;
@@ -74,32 +79,64 @@ const countUnanswered = (
       question.skill === block && !Object.hasOwn(selections, question.id),
   ).length;
 
+const countUnsaved = (
+  questions: readonly ExamQuestion[],
+  pending: PendingAnswers,
+  block: ReviewBlock,
+): number =>
+  questions.filter((question) => {
+    const entry = Object.hasOwn(pending, question.id)
+      ? pending[question.id]
+      : undefined;
+    return question.skill === block && entry !== undefined && isUnsaved(entry);
+  }).length;
+
 // The frame of one attempt around the Hören and Lesen pages. It stays mounted
 // when the guest moves between the blocks, so the recording keeps playing and
-// the answers confirmed by the server stay known. It owns the single finish
-// point: the server computes the result, the shell only shows what it returns.
+// the answers stay known: the confirmed ones and the choices the server has
+// not confirmed yet, whichever block they belong to. It owns the single
+// finish point: while a choice is unconfirmed nothing is finished, and the
+// server computes the result, the shell only shows what it returns.
 export const TrainingShell = ({
   attemptId,
   questions,
   trackIds,
   initialSelections,
+  initialRevisions,
   initialReview,
   initialProgress,
   resolveAudio,
+  saveAnswer,
   finishAttempt,
   saveProgress,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
   const pathname = usePathname();
-  const [selections, setSelections] = useState<Selections>(initialSelections);
+  const {
+    selections,
+    pending,
+    readPending,
+    retry,
+    choose: chooseAnswer,
+  } = useAnswerStore({
+    attemptId,
+    initialSelections,
+    initialRevisions,
+    saveAnswer,
+  });
   const [review, setReview] = useState(initialReview);
-  const [isSaving, setIsSaving] = useState(false);
   const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
-
-  const recordAnswer = useCallback((questionId: string, optionId: string) => {
-    setSelections((current) => ({ ...current, [questionId]: optionId }));
-  }, []);
+  const isSaving = hasSaving(pending);
+  // Once the finish request is sent no answer is changed: the server scores
+  // the answers it holds at that moment.
+  const isFinishing = useRef(false);
+  const choose = useCallback(
+    (questionId: string, optionId: string) => {
+      if (!isFinishing.current) chooseAnswer(questionId, optionId);
+    },
+    [chooseAnswer],
+  );
 
   const current: ReviewBlock = pathname.startsWith(LESEN_PATH)
     ? 'lesen'
@@ -185,13 +222,14 @@ export const TrainingShell = ({
   const state: TrainingState = useMemo(
     () => ({
       selections,
+      pending,
       review,
-      recordAnswer,
-      setSaving: setIsSaving,
+      choose,
+      retry,
       readProgress,
       reportProgress,
     }),
-    [selections, review, recordAnswer, readProgress, reportProgress],
+    [selections, pending, review, choose, retry, readProgress, reportProgress],
   );
 
   const blocks = BLOCKS.filter(({ block }) =>
@@ -202,8 +240,20 @@ export const TrainingShell = ({
     lesen: countUnanswered(questions, selections, 'lesen'),
   };
   const hasUnanswered = unanswered.hoeren + unanswered.lesen > 0;
+  const unsaved = {
+    hoeren: countUnsaved(questions, pending, 'hoeren'),
+    lesen: countUnsaved(questions, pending, 'lesen'),
+  };
+  const isUnsavedLeft = hasUnsaved(pending);
 
+  // An unconfirmed choice would be missing from the stored answers the
+  // server scores, so the attempt is not finished until it is saved.
   const finish = async () => {
+    if (hasUnsaved(readPending())) {
+      setFinishStatus('unsaved');
+      return;
+    }
+    isFinishing.current = true;
     setFinishStatus('finishing');
     let result: FinishAttemptResult;
     try {
@@ -218,11 +268,15 @@ export const TrainingShell = ({
     if (result.ok) {
       isDone.current = true;
       setReview(result.review);
-    } else setFinishStatus('error');
+      return;
+    }
+    isFinishing.current = false;
+    setFinishStatus('error');
   };
 
   const requestFinish = () => {
-    if (hasUnanswered) setFinishStatus('confirming');
+    if (isUnsavedLeft) setFinishStatus('unsaved');
+    else if (hasUnanswered) setFinishStatus('confirming');
     else void finish();
   };
 
@@ -337,6 +391,17 @@ export const TrainingShell = ({
                 {finishStatus === 'finishing' ? t('finishing') : t('finish')}
               </Button>
             )}
+            {finishStatus === 'unsaved' && isUnsavedLeft ? (
+              <Alert
+                severity="warning"
+                role="alert"
+                data-testid="finish-unsaved"
+                data-unsaved-hoeren={unsaved.hoeren}
+                data-unsaved-lesen={unsaved.lesen}
+              >
+                {t('unsaved', unsaved)}
+              </Alert>
+            ) : null}
             {finishStatus === 'error' ? (
               <Alert severity="error" role="alert" data-testid="finish-status">
                 {t('finishError')}

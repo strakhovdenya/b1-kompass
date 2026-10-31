@@ -127,6 +127,7 @@ const saveAll = async (
       attemptId,
       questionId,
       optionId,
+      revision: 1,
     });
     expect(saved.ok, questionId).toBe(true);
   }
@@ -255,6 +256,7 @@ test('client score and duplicate finish cannot forge result', async () => {
     attemptId,
     questionId: 'hoeren-1',
     optionId: 'a',
+    revision: 1,
     scope: 'full-exam',
   });
   expect(forgedSave).toEqual({ ok: false, error: 'invalid-input' });
