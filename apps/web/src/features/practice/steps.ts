@@ -8,9 +8,10 @@ export interface PracticeStep {
   group: ExamGroup | null;
 }
 
-// Questions keep their order; the members of a pair form one step at the place
-// of the first member. A group with a member outside `questions` is ignored,
-// so its members stay single steps.
+// Questions keep their order; the members of a group form one step at the
+// place of the first member. A pair with a member outside `questions` is
+// ignored, so its members stay single steps. A shared set is kept with the
+// members that exist: the screen of the set reports the missing ones.
 export const buildSteps = (
   questions: readonly ExamQuestion[],
   groups: readonly ExamGroup[],
@@ -18,8 +19,9 @@ export const buildSteps = (
   const byId = new Map(questions.map((question) => [question.id, question]));
   const groupOf = new Map<string, ExamGroup>();
   for (const group of groups) {
-    if (group.kind !== 'pair') continue;
-    if (!group.questionIds.every((id) => byId.has(id))) continue;
+    if (group.kind !== 'pair' && group.kind !== 'shared-set') continue;
+    const isComplete = group.questionIds.every((id) => byId.has(id));
+    if (group.kind === 'pair' && !isComplete) continue;
     for (const id of group.questionIds) groupOf.set(id, group);
   }
   const steps: PracticeStep[] = [];

@@ -93,7 +93,7 @@ describe('selectQuestions', () => {
     }
   });
 
-  it('does not show the members of a shared set', () => {
+  it('adds the members of the Teil 4 shared set', () => {
     const shared: ExamGroup = {
       id: 'set-4',
       kind: 'shared-set',
@@ -106,7 +106,7 @@ describe('selectQuestions', () => {
       questionIds: ['h5'],
     };
     const ids = selectQuestions(questions, [shared]).map((item) => item.id);
-    expect(ids).toEqual(['h1', 'h2']);
+    expect(ids).toEqual(['h1', 'h2', 'h5']);
   });
 });
 

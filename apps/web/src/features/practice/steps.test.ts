@@ -55,3 +55,29 @@ describe('buildSteps', () => {
     expect(keysOf(steps)).toEqual([['q1'], ['q2'], ['q3'], ['q4']]);
   });
 });
+
+describe('buildSteps with a shared set', () => {
+  const shared = (questionIds: string[]): ExamGroup => ({
+    id: 's',
+    kind: 'shared-set',
+    teil: 4,
+    trackId: 'track',
+    options: [
+      { id: 'a', text: 'Erste' },
+      { id: 'b', text: 'Zweite' },
+    ],
+    questionIds,
+  });
+
+  it('joins all members of the set into one step', () => {
+    const steps = buildSteps(questions, [shared(['q2', 'q3', 'q4'])]);
+    expect(keysOf(steps)).toEqual([['q1'], ['q2', 'q3', 'q4']]);
+    expect(steps[1]?.group?.kind).toBe('shared-set');
+  });
+
+  it('keeps the members that exist when the set names a missing one', () => {
+    const steps = buildSteps(questions, [shared(['q3', 'missing'])]);
+    expect(keysOf(steps)).toEqual([['q1'], ['q2'], ['q3'], ['q4']]);
+    expect(steps[2]?.group?.id).toBe('s');
+  });
+});

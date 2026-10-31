@@ -18,6 +18,7 @@ import { PracticeSet } from '../practice/PracticeSet';
 import type { FinishAttemptInput } from '../practice/PracticeSet';
 import type { SaveAnswerInput } from '../practice/QuestionCard';
 import { HoerenPairView } from './HoerenPairView';
+import { HoerenSharedSetView } from './HoerenSharedSetView';
 
 const SINGLE_TEILS: readonly number[] = [1, 2];
 
@@ -52,14 +53,31 @@ export const selectPairGroups = (
   );
 };
 
-// Single questions of Teil 1–2 and the members of the Teil 3 pairs, in the
-// order of the material.
+const SHARED_SET_TEIL = 4;
+
+// The Teil 4 set is kept even when the group does not fit the material: the
+// view reports it, so a broken group is never silently replaced.
+export const selectSharedSetGroups = (
+  groups: readonly ExamGroup[],
+): ExamGroup[] =>
+  groups.filter(
+    (group) => group.kind === 'shared-set' && group.teil === SHARED_SET_TEIL,
+  );
+
+// Single questions of Teil 1–2, the members of the Teil 3 pairs and of the
+// Teil 4 shared set, in the order of the material.
 export const selectQuestions = (
   questions: readonly ExamQuestion[],
   groups: readonly ExamGroup[],
 ): ExamQuestion[] => {
+  const hoerenIds = new Set(
+    questions.filter((item) => item.skill === 'hoeren').map((item) => item.id),
+  );
   const pairMembers = new Set(
-    selectPairGroups(questions, groups).flatMap((group) => group.questionIds),
+    [
+      ...selectPairGroups(questions, groups),
+      ...selectSharedSetGroups(groups),
+    ].flatMap((group) => group.questionIds.filter((id) => hoerenIds.has(id))),
   );
   const singles = new Set(
     selectSingleQuestions(questions).map((question) => question.id),
@@ -86,8 +104,8 @@ interface HoerenSingleScreenProps {
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
 }
 
-// Hören Teil 1–3: single questions and the Teil 3 pairs of the material
-// contract. The
+// Hören Teil 1–4: single questions, the Teil 3 pairs and the Teil 4 shared
+// set of the material contract. The
 // players sit beside the question set, not inside it, so moving between
 // questions or switching the language never recreates or restarts them.
 export const HoerenSingleScreen = ({
@@ -104,7 +122,10 @@ export const HoerenSingleScreen = ({
   const t = useTranslations('hoeren');
   const tPractice = useTranslations('practice');
   const shown = selectQuestions(questions, groups);
-  const shownGroups = selectPairGroups(questions, groups);
+  const shownGroups = [
+    ...selectPairGroups(questions, groups),
+    ...selectSharedSetGroups(groups),
+  ];
   if (shown.length === 0) {
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
@@ -123,13 +144,21 @@ export const HoerenSingleScreen = ({
         attemptId={attemptId}
         questions={shown}
         groups={shownGroups}
-        renderGroup={(step, cards) => (
-          <HoerenPairView
-            groupId={step.key}
-            questions={step.questions}
-            cards={cards}
-          />
-        )}
+        renderGroup={(step, cards) =>
+          step.group?.kind === 'shared-set' ? (
+            <HoerenSharedSetView
+              group={step.group}
+              questions={step.questions}
+              cards={cards}
+            />
+          ) : (
+            <HoerenPairView
+              groupId={step.key}
+              questions={step.questions}
+              cards={cards}
+            />
+          )
+        }
         initialSelections={initialSelections}
         initialReview={initialReview}
         saveAnswer={saveAnswer}

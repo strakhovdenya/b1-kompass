@@ -90,7 +90,12 @@ export const QuestionCard = ({
   const labelId = `question-${question.id}`;
 
   return (
-    <Paper component="section" variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
+    <Paper
+      component="section"
+      variant="outlined"
+      data-testid={`question-card-${question.id}`}
+      sx={{ p: { xs: 2, sm: 3 } }}
+    >
       <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           {t('practice.partial', {
