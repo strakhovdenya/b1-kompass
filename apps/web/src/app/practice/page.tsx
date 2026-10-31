@@ -3,9 +3,14 @@ import { getTranslations } from 'next-intl/server';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import { QuestionCard } from '../../features/practice/QuestionCard';
+import { AudioPlayer } from '../../features/audio/AudioPlayer';
+import { PracticeSet } from '../../features/practice/PracticeSet';
 import { openPractice } from '../../server/attempts/attempts';
-import { saveAnswerAction } from '../../server/next/actions';
+import {
+  finishAttemptAction,
+  resolveAudioAction,
+  saveAnswerAction,
+} from '../../server/next/actions';
 import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
 export const dynamic = 'force-dynamic';
@@ -21,18 +26,29 @@ const PracticePage = async () => {
   }
 
   const { practice } = opened;
-  const { question, selections, source } = practice;
+  const { source } = practice;
 
   return (
     <Stack spacing={3}>
       <Typography component="h1" variant="h5" lang="de">
         {practice.examTitle}
       </Typography>
-      <QuestionCard
+      {practice.trackIds.map((trackId) => (
+        <AudioPlayer
+          key={trackId}
+          resolveAudio={resolveAudioAction.bind(null, {
+            attemptId: practice.attemptId,
+            trackId,
+          })}
+        />
+      ))}
+      <PracticeSet
         attemptId={practice.attemptId}
-        question={question}
-        initialOptionId={selections[question.id] ?? null}
+        questions={practice.questions}
+        initialSelections={practice.selections}
+        initialReview={practice.review}
         saveAnswer={saveAnswerAction}
+        finishAttempt={finishAttemptAction}
       />
       <Typography variant="body2" color="text.secondary">
         {t('source', {

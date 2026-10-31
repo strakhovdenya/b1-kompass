@@ -31,6 +31,42 @@
     "retry": "Try again",
     "sessionInvalid": "Your guest session has ended. Start a new guest session to continue."
   },
+  "audio": {
+    "label": "Recording",
+    "play": "Play",
+    "pause": "Pause",
+    "back": "Back {seconds} s",
+    "seek": "Position in the recording",
+    "loading": "Loading the recording…",
+    "ready": "The recording is ready. Play it as often as you like.",
+    "error": "The recording could not be loaded. You can still answer, and your answers are saved.",
+    "retry": "Load again"
+  },
+  "set": {
+    "navigation": "Questions",
+    "position": "Question {current} of {total}",
+    "goTo": "Go to question {number}",
+    "previous": "Previous",
+    "next": "Next",
+    "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped.",
+    "finish": "Finish practice",
+    "finishing": "Checking…",
+    "finishError": "The practice was not finished. Your answers are kept. Please try again."
+  },
+  "results": {
+    "title": "Result of the short practice",
+    "score": "{score} of {maxScore} points ({percent}%)",
+    "counts": "Right: {right} · Wrong: {wrong} · Skipped: {skipped}",
+    "noLevel": "This is a short practice of a few tasks. Its points are not an official DTZ level.",
+    "outcome": {
+      "right": "Right",
+      "wrong": "Wrong",
+      "skipped": "Skipped"
+    },
+    "yourAnswer": "Your answer:",
+    "noAnswer": "no answer",
+    "solution": "Solution:"
+  },
   "error": {
     "message": "Something went wrong. Your saved answers are kept.",
     "retry": "Try again"

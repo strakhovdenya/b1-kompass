@@ -3,8 +3,10 @@
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { isLocale } from '@b1k/domain';
-import type { SaveAnswerResult } from '@b1k/domain';
-import { saveAnswer } from '../attempts/attempts';
+import type { FinishAttemptResult, SaveAnswerResult } from '@b1k/domain';
+import { finishAttempt, saveAnswer } from '../attempts/attempts';
+import { resolveAttemptAudio } from '../audio/audio';
+import type { AudioAccessResult } from '../audio/audio';
 import {
   createGuestSession,
   resolveGuestSession,
@@ -23,6 +25,16 @@ export const saveAnswerAction = async (
   input: unknown,
 ): Promise<SaveAnswerResult> =>
   saveAnswer(getServerDeps(), await readGuestToken(), input);
+
+export const finishAttemptAction = async (
+  input: unknown,
+): Promise<FinishAttemptResult> =>
+  finishAttempt(getServerDeps(), await readGuestToken(), input);
+
+export const resolveAudioAction = async (
+  input: unknown,
+): Promise<AudioAccessResult> =>
+  resolveAttemptAudio(getServerDeps(), await readGuestToken(), input);
 
 export const setLocaleAction = async (locale: unknown): Promise<boolean> => {
   if (!isLocale(locale)) return false;

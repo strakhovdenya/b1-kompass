@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Page } from '@playwright/test';
+import type { ExamQuestion } from '@b1k/domain';
 import { openPractice, saveAnswer } from '../src/server/attempts/attempts';
 import {
   createGuestSession,
@@ -67,6 +68,12 @@ const openReady = async (
   return opened.practice;
 };
 
+const firstQuestion = (practice: { questions: readonly ExamQuestion[] }) => {
+  const question = practice.questions[0];
+  if (!question) throw new Error('practice has no questions');
+  return question;
+};
+
 // A guest with an active attempt and a saved answer, created through the
 // real server functions.
 const guestWithAnswer = async (optionId: string) => {
@@ -74,7 +81,7 @@ const guestWithAnswer = async (optionId: string) => {
   const practice = await openReady(depsNow(), created.guest);
   const saved = await saveAnswer(depsNow(), created.token, {
     attemptId: practice.attemptId,
-    questionId: practice.question.id,
+    questionId: firstQuestion(practice).id,
     optionId,
   });
   expect(saved.ok).toBe(true);
@@ -224,11 +231,11 @@ test('authorized guest reads and saves scoped attempt', async () => {
   const second = await createGuestSession(depsNow());
 
   const practice = await openReady(depsNow(), first.guest);
-  expect(Object.keys(practice.question).sort()).toEqual(
+  expect(Object.keys(firstQuestion(practice)).sort()).toEqual(
     ['id', 'kind', 'number', 'options', 'prompt', 'skill', 'teil'],
   );
   expect(JSON.stringify(practice)).not.toMatch(/correct|key/i);
-  expect(practice.question.prompt).toBe(PROMPT);
+  expect(firstQuestion(practice).prompt).toBe(PROMPT);
 
   const saved = await saveAnswer(depsNow(), first.token, {
     attemptId: practice.attemptId,

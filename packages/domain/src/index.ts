@@ -15,6 +15,22 @@ export type {
   ExamQuestion,
   MaterialProblem,
 } from './material/schema';
+export { selectScoringPolicy, toPercent } from './scoring/policy';
+export type {
+  AttemptScope,
+  AttemptScore,
+  QuestionOutcome,
+  ReviewItem,
+  ScoringInput,
+  ScoringPolicy,
+} from './scoring/policy';
+export type {
+  AttemptReview,
+  FinishAttemptError,
+  FinishAttemptResult,
+  ReviewError,
+  ReviewResult,
+} from './scoring/review';
 export type {
   SaveAnswerError,
   SaveAnswerResult,
