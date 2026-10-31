@@ -11,7 +11,7 @@
         { "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "apps/web/tsconfig.json", "--noEmit"], "cwd": "." },
         { "argv": ["node", "node_modules/eslint/bin/eslint.js", "apps/web"], "cwd": "." },
         { "argv": ["node", "node_modules/vitest/vitest.mjs", "run", "apps/web"], "cwd": "." },
-        { "argv": ["node", "node_modules/next/dist/bin/next", "build", "apps/web"], "cwd": "." }
+        { "argv": ["node", "../../node_modules/next/dist/bin/next", "build"], "cwd": "apps/web" }
       ]
     },
     {

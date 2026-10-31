@@ -27,7 +27,8 @@
 | 8 | Локальные гейты профиля, app `web` | `node node_modules/typescript/bin/tsc -p apps/web/tsconfig.json --noEmit` | ✅ exit 0 |
 | | | `node node_modules/eslint/bin/eslint.js apps/web` | ✅ exit 0 |
 | | | `node node_modules/vitest/vitest.mjs run apps/web` | ✅ exit 0, 3 файла, 7 тестов |
-| | | `node node_modules/next/dist/bin/next build apps/web` | ❌ exit 1: `[next-intl] Could not find i18n config at ./src/i18n/request.ts`. Так же падает и без изменений этой задачи: `next.config.ts` ищет путь от текущей папки, а гейт запускается из корня. Сборка через `npm run build` (из `apps/web`) проходит, её же выполняет CI. Находка о профиле, вне `Affects` задачи |
+| | | `node node_modules/next/dist/bin/next build apps/web` | ❌ exit 1 до исправления (см. следующую строку): `[next-intl] Could not find i18n config at ./src/i18n/request.ts`. Так же падает и без изменений этой задачи: `next.config.ts` ищет путь от текущей папки, а гейт запускается из корня. Сборка через `npm run build` (из `apps/web`) проходит, её же выполняет CI. Находка о профиле, вне `Affects` задачи |
+| | | исправлено в #20: команда в `.factory/profile.json` теперь `cwd` `apps/web`, `node ../../node_modules/next/dist/bin/next build` (next-intl проверяет конфиг от текущей папки, Turbopack-алиас — от папки приложения; правка `next.config.ts` общего значения не дала) | ✅ 2026-10-31 exit 0 из `apps/web`; профиль загружается `loadProfile` без ошибок |
 | 9 | Локальные гейты профиля, app `domain` | `node node_modules/typescript/bin/tsc -p packages/domain/tsconfig.json --noEmit` | ✅ exit 0 |
 | | | `node node_modules/eslint/bin/eslint.js packages/domain` | ✅ exit 0 |
 | | | `node node_modules/vitest/vitest.mjs run packages/domain` | ✅ exit 0, 2 файла, 11 тестов |
