@@ -37,3 +37,16 @@ export type ReviewError =
 
 export type ReviewResult =
   { ok: true; review: AttemptReview } | { ok: false; error: ReviewError };
+
+// A new run starts only from the guest's own completed attempt. When the
+// guest already has an active attempt, that attempt is returned: a repeated
+// request creates nothing.
+export type RestartAttemptError =
+  | 'invalid-input'
+  | 'session-invalid'
+  | 'attempt-not-found'
+  | 'not-completed'
+  | 'unavailable';
+
+export type RestartAttemptResult =
+  { ok: true; attemptId: string } | { ok: false; error: RestartAttemptError };

@@ -5,6 +5,7 @@ import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import ruMessages from '../../../messages/ru.json';
 import { AttemptReviewView } from './AttemptReviewView';
+import type { RestartStatus } from './AttemptReviewView';
 
 const question = (id: string, number: number): ExamQuestion => ({
   id,
@@ -76,6 +77,31 @@ describe('AttemptReviewView', () => {
     expect(html).not.toContain('<b>');
     expect(html).toContain('Frage 1 &lt;b&gt;?&lt;/b&gt;');
     expect(html).toContain('lang="de"');
+  });
+
+  it('offers a new run only with a handler and shows its state', () => {
+    const renderRestart = (status: RestartStatus, locale = 'en') =>
+      renderToStaticMarkup(
+        <NextIntlClientProvider
+          locale={locale}
+          messages={locale === 'ru' ? ruMessages : messages}
+        >
+          <AttemptReviewView
+            review={review}
+            questions={questions}
+            onRestart={() => undefined}
+            restartStatus={status}
+          />
+        </NextIntlClientProvider>,
+      );
+    expect(render(review)).not.toContain('data-testid="restart-attempt"');
+    const idle = renderRestart('idle');
+    expect(idle).toContain('data-testid="restart-attempt"');
+    expect(idle).toContain(messages.results.restart);
+    expect(idle).not.toContain('data-testid="restart-status"');
+    expect(renderRestart('idle', 'ru')).toContain(ruMessages.results.restart);
+    expect(renderRestart('restarting')).toContain('disabled=""');
+    expect(renderRestart('error')).toContain('data-testid="restart-status"');
   });
 
   it('omits the scope note only when a policy shows a level', () => {

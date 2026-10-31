@@ -67,6 +67,8 @@ export type {
   AttemptReview,
   FinishAttemptError,
   FinishAttemptResult,
+  RestartAttemptError,
+  RestartAttemptResult,
   ReviewError,
   ReviewResult,
 } from './scoring/review';

@@ -6,6 +6,7 @@ import { TrainingShell } from '../../features/training/TrainingShell';
 import {
   finishAttemptAction,
   resolveAudioAction,
+  restartAttemptAction,
   saveAnswerAction,
   saveProgressAction,
 } from '../../server/next/actions';
@@ -15,7 +16,9 @@ import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 export const dynamic = 'force-dynamic';
 
 // One attempt, two block pages: the shell around them keeps the recording and
-// the finish point while the guest moves between Hören and Lesen.
+// the finish point while the guest moves between Hören and Lesen. A new run
+// is another attempt: the key gives it a new shell, so the review, answers,
+// place and players of the previous one are not carried over.
 const PracticeLayout = async ({ children }: { children: ReactNode }) => {
   const guest = await getCurrentGuest();
   if (!guest) redirect('/');
@@ -33,6 +36,7 @@ const PracticeLayout = async ({ children }: { children: ReactNode }) => {
   const { practice } = opened;
   return (
     <TrainingShell
+      key={practice.attemptId}
       attemptId={practice.attemptId}
       questions={practice.questions}
       trackIds={practice.trackIds}
@@ -44,6 +48,7 @@ const PracticeLayout = async ({ children }: { children: ReactNode }) => {
       saveAnswer={saveAnswerAction}
       finishAttempt={finishAttemptAction}
       saveProgress={saveProgressAction}
+      restartAttempt={restartAttemptAction}
     >
       {children}
     </TrainingShell>

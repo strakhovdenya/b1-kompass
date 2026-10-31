@@ -67,6 +67,9 @@
   },
   "results": {
     "title": "Result",
+    "restart": "Start again",
+    "restarting": "Starting…",
+    "restartError": "A new run could not be started. Please try again.",
     "score": "{score} of {maxScore} points ({percent})",
     "counts": "Right: {right} · Wrong: {wrong} · Skipped: {skipped}",
     "noLevel": "This is a short practice of a few tasks. Its points are not an official DTZ level.",

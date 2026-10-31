@@ -63,6 +63,7 @@ const render = (initialReview: AttemptReview | null) =>
         saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
         finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
         saveProgress={async () => ({ ok: false, error: 'unavailable' })}
+        restartAttempt={async () => ({ ok: false, error: 'unavailable' })}
       >
         <p>block page</p>
       </TrainingShell>
@@ -79,6 +80,7 @@ describe('TrainingShell', () => {
     expect(html).toContain('data-testid="finish-attempt"');
     expect(html).toContain('Answered in total: 1 of 3.');
     expect(html).not.toContain('data-testid="finish-confirmation"');
+    expect(html).not.toContain('data-testid="restart-attempt"');
   });
 
   it('shows only the review of the open block once completed', () => {
@@ -86,6 +88,7 @@ describe('TrainingShell', () => {
     expect(html).not.toContain('block page');
     expect(html).not.toContain('data-testid="audio-element"');
     expect(html).not.toContain('data-testid="finish-attempt"');
+    expect(html).toContain('data-testid="restart-attempt"');
     expect(html.match(/data-testid="review-item"/g)).toHaveLength(1);
     expect(html).toContain('data-question-id="lesen-1"');
   });
