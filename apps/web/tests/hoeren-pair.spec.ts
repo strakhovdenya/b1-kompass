@@ -123,14 +123,17 @@ const switchLanguage = async (page: Page, name: string, lang: string) => {
   await expect(page.locator('html')).toHaveAttribute('lang', lang);
 };
 
-// Fails only the server action that saves the answer of the given question.
-const failSavesOf = (context: BrowserContext, questionId: string) =>
+// The save of the given question reaches the real server action with an
+// option that question does not have, so the server itself refuses it
+// (option-not-allowed). Saves of other questions and other actions pass.
+const refuseSavesOf = (context: BrowserContext, questionId: string) =>
   context.route('**/practice', (route) => {
     const request = route.request();
-    const isSave =
-      request.method() === 'POST' &&
-      (request.postData() ?? '').includes(questionId);
-    return isSave ? route.abort() : route.continue();
+    const body = request.postData() ?? '';
+    const isSave = request.method() === 'POST' && body.includes(questionId);
+    if (!isSave) return route.continue();
+    const invalid = body.replace(/"optionId":"[^"]*"/, '"optionId":"z"');
+    return route.continue({ postData: invalid });
   });
 
 const VIEWPORTS = [
@@ -307,7 +310,7 @@ test('changing second answer preserves first selection', async ({
   const second = secondCard(page);
   await choose(first, RICHTIG);
 
-  await failSavesOf(context, SECOND);
+  await refuseSavesOf(context, SECOND);
   const adresse = optionIn(second, ADRESSE);
   await adresse.focus();
   await page.keyboard.press('Space');
@@ -418,7 +421,7 @@ test('pair save failure keeps playback state', async ({ browser }) => {
   await choose(first, RICHTIG);
   await startPlayback(page, 6);
 
-  await failSavesOf(context, SECOND);
+  await refuseSavesOf(context, SECOND);
   const before = await snapshotOf(page);
   await optionIn(second, TERMIN_NEU).check();
   await expect(statusOf(second)).toHaveAttribute('data-status', 'error');
