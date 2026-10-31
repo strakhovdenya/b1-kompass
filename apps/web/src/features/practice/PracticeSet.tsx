@@ -189,6 +189,7 @@ export const PracticeSet = ({
       <Stack direction="row" spacing={1}>
         <Button
           variant="outlined"
+          data-testid="set-previous"
           disabled={index === 0 || isSaving}
           onClick={() => goTo(index - 1)}
         >
@@ -196,6 +197,7 @@ export const PracticeSet = ({
         </Button>
         <Button
           variant="outlined"
+          data-testid="set-next"
           disabled={index === total - 1 || isSaving}
           onClick={() => goTo(index + 1)}
         >
