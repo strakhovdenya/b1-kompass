@@ -38,7 +38,12 @@ export const LocaleSwitcher = ({ changeLocale }: LocaleSwitcherProps) => {
       disabled={isPending}
     >
       {LOCALES.map((item) => (
-        <ToggleButton key={item} value={item} lang={item}>
+        <ToggleButton
+          key={item}
+          value={item}
+          lang={item}
+          data-testid={`locale-${item}`}
+        >
           {t(item)}
         </ToggleButton>
       ))}
