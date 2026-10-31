@@ -43,6 +43,9 @@
     "error": "The recording could not be loaded. You can still answer, and your answers are saved.",
     "retry": "Load again"
   },
+  "hoeren": {
+    "intro": "Hören, parts 1 and 2: {count, plural, one {# question} other {# questions}}, one answer each. You can change an answer at any time while the recording keeps playing."
+  },
   "set": {
     "navigation": "Questions",
     "position": "Question {current} of {total}",
