@@ -24,6 +24,11 @@ type PlayerStatus = 'loading' | 'ready' | 'error';
 
 interface AudioPlayerProps {
   resolveAudio: () => Promise<AudioAccess>;
+  // The stored place of a returning guest. The browser does not allow sound
+  // without a click, so the recording is only moved there, never started.
+  initialPosition?: number;
+  // The place after the guest paused or sought (urgent), or while playing.
+  onPosition?: (seconds: number, isUrgent: boolean) => void;
 }
 
 const SKIP_BACK_SECONDS = 5;
@@ -55,10 +60,16 @@ const isHarmlessPlayError = (error: unknown): boolean =>
 // Each browser has its own player: play, pause and position belong to this
 // element only. It lives outside the question navigation, so moving between
 // questions neither recreates nor restarts it.
-export const AudioPlayer = ({ resolveAudio }: AudioPlayerProps) => {
+export const AudioPlayer = ({
+  resolveAudio,
+  initialPosition = 0,
+  onPosition,
+}: AudioPlayerProps) => {
   const t = useTranslations('audio');
   const element = useRef<HTMLAudioElement>(null);
-  const resumeAt = useRef<number | null>(null);
+  const resumeAt = useRef<number | null>(
+    initialPosition > 0 ? initialPosition : null,
+  );
   const shouldResume = useRef(false);
   const hasRetried = useRef(false);
   const [audio, setAudio] = useState<PlayableAudio | null>(null);
@@ -100,7 +111,9 @@ export const AudioPlayer = ({ resolveAudio }: AudioPlayerProps) => {
   }, [audio]);
 
   const reload = (isResuming: boolean) => {
-    resumeAt.current = element.current?.currentTime ?? null;
+    // Before the first load there is no position yet: the stored one stays.
+    const current = element.current?.currentTime ?? 0;
+    resumeAt.current = current > 0 ? current : resumeAt.current;
     shouldResume.current = isResuming;
     setStatus('loading');
     void requestAudio(resolveRef.current).then(apply);
@@ -136,7 +149,12 @@ export const AudioPlayer = ({ resolveAudio }: AudioPlayerProps) => {
     if (!media) return;
     setDuration(media.duration);
     if (resumeAt.current !== null) {
-      media.currentTime = resumeAt.current;
+      // A stored place beyond the recording is kept inside it.
+      const target = Number.isFinite(media.duration)
+        ? Math.min(resumeAt.current, media.duration)
+        : resumeAt.current;
+      media.currentTime = target;
+      setPosition(target);
       resumeAt.current = null;
     }
     if (shouldResume.current) {
@@ -153,6 +171,13 @@ export const AudioPlayer = ({ resolveAudio }: AudioPlayerProps) => {
     } else {
       media.pause();
     }
+  };
+
+  const reportPosition = (isUrgent: boolean) => {
+    const media = element.current;
+    if (!media || !onPosition) return;
+    const seconds = Math.round(media.currentTime * 10) / 10;
+    if (Number.isFinite(seconds) && seconds >= 0) onPosition(seconds, isUrgent);
   };
 
   const seekTo = (seconds: number) => {
@@ -182,13 +207,23 @@ export const AudioPlayer = ({ resolveAudio }: AudioPlayerProps) => {
           data-testid="audio-element"
           onLoadedMetadata={handleLoadedMetadata}
           onDurationChange={() => setDuration(element.current?.duration ?? 0)}
-          onTimeUpdate={() => setPosition(element.current?.currentTime ?? 0)}
+          onTimeUpdate={() => {
+            setPosition(element.current?.currentTime ?? 0);
+            if (!element.current?.paused) reportPosition(false);
+          }}
+          onSeeked={() => reportPosition(true)}
           onPlay={() => setIsPlaying(true)}
           onPlaying={() => {
             hasRetried.current = false;
           }}
-          onPause={() => setIsPlaying(false)}
-          onEnded={() => setIsPlaying(false)}
+          onPause={() => {
+            setIsPlaying(false);
+            if (!element.current?.ended) reportPosition(true);
+          }}
+          onEnded={() => {
+            setIsPlaying(false);
+            onPosition?.(0, true);
+          }}
           onError={audio ? handleError : undefined}
         />
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>

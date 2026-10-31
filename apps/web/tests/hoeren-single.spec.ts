@@ -231,7 +231,8 @@ test('all published single questions are reachable and durable', async ({
   });
 
   await page.reload();
-  await expect(page.getByText(promptOf(1))).toBeVisible();
+  // The place of the guest comes back: the last task, not the first.
+  await expect(page.getByText(promptOf(texts.length))).toBeVisible();
   for (const [index, text] of texts.entries()) {
     await goTo(page, index + 1);
     await expect(page.getByText(promptOf(index + 1))).toBeVisible();

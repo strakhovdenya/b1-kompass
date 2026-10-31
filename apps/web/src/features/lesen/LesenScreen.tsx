@@ -39,6 +39,7 @@ interface UnsavedChoice {
 const PARAGRAPH_BREAK = /\n{2,}/;
 const RESTORE_DELAY_FRAMES = 2;
 const UNLOCK_DELAY_MS = 150;
+const PARAGRAPH_SAVE_DELAY_MS = 600;
 const PAGE_MARGIN_PX = 16;
 
 export const splitParagraphs = (body: string): string[] =>
@@ -110,7 +111,7 @@ const scrollToParagraph = (panel: HTMLElement, index: number) => {
 
 const restorePosition = (
   panel: HTMLElement | null,
-  textId: string | null,
+  textId: string | undefined,
   stored: Anchors,
 ) => {
   const anchor = textId ? stored[textId] : undefined;
@@ -144,20 +145,31 @@ export const LesenScreen = ({
   const tSet = useTranslations('set');
   const tPractice = useTranslations('practice');
   const lesen = selectLesenQuestions(questions);
-  const [index, setIndex] = useState(0);
+  const { recordAnswer, setSaving, readProgress, reportProgress } =
+    useTraining();
+  const [stored] = useState(() => readProgress()?.lesen ?? null);
+  const [index, setIndex] = useState(() =>
+    Math.max(
+      0,
+      lesen.findIndex((item) => item.id === stored?.itemId),
+    ),
+  );
   const [view, setView] = useState<View>('text');
   const [selections, setSelections] = useState<Selections>(initialSelections);
   const [unsaved, setUnsaved] = useState<
     Readonly<Record<string, UnsavedChoice>>
   >({});
   const [isSaving, setIsSaving] = useState(false);
-  const { recordAnswer, setSaving } = useTraining();
   useEffect(() => {
     setSaving(isSaving);
     return () => setSaving(false);
   }, [isSaving, setSaving]);
+  const storedAnchor =
+    stored?.textId !== undefined && stored.paragraph !== undefined
+      ? { textId: stored.textId, paragraph: stored.paragraph }
+      : initialAnchor;
   const [anchors, setAnchors] = useState<Anchors>(
-    initialAnchor ? { [initialAnchor.textId]: initialAnchor } : {},
+    storedAnchor ? { [storedAnchor.textId]: storedAnchor } : {},
   );
   const anchorsRef = useRef(anchors);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -165,7 +177,31 @@ export const LesenScreen = ({
 
   const question = lesen[index];
   const text = texts.find((item) => item.id === question?.textId) ?? null;
-  const textId = text?.id ?? null;
+  const textId = text?.id;
+
+  // The task is saved when it changes; the paragraph a moment after the
+  // guest stops scrolling, so a scroll is not one request per paragraph.
+  const questionId = question?.id;
+  const paragraph = textId ? anchors[textId]?.paragraph : undefined;
+  useEffect(() => {
+    if (!questionId) return;
+    reportProgress({
+      block: 'lesen',
+      lesen: {
+        itemId: questionId,
+        textId,
+        paragraph: textId ? anchorsRef.current[textId]?.paragraph : undefined,
+      },
+    });
+  }, [questionId, textId, reportProgress]);
+  useEffect(() => {
+    if (paragraph === undefined) return;
+    const timer = window.setTimeout(
+      () => reportProgress({ block: 'lesen', lesen: { textId, paragraph } }),
+      PARAGRAPH_SAVE_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [textId, paragraph, reportProgress]);
 
   // Layout changes (resize comes before the scroll events it causes): the
   // position is put back after the new layout is painted.
