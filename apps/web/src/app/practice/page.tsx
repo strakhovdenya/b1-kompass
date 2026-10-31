@@ -3,8 +3,7 @@ import { getTranslations } from 'next-intl/server';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import { AudioPlayer } from '../../features/audio/AudioPlayer';
-import { PracticeSet } from '../../features/practice/PracticeSet';
+import { HoerenSingleScreen } from '../../features/hoeren/HoerenSingleScreen';
 import { openPractice } from '../../server/attempts/attempts';
 import {
   finishAttemptAction,
@@ -33,20 +32,13 @@ const PracticePage = async () => {
       <Typography component="h1" variant="h5" lang="de">
         {practice.examTitle}
       </Typography>
-      {practice.trackIds.map((trackId) => (
-        <AudioPlayer
-          key={trackId}
-          resolveAudio={resolveAudioAction.bind(null, {
-            attemptId: practice.attemptId,
-            trackId,
-          })}
-        />
-      ))}
-      <PracticeSet
+      <HoerenSingleScreen
         attemptId={practice.attemptId}
         questions={practice.questions}
+        trackIds={practice.trackIds}
         initialSelections={practice.selections}
         initialReview={practice.review}
+        resolveAudio={resolveAudioAction}
         saveAnswer={saveAnswerAction}
         finishAttempt={finishAttemptAction}
       />

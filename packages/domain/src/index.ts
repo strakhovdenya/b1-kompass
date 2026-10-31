@@ -1,4 +1,8 @@
-export { GUEST_TERM_HOURS, computeGuestExpiry, isGuestActive } from './guest/term';
+export {
+  GUEST_TERM_HOURS,
+  computeGuestExpiry,
+  isGuestActive,
+} from './guest/term';
 export { DEFAULT_LOCALE, LOCALES, isLocale } from './locale';
 export type { Locale } from './locale';
 export {

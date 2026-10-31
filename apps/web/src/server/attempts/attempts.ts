@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  examContentSchema,
-  selectScoringPolicy,
-  toPercent,
-} from '@b1k/domain';
+import { examContentSchema, selectScoringPolicy, toPercent } from '@b1k/domain';
 import type {
   AnswerKeys,
   AttemptReview,
@@ -412,7 +408,8 @@ export const finishAttempt = async (
     ]);
     for (let round = 0; round < FINISH_ROUNDS; round++) {
       const outcome = await finishRound(deps, guest, attempt, material, keys);
-      if (outcome.status === 'failed') return { ok: false, error: outcome.error };
+      if (outcome.status === 'failed')
+        return { ok: false, error: outcome.error };
       if (outcome.status === 'done') {
         // Another finish may have won the lock: review the frozen answers.
         const completed = { ...attempt, status: 'completed' as const };

@@ -82,11 +82,19 @@ export const AttemptReviewView = ({
           </Alert>
         )}
         <Divider />
-        <Stack component="ol" spacing={2} sx={{ m: 0, pl: 0, listStyle: 'none' }}>
+        <Stack
+          component="ol"
+          spacing={2}
+          sx={{ m: 0, pl: 0, listStyle: 'none' }}
+        >
           {review.items.map((item) => {
             const question = byId.get(item.questionId);
             return question ? (
-              <ReviewEntry key={item.questionId} item={item} question={question} />
+              <ReviewEntry
+                key={item.questionId}
+                item={item}
+                question={question}
+              />
             ) : null;
           })}
         </Stack>
@@ -118,7 +126,8 @@ const ReviewEntry = ({ item, question }: ReviewEntryProps) => {
           color={OUTCOME_COLOR[item.outcome]}
           sx={{ fontWeight: 600 }}
         >
-          {OUTCOME_MARK[item.outcome]} {t(`outcome.${OUTCOME_LABEL[item.outcome]}`)}
+          {OUTCOME_MARK[item.outcome]}{' '}
+          {t(`outcome.${OUTCOME_LABEL[item.outcome]}`)}
         </Typography>
         <Typography variant="body2">
           {t('yourAnswer')}{' '}

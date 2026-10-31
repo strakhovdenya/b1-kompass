@@ -13,7 +13,9 @@
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces && tsc -p tsconfig.json --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . && npm run format:check",
+    "format:check": "prettier --check \"{apps,packages,scripts}/**/*.{ts,tsx}\"",
+    "format": "prettier --write \"{apps,packages,scripts}/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "build": "npm run build --workspace apps/web",
     "test:e2e": "npm run test:e2e --workspace apps/web",

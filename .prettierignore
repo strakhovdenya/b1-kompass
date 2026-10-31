@@ -1,0 +1,6 @@
+# Existing tests are not reformatted: the verifier flags removed assertion lines.
+apps/web/tests/guest-entry.spec.ts
+apps/web/tests/guest-limits.spec.ts
+apps/web/tests/short-practice.spec.ts
+apps/web/tests/support/db.ts
+packages/domain/src/domain.test.ts

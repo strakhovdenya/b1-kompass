@@ -37,7 +37,8 @@ export const getPublishedVersion = async (
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle<VersionRow>();
-  if (error) throw new Error('Published material lookup failed', { cause: error });
+  if (error)
+    throw new Error('Published material lookup failed', { cause: error });
   return data ? toPublished(data) : null;
 };
 
