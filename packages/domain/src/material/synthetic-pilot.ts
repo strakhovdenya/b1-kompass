@@ -98,7 +98,39 @@ const addHoeren = (builder: Builder) => {
   });
 };
 
-const LESEN_TEILE = [5, 5, 7, 8];
+// Lesen as in the pilot: five parts of 5, 5, 6, 3 and 6 tasks. Teil 2 matches
+// with the options a-h and x, Teil 3-4 are Richtig/Falsch, Teil 5 is a gap
+// text with the marks [40]-[45]. Every task stays a single choice.
+const LESEN_TEILE = [5, 5, 6, 3, 6];
+const TEIL_2_OPTIONS = 'abcdefghx';
+
+const lines = (count: number, label: string): string =>
+  Array.from({ length: count }, (_, i) => `${label}, Zeile ${i + 1}`).join(
+    '\n',
+  );
+
+const paragraphs = (count: number, label: string): string =>
+  Array.from(
+    { length: count },
+    (_, i) =>
+      `Absatz ${i + 1}: ${label} mit erfundenem Inhalt.\nZweite Zeile von Absatz ${i + 1}.`,
+  ).join('\n\n');
+
+const LESEN_BODIES: Record<number, string> = {
+  1: lines(6, 'Anzeige zu Teil 1'),
+  2: [...TEIL_2_OPTIONS].map((id) => `${id}) Anzeige ${id}`).join('\n'),
+  3: paragraphs(24, 'Langer Lesetext zu Teil 3'),
+  4: paragraphs(4, 'Lesetext zu Teil 4'),
+  5: ['40', '41', '42', '43', '44', '45']
+    .map((mark) => `Der Brief hat eine Lücke [${mark}] im Satz.`)
+    .join('\n'),
+};
+
+const lesenOptions = (teil: number): ExamOption[] => {
+  if (teil === 2) return optionsOf(TEIL_2_OPTIONS);
+  if (teil === 3 || teil === 4) return TRUE_FALSE;
+  return optionsOf('abc');
+};
 
 const addLesen = (builder: Builder) => {
   LESEN_TEILE.forEach((count, index) => {
@@ -107,13 +139,13 @@ const addLesen = (builder: Builder) => {
     builder.texts.push({
       id: textId,
       title: `Text zu Teil ${teil}`,
-      body: `Erfundener Lesetext zu Teil ${teil}.`,
+      body: LESEN_BODIES[teil] ?? '',
       sourcePage: teil + 4,
     });
     for (let i = 0; i < count; i++) {
       const fields = {
         kind: 'single-choice' as const,
-        options: optionsOf('abc'),
+        options: lesenOptions(teil),
       };
       addQuestion(builder, 'lesen', teil, { ...fields, textId }, 'a');
     }

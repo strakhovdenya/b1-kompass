@@ -12,6 +12,7 @@ import type {
   DtzLevel,
   ExamContent,
   ExamGroup,
+  ExamText,
   ExamQuestion,
   FinishAttemptError,
   FinishAttemptResult,
@@ -41,6 +42,7 @@ export interface PracticeState {
   source: ExamContent['source'];
   questions: ExamQuestion[];
   groups: ExamGroup[];
+  texts: ExamText[];
   selections: Selections;
   trackIds: string[];
   review: AttemptReview | null;
@@ -354,6 +356,7 @@ export const openPractice = async (
     source: version.content.source,
     questions: version.content.questions,
     groups: version.content.groups ?? [],
+    texts: version.content.texts ?? [],
     selections,
     trackIds,
     review,

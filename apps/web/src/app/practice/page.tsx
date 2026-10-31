@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import Alert from '@mui/material/Alert';
+import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { HoerenSingleScreen } from '../../features/hoeren/HoerenSingleScreen';
@@ -30,6 +31,7 @@ const PracticePage = async () => {
 
   const { practice } = opened;
   const { source } = practice;
+  const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
 
   return (
     <Stack spacing={3}>
@@ -47,6 +49,16 @@ const PracticePage = async () => {
         saveAnswer={saveAnswerAction}
         finishAttempt={finishAttemptAction}
       />
+      {hasLesen && !practice.review ? (
+        <Button
+          href="/practice/lesen"
+          variant="outlined"
+          data-testid="lesen-link"
+          sx={{ alignSelf: 'flex-start' }}
+        >
+          {t('lesenLink')}
+        </Button>
+      ) : null}
       <Typography variant="body2" color="text.secondary">
         {t('source', {
           publisher: source.publisher,
