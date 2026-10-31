@@ -91,7 +91,9 @@ const waitForMetadata = async (audio: Locator) =>
     .toBeGreaterThan(10);
 
 const objectPathOf = async (audio: Locator): Promise<string> => {
-  const src = await audio.evaluate((element: HTMLAudioElement) => element.currentSrc);
+  const src = await audio.evaluate(
+    (element: HTMLAudioElement) => element.currentSrc,
+  );
   return new URL(src).pathname;
 };
 
@@ -194,8 +196,14 @@ test('two listeners seek independently without navigation restart', async ({
   await startGuest(pageB);
   const audioA = audioOf(pageA);
   const audioB = audioOf(pageB);
-  await expect(pageA.getByTestId('audio-status')).toHaveAttribute('data-status', 'ready');
-  await expect(pageB.getByTestId('audio-status')).toHaveAttribute('data-status', 'ready');
+  await expect(pageA.getByTestId('audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+  );
+  await expect(pageB.getByTestId('audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+  );
   await waitForMetadata(audioA);
   await waitForMetadata(audioB);
 
@@ -306,7 +314,9 @@ test('short attempt gets scoped server result', async ({ page }) => {
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'saved');
   await answerOnPage(page, 2, 'Nächste Woche.');
   await answerOnPage(page, 4, 'Sich telefonisch melden.');
-  await expect(page.getByTestId('set-answered')).toContainText('Answered: 3 of 4');
+  await expect(page.getByTestId('set-answered')).toContainText(
+    'Answered: 3 of 4',
+  );
 
   const html = await (await page.request.get('/practice')).text();
   expect(html).not.toContain('review-solution');
@@ -315,7 +325,9 @@ test('short attempt gets scoped server result', async ({ page }) => {
   await page.getByRole('button', { name: 'Finish practice' }).click();
   const review = page.getByTestId('attempt-review');
   await expect(review).toBeVisible();
-  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50%)');
+  await expect(page.getByTestId('result-score')).toHaveText(
+    '2 of 4 points (50%)',
+  );
   await expect(page.getByTestId('result-counts')).toHaveText(
     'Right: 2 · Wrong: 1 · Skipped: 1',
   );
@@ -352,7 +364,9 @@ test('short attempt gets scoped server result', async ({ page }) => {
 
   // The stored result is what the page shows after a reload.
   await page.reload();
-  await expect(page.getByTestId('result-score')).toHaveText('2 of 4 points (50%)');
+  await expect(page.getByTestId('result-score')).toHaveText(
+    '2 of 4 points (50%)',
+  );
   expect(await readAttempts(session.id)).toHaveLength(1);
   expect(await storedResults(attempt.id)).toHaveLength(1);
 });
@@ -439,7 +453,12 @@ test('completed owned attempt exposes review', async () => {
     title: 'Other version',
     format: 'DTZ',
     content: PILOT_CONTENT,
-    keys: { 'hoeren-1': 'a', 'hoeren-2': 'c', 'hoeren-3': 'a', 'hoeren-4': 'a' },
+    keys: {
+      'hoeren-1': 'a',
+      'hoeren-2': 'c',
+      'hoeren-3': 'a',
+      'hoeren-4': 'a',
+    },
     audio: [{ trackId: 'hoeren-teil-1', ...createTestRecording() }],
   });
   const pilot = await pilotVersion();
@@ -455,7 +474,12 @@ test('completed owned attempt exposes review', async () => {
   const { review } = reviewed;
 
   expect(review.attemptId).toBe(guest.attemptId);
-  expectShortSetReview(review, { score: 1, correct: 1, incorrect: 1, skipped: 2 });
+  expectShortSetReview(review, {
+    score: 1,
+    correct: 1,
+    incorrect: 1,
+    skipped: 2,
+  });
   expect(review.items.map((item) => item.questionId)).toEqual(QUESTION_IDS);
   expect(
     Object.fromEntries(
@@ -466,7 +490,12 @@ test('completed owned attempt exposes review', async () => {
     Object.fromEntries(
       review.items.map((item) => [item.questionId, item.selectedOptionId]),
     ),
-  ).toEqual({ 'hoeren-1': 'c', 'hoeren-2': null, 'hoeren-3': 'a', 'hoeren-4': null });
+  ).toEqual({
+    'hoeren-1': 'c',
+    'hoeren-2': null,
+    'hoeren-3': 'a',
+    'hoeren-4': null,
+  });
   expect(JSON.stringify(review)).not.toContain(other.versionId);
 
   // The page of the same guest restores the review of the completed attempt.
@@ -479,7 +508,10 @@ test('completed owned attempt exposes review', async () => {
 test('denies early foreign review and client score', async () => {
   const owner = await guestWith({ 'hoeren-1': 'a' });
   const stranger = await guestWith({ 'hoeren-1': 'c', 'hoeren-2': 'a' });
-  const strangerReview = await finishedReview(stranger.token, stranger.attemptId);
+  const strangerReview = await finishedReview(
+    stranger.token,
+    stranger.attemptId,
+  );
   const strangerResult = await storedResults(stranger.attemptId);
   const anon = createPublicClient();
   const ownerUntouched = async () => {
@@ -517,7 +549,9 @@ test('denies early foreign review and client score', async () => {
       }),
     ).toEqual({ ok: false, error: 'not-found' });
     expect(
-      await getAttemptReview(depsNow(), null, { attemptId: stranger.attemptId }),
+      await getAttemptReview(depsNow(), null, {
+        attemptId: stranger.attemptId,
+      }),
     ).toEqual({ ok: false, error: 'session-invalid' });
     expect(await storedResults(stranger.attemptId)).toEqual(strangerResult);
     await ownerUntouched();
@@ -526,7 +560,12 @@ test('denies early foreign review and client score', async () => {
   await test.step('a ready score from the client is not used', async () => {
     for (const forged of [
       { attemptId: owner.attemptId, score: 4 },
-      { attemptId: owner.attemptId, score: 4, maxScore: 4, status: 'completed' },
+      {
+        attemptId: owner.attemptId,
+        score: 4,
+        maxScore: 4,
+        status: 'completed',
+      },
       { attemptId: owner.attemptId, guestSessionId: stranger.guest.sessionId },
     ]) {
       expect(await finishAttempt(depsNow(), owner.token, forged)).toEqual({
@@ -549,7 +588,11 @@ test('denies early foreign review and client score', async () => {
       p_skipped: 0,
     });
     expect(direct.error).not.toBeNull();
-    for (const table of ['exam_version_audio', 'attempt_results', 'answer_keys']) {
+    for (const table of [
+      'exam_version_audio',
+      'attempt_results',
+      'answer_keys',
+    ]) {
       const { data, error } = await anon.from(table).select('*');
       expect(error, table).not.toBeNull();
       expect(data, table).toBeNull();
@@ -564,7 +607,12 @@ test('denies early foreign review and client score', async () => {
 
     // The server scores the stored answer: a is wrong for task 1.
     const review = await finishedReview(owner.token, owner.attemptId);
-    expectShortSetReview(review, { score: 0, correct: 0, incorrect: 1, skipped: 3 });
+    expectShortSetReview(review, {
+      score: 0,
+      correct: 0,
+      incorrect: 1,
+      skipped: 3,
+    });
     expect(await storedResults(owner.attemptId)).toEqual([
       expect.objectContaining({ score: 0, max_score: 4, incorrect_count: 1 }),
     ]);
@@ -598,10 +646,14 @@ test('empty short attempt finishes as all skipped', async ({ page }) => {
   const session = await sessionOf(page.context());
   const attempt = await onlyAttemptOf(session.id);
   expect(await readAnswers(attempt.id)).toEqual({});
-  await expect(page.getByTestId('set-answered')).toContainText('Answered: 0 of 4');
+  await expect(page.getByTestId('set-answered')).toContainText(
+    'Answered: 0 of 4',
+  );
 
   await page.getByRole('button', { name: 'Finish practice' }).click();
-  await expect(page.getByTestId('result-score')).toHaveText('0 of 4 points (0%)');
+  await expect(page.getByTestId('result-score')).toHaveText(
+    '0 of 4 points (0%)',
+  );
   await expect(page.getByTestId('result-counts')).toHaveText(
     'Right: 0 · Wrong: 0 · Skipped: 4',
   );
@@ -637,8 +689,16 @@ test('seed publishes short set with audio once', async () => {
   const keysBefore = await countRows('answer_keys');
   const recording = createTestRecording();
 
-  const first = await publishPilotShortSet(serviceDb, TEST_PILOT_KEYS, recording);
-  const second = await publishPilotShortSet(serviceDb, TEST_PILOT_KEYS, recording);
+  const first = await publishPilotShortSet(
+    serviceDb,
+    TEST_PILOT_KEYS,
+    recording,
+  );
+  const second = await publishPilotShortSet(
+    serviceDb,
+    TEST_PILOT_KEYS,
+    recording,
+  );
   expect(first).toEqual({ versionId: current.versionId, isNew: false });
   expect(second).toEqual(first);
   expect(await countRows('exam_versions')).toBe(versionsBefore);
@@ -646,7 +706,9 @@ test('seed publishes short set with audio once', async () => {
 
   const questions = current.content.questions;
   expect(questions.length).toBeGreaterThanOrEqual(3);
-  expect(questions.every((q) => q.skill === 'hoeren' && q.teil === 1)).toBe(true);
+  expect(questions.every((q) => q.skill === 'hoeren' && q.teil === 1)).toBe(
+    true,
+  );
   expect(questions.map((q) => q.id)).toEqual(QUESTION_IDS);
 
   const sha256 = createHash('sha256').update(recording.bytes).digest('hex');
@@ -660,15 +722,21 @@ test('seed publishes short set with audio once', async () => {
   });
   const bucket = await serviceDb.storage.getBucket(AUDIO_BUCKET);
   expect(bucket.data?.public).toBe(false);
-  const stored = await serviceDb.storage.from(AUDIO_BUCKET).download(track.object_path);
+  const stored = await serviceDb.storage
+    .from(AUDIO_BUCKET)
+    .download(track.object_path);
   expect(stored.error).toBeNull();
   expect(stored.data?.size).toBe(recording.bytes.byteLength);
 
   const anon = createPublicClient();
-  const leaked = await anon.storage.from(AUDIO_BUCKET).download(track.object_path);
+  const leaked = await anon.storage
+    .from(AUDIO_BUCKET)
+    .download(track.object_path);
   expect(leaked.data).toBeNull();
   expect(leaked.error).not.toBeNull();
-  expect((await anon.storage.from(AUDIO_BUCKET).list('audio')).data ?? []).toEqual([]);
+  expect(
+    (await anon.storage.from(AUDIO_BUCKET).list('audio')).data ?? [],
+  ).toEqual([]);
 });
 
 test('seed rejects short set with missing key', async () => {

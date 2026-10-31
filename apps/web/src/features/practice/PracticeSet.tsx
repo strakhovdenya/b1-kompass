@@ -55,14 +55,15 @@ export const PracticeSet = ({
   const t = useTranslations('set');
   const [index, setIndex] = useState(0);
   const [selections, setSelections] = useState<Selections>(initialSelections);
-  const [unsaved, setUnsaved] = useState<Readonly<Record<string, UnsavedChoice>>>(
-    {},
-  );
+  const [unsaved, setUnsaved] = useState<
+    Readonly<Record<string, UnsavedChoice>>
+  >({});
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
   const [review, setReview] = useState(initialReview);
 
-  if (review) return <AttemptReviewView review={review} questions={questions} />;
+  if (review)
+    return <AttemptReviewView review={review} questions={questions} />;
 
   const question = questions[index];
   if (!question) return null;
@@ -81,7 +82,9 @@ export const PracticeSet = ({
     }
     setUnsaved((current) => {
       const { [questionId]: _previous, ...rest } = current;
-      return status === 'saved' ? rest : { ...rest, [questionId]: { optionId, status } };
+      return status === 'saved'
+        ? rest
+        : { ...rest, [questionId]: { optionId, status } };
     });
   };
 
@@ -105,7 +108,9 @@ export const PracticeSet = ({
 
   const isSaving = saveStatus === 'saving';
   const isBusy = isSaving || finishStatus === 'finishing';
-  const choice = Object.hasOwn(unsaved, question.id) ? unsaved[question.id] : undefined;
+  const choice = Object.hasOwn(unsaved, question.id)
+    ? unsaved[question.id]
+    : undefined;
 
   return (
     <Stack spacing={2}>

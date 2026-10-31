@@ -40,8 +40,7 @@ const toContext = (row: GuestSessionRow): GuestContext => ({
 });
 
 export type CreateGuestResult =
-  | { status: 'created'; created: CreatedGuest }
-  | { status: 'rate-limited' };
+  { status: 'created'; created: CreatedGuest } | { status: 'rate-limited' };
 
 // A new guest always starts in English, whatever the browser or an earlier
 // session used. The database counts and inserts in one call

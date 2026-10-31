@@ -44,7 +44,7 @@ docs/              PRD, plan, architecture, security, deployment
 ```sh
 npm ci
 npm run typecheck    # domain, web, scripts
-npm run lint
+npm run lint         # ESLint + Prettier check of .ts/.tsx (npm run format fixes it)
 npm test             # Vitest: packages/domain, apps/web/src
 npm run build
 npm run db:start     # local Supabase in Docker; needed for E2E

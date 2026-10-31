@@ -22,7 +22,12 @@ const DAY_MS = 24 * 60 * 60 * SECOND_MS;
 const TERM_MS = 720 * 60 * 60 * SECOND_MS;
 const LIMIT = 3;
 
-const MESSAGES_PATH = path.join(import.meta.dirname, '..', 'messages', 'en.json');
+const MESSAGES_PATH = path.join(
+  import.meta.dirname,
+  '..',
+  'messages',
+  'en.json',
+);
 const BUSY_TEXT: string = JSON.parse(readFileSync(MESSAGES_PATH, 'utf8')).home
   .busy;
 
@@ -112,14 +117,18 @@ test('creates guest session under the limit', async () => {
   expect(stored.locale).toBe('en');
   expect(new Date(stored.created_at).getTime()).toBe(now.getTime());
   const termMs =
-    new Date(stored.expires_at).getTime() - new Date(stored.created_at).getTime();
+    new Date(stored.expires_at).getTime() -
+    new Date(stored.created_at).getTime();
   expect(termMs).toBe(TERM_MS);
   await deleteSessions([id]);
 });
 
 test('rejects guest session over the minute limit', async () => {
   const now = momentOf(2);
-  const filled = await insertSessions(LIMIT, new Date(now.getTime() - 30 * SECOND_MS));
+  const filled = await insertSessions(
+    LIMIT,
+    new Date(now.getTime() - 30 * SECOND_MS),
+  );
   const before = await countSessions();
 
   const direct = await createDirect(now);
@@ -134,7 +143,10 @@ test('rejects guest session over the minute limit', async () => {
 
 test('counts only sessions of the last minute', async () => {
   const now = momentOf(3);
-  const older = await insertSessions(LIMIT, new Date(now.getTime() - 61 * SECOND_MS));
+  const older = await insertSessions(
+    LIMIT,
+    new Date(now.getTime() - 61 * SECOND_MS),
+  );
   const recent = await insertSessions(
     LIMIT - 1,
     new Date(now.getTime() - 30 * SECOND_MS),
@@ -146,7 +158,10 @@ test('counts only sessions of the last minute', async () => {
 
 test('counts sessions inside the minute window', async () => {
   const now = momentOf(4);
-  const oldest = await insertSessions(1, new Date(now.getTime() - 59 * SECOND_MS));
+  const oldest = await insertSessions(
+    1,
+    new Date(now.getTime() - 59 * SECOND_MS),
+  );
   const recent = await insertSessions(
     LIMIT - 1,
     new Date(now.getTime() - 10 * SECOND_MS),
@@ -183,7 +198,10 @@ test('home shows busy message without session cookie', async ({ browser }) => {
 test('purges expired empty guest sessions', async () => {
   const now = new Date(Date.UTC(2032, 5, 1));
   await purge(now);
-  const expired = await insertSessions(3, new Date(now.getTime() - 40 * DAY_MS));
+  const expired = await insertSessions(
+    3,
+    new Date(now.getTime() - 40 * DAY_MS),
+  );
   const atBoundary = await insertSessions(1, new Date(now.getTime() - TERM_MS));
 
   expect(await purge(now)).toBe(expired.length + atBoundary.length);

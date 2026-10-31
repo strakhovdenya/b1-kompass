@@ -129,9 +129,7 @@ test('ignores browser and previous account locale', async ({
   baseURL,
 }) => {
   // A previous guest of this browser used Russian; its session has ended.
-  const previous = await newGuest(
-    depsAt(new Date(Date.now() - 31 * DAY_MS)),
-  );
+  const previous = await newGuest(depsAt(new Date(Date.now() - 31 * DAY_MS)));
   await serviceDb
     .from('guest_sessions')
     .update({ locale: 'ru' })
@@ -149,7 +147,9 @@ test('ignores browser and previous account locale', async ({
 
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await expect(page.getByRole('button', { name: 'Continue as guest' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Continue as guest' }),
+  ).toBeVisible();
   await startGuest(page);
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page.getByText(/Part of the exam/)).toBeVisible();
@@ -229,9 +229,15 @@ test('authorized guest reads and saves scoped attempt', async () => {
   const second = await newGuest(depsNow());
 
   const practice = await openReady(depsNow(), first.guest);
-  expect(Object.keys(firstQuestion(practice)).sort()).toEqual(
-    ['id', 'kind', 'number', 'options', 'prompt', 'skill', 'teil'],
-  );
+  expect(Object.keys(firstQuestion(practice)).sort()).toEqual([
+    'id',
+    'kind',
+    'number',
+    'options',
+    'prompt',
+    'skill',
+    'teil',
+  ]);
   expect(JSON.stringify(practice)).not.toMatch(/correct|key/i);
   expect(firstQuestion(practice).prompt).toBe(PROMPT);
 
@@ -240,7 +246,11 @@ test('authorized guest reads and saves scoped attempt', async () => {
     questionId: 'hoeren-1',
     optionId: 'b',
   });
-  expect(saved).toMatchObject({ ok: true, questionId: 'hoeren-1', optionId: 'b' });
+  expect(saved).toMatchObject({
+    ok: true,
+    questionId: 'hoeren-1',
+    optionId: 'b',
+  });
   expect(await readAnswers(practice.attemptId)).toEqual({ 'hoeren-1': 'b' });
 
   const again = await openReady(depsNow(), first.guest);
@@ -266,7 +276,11 @@ test('denies foreign attempt secret and direct API mutations', async ({
   const owner = await guestWithAnswer('a');
   const stranger = await guestWithAnswer('b');
   const anon = createPublicClient();
-  const valid = { attemptId: owner.attemptId, questionId: 'hoeren-1', optionId: 'c' };
+  const valid = {
+    attemptId: owner.attemptId,
+    questionId: 'hoeren-1',
+    optionId: 'c',
+  };
   const ownerAnswerStays = async () =>
     expect(await readAnswers(owner.attemptId)).toEqual({ 'hoeren-1': 'a' });
 
@@ -275,9 +289,10 @@ test('denies foreign attempt secret and direct API mutations', async ({
       ok: false,
       error: 'session-invalid',
     });
-    expect(
-      await saveAnswer(depsNow(), 'A'.repeat(43), valid),
-    ).toEqual({ ok: false, error: 'session-invalid' });
+    expect(await saveAnswer(depsNow(), 'A'.repeat(43), valid)).toEqual({
+      ok: false,
+      error: 'session-invalid',
+    });
     const response = await request.get('/practice', { maxRedirects: 0 });
     expect(response.status()).toBeGreaterThanOrEqual(300);
     expect(response.status()).toBeLessThan(400);
@@ -401,7 +416,10 @@ test('denies foreign attempt secret and direct API mutations', async ({
   });
 });
 
-const createdAtStart = async (): Promise<{ start: Date; created: CreatedGuest }> => {
+const createdAtStart = async (): Promise<{
+  start: Date;
+  created: CreatedGuest;
+}> => {
   const start = new Date();
   return { start, created: await newGuest(depsAt(start)) };
 };

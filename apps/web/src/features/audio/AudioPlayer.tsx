@@ -18,8 +18,7 @@ export interface PlayableAudio {
 }
 
 export type AudioAccess =
-  | { ok: true; audio: PlayableAudio }
-  | { ok: false; error: string };
+  { ok: true; audio: PlayableAudio } | { ok: false; error: string };
 
 type PlayerStatus = 'loading' | 'ready' | 'error';
 

@@ -83,18 +83,17 @@ export const listVersionTrackIds = async (
 };
 
 export type AudioAccessError =
-  | 'invalid-input'
-  | 'session-invalid'
-  | 'not-found'
-  | 'unavailable';
+  'invalid-input' | 'session-invalid' | 'not-found' | 'unavailable';
 
 export type AudioAccessResult =
-  | { ok: true; audio: PlayableAudio }
-  | { ok: false; error: AudioAccessError };
+  { ok: true; audio: PlayableAudio } | { ok: false; error: AudioAccessError };
 
 const audioInput = z.strictObject({
   attemptId: z.uuid(),
-  trackId: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).max(100),
+  trackId: z
+    .string()
+    .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+    .max(100),
 });
 
 const findOwnedTrack = async (
@@ -137,7 +136,12 @@ export const resolveAttemptAudio = async (
   if (!guest) return { ok: false, error: 'session-invalid' };
   const { attemptId, trackId } = parsed.data;
   try {
-    const track = await findOwnedTrack(deps, guest.sessionId, attemptId, trackId);
+    const track = await findOwnedTrack(
+      deps,
+      guest.sessionId,
+      attemptId,
+      trackId,
+    );
     const adapter = track ? ADAPTERS[track.kind] : undefined;
     if (!track || !adapter) return { ok: false, error: 'not-found' };
     return { ok: true, audio: await adapter.resolve(deps, track) };

@@ -17,10 +17,7 @@ export interface AttemptReview {
 }
 
 export type FinishAttemptError =
-  | 'invalid-input'
-  | 'session-invalid'
-  | 'attempt-not-found'
-  | 'unavailable';
+  'invalid-input' | 'session-invalid' | 'attempt-not-found' | 'unavailable';
 
 export type FinishAttemptResult =
   | { ok: true; review: AttemptReview }
@@ -34,5 +31,4 @@ export type ReviewError =
   | 'unavailable';
 
 export type ReviewResult =
-  | { ok: true; review: AttemptReview }
-  | { ok: false; error: ReviewError };
+  { ok: true; review: AttemptReview } | { ok: false; error: ReviewError };

@@ -32,7 +32,9 @@ export const readGuestToken = async (): Promise<string | null> => {
   return store.get(GUEST_COOKIE)?.value ?? null;
 };
 
-export const writeGuestCookie = async (created: CreatedGuest): Promise<void> => {
+export const writeGuestCookie = async (
+  created: CreatedGuest,
+): Promise<void> => {
   const store = await cookies();
   store.set(GUEST_COOKIE, created.token, {
     httpOnly: true,

@@ -14,7 +14,8 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ExamQuestion, SaveAnswerResult } from '@b1k/domain';
 
-export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'session-invalid';
+export type SaveStatus =
+  'idle' | 'saving' | 'saved' | 'error' | 'session-invalid';
 
 export interface SaveAnswerInput {
   attemptId: string;
@@ -28,7 +29,11 @@ interface QuestionCardProps {
   initialOptionId: string | null;
   initialStatus?: SaveStatus;
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
-  onSettled?: (questionId: string, optionId: string, status: SaveStatus) => void;
+  onSettled?: (
+    questionId: string,
+    optionId: string,
+    status: SaveStatus,
+  ) => void;
   onStatusChange?: (status: SaveStatus) => void;
 }
 
@@ -58,7 +63,11 @@ export const QuestionCard = ({
     changeStatus('saving');
     let result: SaveAnswerResult;
     try {
-      result = await saveAnswer({ attemptId, questionId: question.id, optionId });
+      result = await saveAnswer({
+        attemptId,
+        questionId: question.id,
+        optionId,
+      });
     } catch (error) {
       console.error({ error });
       result = { ok: false, error: 'unavailable' };
@@ -163,7 +172,11 @@ const SaveStatusLine = ({ status, onRetry }: SaveStatusLineProps) => {
       </Alert>
     );
   }
-  const text = { idle: t('idle'), saving: t('saving'), saved: `✓ ${t('saved')}` };
+  const text = {
+    idle: t('idle'),
+    saving: t('saving'),
+    saved: `✓ ${t('saved')}`,
+  };
   return (
     <Typography
       role="status"
