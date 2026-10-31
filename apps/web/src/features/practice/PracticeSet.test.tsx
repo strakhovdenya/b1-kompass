@@ -24,10 +24,8 @@ const render = () =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <PracticeSet
-        attemptId="00000000-0000-4000-8000-000000000000"
         questions={questions}
         initialSelections={{ 'hoeren-2': 'a' }}
-        saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
       />
     </NextIntlClientProvider>,
   );

@@ -2,7 +2,6 @@ import { redirect } from 'next/navigation';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { LesenScreen } from '../../../features/lesen/LesenScreen';
-import { saveAnswerAction } from '../../../server/next/actions';
 import { getOpenedPractice } from '../../../server/attempts/opened';
 import { getCurrentGuest, getServerDeps } from '../../../server/next/request';
 
@@ -31,11 +30,9 @@ const LesenPage = async () => {
         {practice.examTitle}
       </Typography>
       <LesenScreen
-        attemptId={practice.attemptId}
         questions={practice.questions}
         texts={practice.texts}
         initialSelections={practice.selections}
-        saveAnswer={saveAnswerAction}
       />
     </Stack>
   );

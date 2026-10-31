@@ -5,15 +5,9 @@ import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type {
-  ExamGroup,
-  ExamQuestion,
-  SaveAnswerResult,
-  Selections,
-} from '@b1k/domain';
+import type { ExamGroup, ExamQuestion, Selections } from '@b1k/domain';
 import { useTraining } from '../training/TrainingContext';
 import { PracticeSet } from '../practice/PracticeSet';
-import type { SaveAnswerInput } from '../practice/QuestionCard';
 import { HoerenPairView } from './HoerenPairView';
 import { HoerenSharedSetView } from './HoerenSharedSetView';
 
@@ -85,11 +79,9 @@ export const selectQuestions = (
 };
 
 interface HoerenSingleScreenProps {
-  attemptId: string;
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
   initialSelections: Selections;
-  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
 }
 
 // Hören Teil 1–4: single questions, the Teil 3 pairs and the Teil 4 shared
@@ -97,11 +89,9 @@ interface HoerenSingleScreenProps {
 // shell around the block, so moving between questions, blocks or languages
 // never recreates or restarts it.
 export const HoerenSingleScreen = ({
-  attemptId,
   questions,
   groups = [],
   initialSelections,
-  saveAnswer,
 }: HoerenSingleScreenProps) => {
   const t = useTranslations('hoeren');
   const tPractice = useTranslations('practice');
@@ -126,7 +116,6 @@ export const HoerenSingleScreen = ({
         {t('intro', { count: shown.length })}
       </Typography>
       <PracticeSet
-        attemptId={attemptId}
         questions={shown}
         groups={shownGroups}
         renderGroup={(step, cards) =>
@@ -147,7 +136,6 @@ export const HoerenSingleScreen = ({
         initialSelections={initialSelections}
         initialStepKey={initialStepKey}
         onStepChange={handleStepChange}
-        saveAnswer={saveAnswer}
       />
     </Stack>
   );

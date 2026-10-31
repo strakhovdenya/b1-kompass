@@ -6,27 +6,13 @@ import { useTranslations } from 'next-intl';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type {
-  ExamGroup,
-  ExamQuestion,
-  SaveAnswerResult,
-  Selections,
-} from '@b1k/domain';
+import type { ExamGroup, ExamQuestion, Selections } from '@b1k/domain';
 import { useTraining } from '../training/TrainingContext';
 import { QuestionCard } from './QuestionCard';
-import type { SaveAnswerInput, SaveStatus } from './QuestionCard';
 import { buildSteps } from './steps';
 import type { PracticeStep } from './steps';
 
-// A choice the server did not confirm. It survives navigation so the guest
-// still sees it with the error and the retry.
-interface UnsavedChoice {
-  optionId: string;
-  status: SaveStatus;
-}
-
 interface PracticeSetProps {
-  attemptId: string;
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
   // Lays out the cards of a group step; without it they are stacked.
@@ -35,22 +21,20 @@ interface PracticeSetProps {
   // The step the guest stopped at; an unknown key opens the first step.
   initialStepKey?: string | null;
   onStepChange?: (stepKey: string) => void;
-  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
 }
 
 // One step at a time with navigation (a question, or the questions of a pair
-// shown together). The attempt is finished from the shared training shell,
-// which is told when an answer is confirmed or still being saved, so a finish
+// shown together). Answers are chosen, saved and retried through the shared
+// training shell, which also keeps the unconfirmed ones: a choice with an
+// error survives navigation and a move to the other block, and a finish
 // never overtakes the guest's last answer.
 export const PracticeSet = ({
-  attemptId,
   questions,
   groups = [],
   renderGroup,
   initialSelections,
   initialStepKey = null,
   onStepChange,
-  saveAnswer,
 }: PracticeSetProps) => {
   const t = useTranslations('set');
   const [index, setIndex] = useState(() =>
@@ -61,19 +45,11 @@ export const PracticeSet = ({
       ),
     ),
   );
-  const [selections, setSelections] = useState<Selections>(initialSelections);
-  const [unsaved, setUnsaved] = useState<
-    Readonly<Record<string, UnsavedChoice>>
-  >({});
-  const [saveStatus, setSaveStatus] = useState<
-    Readonly<Record<string, SaveStatus>>
-  >({});
-  const { recordAnswer, setSaving } = useTraining();
-  const isSaving = Object.values(saveStatus).includes('saving');
-  useEffect(() => {
-    setSaving(isSaving);
-    return () => setSaving(false);
-  }, [isSaving, setSaving]);
+  const training = useTraining();
+  const { pending, choose, retry } = training;
+  // The shell knows every answer confirmed since the page was loaded; the
+  // page's own answers count outside a shell (component tests).
+  const selections = { ...initialSelections, ...training.selections };
 
   const steps = buildSteps(questions, groups);
   const step = steps[index];
@@ -82,49 +58,27 @@ export const PracticeSet = ({
     if (stepKey) onStepChange?.(stepKey);
   }, [stepKey, onStepChange]);
   if (!step) return null;
+  // Navigation waits only for the saves of this set's own questions.
+  const isSaving = questions.some(
+    (item) => pending[item.id]?.status === 'saving',
+  );
   const total = steps.length;
   const answered = questions.filter((item) =>
     Object.hasOwn(selections, item.id),
   ).length;
 
-  const handleSettled = (
-    questionId: string,
-    optionId: string,
-    status: SaveStatus,
-  ) => {
-    if (status === 'saved') {
-      setSelections((current) => ({ ...current, [questionId]: optionId }));
-      recordAnswer(questionId, optionId);
-    }
-    setUnsaved((current) => {
-      const { [questionId]: _previous, ...rest } = current;
-      return status === 'saved'
-        ? rest
-        : { ...rest, [questionId]: { optionId, status } };
-    });
-  };
-
-  const goTo = (next: number) => {
-    setIndex(next);
-    setSaveStatus({});
-  };
-
   const cards = step.questions.map((question) => {
-    const choice = Object.hasOwn(unsaved, question.id)
-      ? unsaved[question.id]
+    const choice = Object.hasOwn(pending, question.id)
+      ? pending[question.id]
       : undefined;
     return (
       <QuestionCard
         key={question.id}
-        attemptId={attemptId}
         question={question}
-        initialOptionId={choice?.optionId ?? selections[question.id] ?? null}
-        initialStatus={choice?.status}
-        saveAnswer={saveAnswer}
-        onSettled={handleSettled}
-        onStatusChange={(status) =>
-          setSaveStatus((current) => ({ ...current, [question.id]: status }))
-        }
+        selectedOptionId={choice?.optionId ?? selections[question.id] ?? null}
+        status={choice?.status}
+        onChoose={(optionId) => choose(question.id, optionId)}
+        onRetry={() => retry(question.id)}
       />
     );
   });
@@ -161,7 +115,7 @@ export const PracticeSet = ({
                 })}
                 data-testid={`go-to-question-${first.number}`}
                 disabled={isSaving}
-                onClick={() => goTo(itemIndex)}
+                onClick={() => setIndex(itemIndex)}
                 sx={{ minWidth: 40 }}
               >
                 {label}
@@ -180,7 +134,7 @@ export const PracticeSet = ({
           variant="outlined"
           data-testid="set-previous"
           disabled={index === 0 || isSaving}
-          onClick={() => goTo(index - 1)}
+          onClick={() => setIndex(index - 1)}
         >
           {t('previous')}
         </Button>
@@ -188,7 +142,7 @@ export const PracticeSet = ({
           variant="outlined"
           data-testid="set-next"
           disabled={index === total - 1 || isSaving}
-          onClick={() => goTo(index + 1)}
+          onClick={() => setIndex(index + 1)}
         >
           {t('next')}
         </Button>

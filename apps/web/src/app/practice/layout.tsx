@@ -6,6 +6,7 @@ import { TrainingShell } from '../../features/training/TrainingShell';
 import {
   finishAttemptAction,
   resolveAudioAction,
+  saveAnswerAction,
   saveProgressAction,
 } from '../../server/next/actions';
 import { getOpenedPractice } from '../../server/attempts/opened';
@@ -36,9 +37,11 @@ const PracticeLayout = async ({ children }: { children: ReactNode }) => {
       questions={practice.questions}
       trackIds={practice.trackIds}
       initialSelections={practice.selections}
+      initialRevisions={practice.revisions}
       initialReview={practice.review}
       initialProgress={practice.progress}
       resolveAudio={resolveAudioAction}
+      saveAnswer={saveAnswerAction}
       finishAttempt={finishAttemptAction}
       saveProgress={saveProgressAction}
     >

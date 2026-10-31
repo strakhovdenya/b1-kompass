@@ -8,15 +8,9 @@ import Button from '@mui/material/Button';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type {
-  ExamQuestion,
-  ExamText,
-  SaveAnswerResult,
-  Selections,
-} from '@b1k/domain';
+import type { ExamQuestion, ExamText, Selections } from '@b1k/domain';
 import { QuestionCard } from '../practice/QuestionCard';
 import { useTraining } from '../training/TrainingContext';
-import type { SaveAnswerInput, SaveStatus } from '../practice/QuestionCard';
 
 // The reading position: the paragraph of a text the guest has read up to.
 export interface ReadingAnchor {
@@ -28,13 +22,6 @@ export interface ReadingAnchor {
 type Anchors = Readonly<Record<string, ReadingAnchor>>;
 
 type View = 'text' | 'questions';
-
-// A choice the server did not confirm. It survives navigation and layout
-// changes, so the guest still sees it with the error and the retry.
-interface UnsavedChoice {
-  optionId: string;
-  status: SaveStatus;
-}
 
 const PARAGRAPH_BREAK = /\n{2,}/;
 const RESTORE_DELAY_FRAMES = 2;
@@ -121,32 +108,30 @@ const restorePosition = (
 };
 
 interface LesenScreenProps {
-  attemptId: string;
   questions: readonly ExamQuestion[];
   texts: readonly ExamText[];
   initialSelections: Selections;
   initialAnchor?: ReadingAnchor | null;
-  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
 }
 
 // Lesen Teil 1–5: one task at a time beside its own text. On a wide screen the
 // text and the task are visible together; on a narrow one the guest switches
 // between them. Both panels stay in the page, only CSS hides one, so a choice,
-// a failed save and the reading position survive a change of layout.
+// a failed save and the reading position survive a change of layout. Answers
+// are chosen, saved and retried through the training shell, which keeps the
+// unconfirmed ones across navigation and blocks.
 export const LesenScreen = ({
-  attemptId,
   questions,
   texts,
   initialSelections,
   initialAnchor = null,
-  saveAnswer,
 }: LesenScreenProps) => {
   const t = useTranslations('lesen');
   const tSet = useTranslations('set');
   const tPractice = useTranslations('practice');
   const lesen = selectLesenQuestions(questions);
-  const { recordAnswer, setSaving, readProgress, reportProgress } =
-    useTraining();
+  const training = useTraining();
+  const { pending, choose, retry, readProgress, reportProgress } = training;
   const [stored] = useState(() => readProgress()?.lesen ?? null);
   const [index, setIndex] = useState(() =>
     Math.max(
@@ -155,15 +140,9 @@ export const LesenScreen = ({
     ),
   );
   const [view, setView] = useState<View>('text');
-  const [selections, setSelections] = useState<Selections>(initialSelections);
-  const [unsaved, setUnsaved] = useState<
-    Readonly<Record<string, UnsavedChoice>>
-  >({});
-  const [isSaving, setIsSaving] = useState(false);
-  useEffect(() => {
-    setSaving(isSaving);
-    return () => setSaving(false);
-  }, [isSaving, setSaving]);
+  // The shell knows every answer confirmed since the page was loaded; the
+  // page's own answers count outside a shell (component tests).
+  const selections = { ...initialSelections, ...training.selections };
   const storedAnchor =
     stored?.textId !== undefined && stored.paragraph !== undefined
       ? { textId: stored.textId, paragraph: stored.paragraph }
@@ -260,29 +239,14 @@ export const LesenScreen = ({
   }
 
   const total = lesen.length;
+  // Navigation waits only for the saves of the Lesen tasks.
+  const isSaving = lesen.some((item) => pending[item.id]?.status === 'saving');
   const answered = lesen.filter((item) =>
     Object.hasOwn(selections, item.id),
   ).length;
 
-  const handleSettled = (
-    questionId: string,
-    optionId: string,
-    status: SaveStatus,
-  ) => {
-    if (status === 'saved') {
-      setSelections((current) => ({ ...current, [questionId]: optionId }));
-      recordAnswer(questionId, optionId);
-    }
-    setUnsaved((current) => {
-      const { [questionId]: _previous, ...rest } = current;
-      return status === 'saved'
-        ? rest
-        : { ...rest, [questionId]: { optionId, status } };
-    });
-  };
-
-  const choice = Object.hasOwn(unsaved, question.id)
-    ? unsaved[question.id]
+  const choice = Object.hasOwn(pending, question.id)
+    ? pending[question.id]
     : undefined;
   const paragraphs = text ? splitParagraphs(text.body) : [];
   const shownAnchor = text
@@ -395,15 +359,13 @@ export const LesenScreen = ({
             >
               <QuestionCard
                 key={question.id}
-                attemptId={attemptId}
                 question={question}
-                initialOptionId={
+                selectedOptionId={
                   choice?.optionId ?? selections[question.id] ?? null
                 }
-                initialStatus={choice?.status}
-                saveAnswer={saveAnswer}
-                onSettled={handleSettled}
-                onStatusChange={(status) => setIsSaving(status === 'saving')}
+                status={choice?.status}
+                onChoose={(optionId) => choose(question.id, optionId)}
+                onRetry={() => retry(question.id)}
               />
             </Box>
           </Box>

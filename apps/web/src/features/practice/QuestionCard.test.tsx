@@ -24,10 +24,9 @@ const render = (initialOptionId: string | null) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <QuestionCard
-        attemptId="00000000-0000-4000-8000-000000000000"
         question={question}
-        initialOptionId={initialOptionId}
-        saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
+        selectedOptionId={initialOptionId}
+        onChoose={() => undefined}
       />
     </NextIntlClientProvider>,
   );

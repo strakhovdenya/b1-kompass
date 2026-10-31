@@ -41,12 +41,10 @@ const render = ({ questions, texts, anchor, selections }: RenderOptions) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <LesenScreen
-        attemptId="00000000-0000-4000-8000-000000000000"
         questions={questions}
         texts={texts}
         initialSelections={selections ?? {}}
         initialAnchor={anchor}
-        saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
       />
     </NextIntlClientProvider>,
   );
