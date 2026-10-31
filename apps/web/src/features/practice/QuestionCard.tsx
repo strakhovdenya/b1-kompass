@@ -14,7 +14,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ExamQuestion, SaveAnswerResult } from '@b1k/domain';
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'session-invalid';
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'session-invalid';
 
 export interface SaveAnswerInput {
   attemptId: string;
@@ -26,25 +26,36 @@ interface QuestionCardProps {
   attemptId: string;
   question: ExamQuestion;
   initialOptionId: string | null;
+  initialStatus?: SaveStatus;
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
+  onSettled?: (questionId: string, optionId: string, status: SaveStatus) => void;
+  onStatusChange?: (status: SaveStatus) => void;
 }
 
 export const QuestionCard = ({
   attemptId,
   question,
   initialOptionId,
+  initialStatus,
   saveAnswer,
+  onSettled,
+  onStatusChange,
 }: QuestionCardProps) => {
   const t = useTranslations();
   const [selected, setSelected] = useState(initialOptionId);
   const [status, setStatus] = useState<SaveStatus>(
-    initialOptionId ? 'saved' : 'idle',
+    initialStatus ?? (initialOptionId ? 'saved' : 'idle'),
   );
   const requestSeq = useRef(0);
 
+  const changeStatus = (next: SaveStatus) => {
+    setStatus(next);
+    onStatusChange?.(next);
+  };
+
   const submit = async (optionId: string) => {
     const seq = ++requestSeq.current;
-    setStatus('saving');
+    changeStatus('saving');
     let result: SaveAnswerResult;
     try {
       result = await saveAnswer({ attemptId, questionId: question.id, optionId });
@@ -53,10 +64,13 @@ export const QuestionCard = ({
       result = { ok: false, error: 'unavailable' };
     }
     if (seq !== requestSeq.current) return;
-    if (result.ok && result.optionId === optionId) setStatus('saved');
+    let settled: SaveStatus = 'error';
+    if (result.ok && result.optionId === optionId) settled = 'saved';
     else if (!result.ok && result.error === 'session-invalid') {
-      setStatus('session-invalid');
-    } else setStatus('error');
+      settled = 'session-invalid';
+    }
+    changeStatus(settled);
+    onSettled?.(question.id, optionId, settled);
   };
 
   const handleChange = (optionId: string) => {
