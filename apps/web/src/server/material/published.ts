@@ -16,6 +16,14 @@ interface VersionRow {
   exams: { title: string };
 }
 
+const VERSION_COLUMNS = 'id, content, exams!inner(title)';
+
+const toPublished = (data: VersionRow): PublishedVersion => ({
+  versionId: data.id,
+  examTitle: data.exams.title,
+  content: examContentSchema.parse(data.content),
+});
+
 // Reads only the public projection; answer keys live in another table and
 // are never selected here.
 export const getPublishedVersion = async (
@@ -24,16 +32,26 @@ export const getPublishedVersion = async (
 ): Promise<PublishedVersion | null> => {
   const { data, error } = await deps.db
     .from('exam_versions')
-    .select('id, content, exams!inner(title)')
+    .select(VERSION_COLUMNS)
     .eq('exams.slug', slug)
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle<VersionRow>();
   if (error) throw new Error('Published material lookup failed', { cause: error });
-  if (!data) return null;
-  return {
-    versionId: data.id,
-    examTitle: data.exams.title,
-    content: examContentSchema.parse(data.content),
-  };
+  return data ? toPublished(data) : null;
+};
+
+// One published version by id, for an attempt that stays on the version it
+// started with.
+export const getVersionById = async (
+  deps: ServerDeps,
+  versionId: string,
+): Promise<PublishedVersion | null> => {
+  const { data, error } = await deps.db
+    .from('exam_versions')
+    .select(VERSION_COLUMNS)
+    .eq('id', versionId)
+    .maybeSingle<VersionRow>();
+  if (error) throw new Error('Version lookup failed', { cause: error });
+  return data ? toPublished(data) : null;
 };
