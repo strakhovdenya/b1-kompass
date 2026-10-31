@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -11,9 +11,11 @@ import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type {
+  AttemptProgress,
   AttemptReview,
   ExamQuestion,
   FinishAttemptResult,
+  SaveProgressResult,
   Selections,
 } from '@b1k/domain';
 import { AudioPlayer } from '../audio/AudioPlayer';
@@ -32,9 +34,17 @@ export interface FinishAttemptInput {
   attemptId: string;
 }
 
+export interface SaveProgressInput {
+  attemptId: string;
+  progress: AttemptProgress;
+}
+
 type FinishStatus = 'idle' | 'confirming' | 'finishing' | 'error';
 
 const LESEN_PATH = '/practice/lesen';
+
+// While the recording plays the position is saved at most this often.
+const PROGRESS_INTERVAL_MS = 10_000;
 
 const BLOCKS: readonly { block: ReviewBlock; href: string }[] = [
   { block: 'hoeren', href: '/practice' },
@@ -47,8 +57,10 @@ interface TrainingShellProps {
   trackIds: readonly string[];
   initialSelections: Selections;
   initialReview: AttemptReview | null;
+  initialProgress: AttemptProgress | null;
   resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
+  saveProgress: (input: SaveProgressInput) => Promise<SaveProgressResult>;
   children: ReactNode;
 }
 
@@ -72,8 +84,10 @@ export const TrainingShell = ({
   trackIds,
   initialSelections,
   initialReview,
+  initialProgress,
   resolveAudio,
   finishAttempt,
+  saveProgress,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
@@ -87,17 +101,102 @@ export const TrainingShell = ({
     setSelections((current) => ({ ...current, [questionId]: optionId }));
   }, []);
 
+  const current: ReviewBlock = pathname.startsWith(LESEN_PATH)
+    ? 'lesen'
+    : 'hoeren';
+  const currentRef = useRef(current);
+  const progressRef = useRef(initialProgress);
+  const lastSavedAt = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const isDone = useRef(initialReview !== null);
+  const isDirty = useRef(false);
+
+  useEffect(() => {
+    currentRef.current = current;
+  }, [current]);
+
+  // Saves are sent one after another, so the last place wins. A failure is
+  // logged only: it never blocks choosing or saving an answer.
+  const flushProgress = useCallback(() => {
+    window.clearTimeout(timer.current);
+    timer.current = undefined;
+    const progress = progressRef.current;
+    if (!progress || isDone.current || !isDirty.current) return;
+    isDirty.current = false;
+    lastSavedAt.current = Date.now();
+    queue.current = queue.current.then(async () => {
+      try {
+        const result = await saveProgress({ attemptId, progress });
+        if (!result.ok) {
+          isDirty.current = true;
+          console.error({ progressError: result.error });
+        }
+      } catch (error) {
+        isDirty.current = true;
+        console.error({ error });
+      }
+    });
+  }, [attemptId, saveProgress]);
+
+  const reportProgress = useCallback(
+    (patch: Partial<AttemptProgress>, isUrgent = true) => {
+      if (isDone.current) return;
+      const previous = progressRef.current;
+      const next: AttemptProgress = {
+        ...previous,
+        ...patch,
+        block: patch.block ?? currentRef.current,
+      };
+      if (previous?.hoeren || patch.hoeren) {
+        next.hoeren = { ...previous?.hoeren, ...patch.hoeren };
+      }
+      if (previous?.lesen || patch.lesen) {
+        next.lesen = { ...previous?.lesen, ...patch.lesen };
+      }
+      // Opening a screen reports the place it just read: nothing to write.
+      if (JSON.stringify(next) === JSON.stringify(previous)) return;
+      isDirty.current = true;
+      progressRef.current = next;
+      const wait = lastSavedAt.current + PROGRESS_INTERVAL_MS - Date.now();
+      if (isUrgent || wait <= 0) flushProgress();
+      else if (timer.current === undefined) {
+        timer.current = window.setTimeout(flushProgress, wait);
+      }
+    },
+    [flushProgress],
+  );
+
+  const readProgress = useCallback(() => progressRef.current, []);
+
+  useEffect(() => {
+    const handleHidden = () => {
+      if (document.visibilityState === 'hidden') flushProgress();
+    };
+    document.addEventListener('visibilitychange', handleHidden);
+    window.addEventListener('pagehide', flushProgress);
+    return () => {
+      document.removeEventListener('visibilitychange', handleHidden);
+      window.removeEventListener('pagehide', flushProgress);
+      window.clearTimeout(timer.current);
+    };
+  }, [flushProgress]);
+
   const state: TrainingState = useMemo(
-    () => ({ selections, review, recordAnswer, setSaving: setIsSaving }),
-    [selections, review, recordAnswer],
+    () => ({
+      selections,
+      review,
+      recordAnswer,
+      setSaving: setIsSaving,
+      readProgress,
+      reportProgress,
+    }),
+    [selections, review, recordAnswer, readProgress, reportProgress],
   );
 
   const blocks = BLOCKS.filter(({ block }) =>
     questions.some((question) => question.skill === block),
   );
-  const current: ReviewBlock = pathname.startsWith(LESEN_PATH)
-    ? 'lesen'
-    : 'hoeren';
   const unanswered = {
     hoeren: countUnanswered(questions, selections, 'hoeren'),
     lesen: countUnanswered(questions, selections, 'lesen'),
@@ -108,13 +207,18 @@ export const TrainingShell = ({
     setFinishStatus('finishing');
     let result: FinishAttemptResult;
     try {
+      // The last place is stored before the attempt is closed.
+      flushProgress();
+      await queue.current;
       result = await finishAttempt({ attemptId });
     } catch (error) {
       console.error({ error });
       result = { ok: false, error: 'unavailable' };
     }
-    if (result.ok) setReview(result.review);
-    else setFinishStatus('error');
+    if (result.ok) {
+      isDone.current = true;
+      setReview(result.review);
+    } else setFinishStatus('error');
   };
 
   const requestFinish = () => {
@@ -166,10 +270,19 @@ export const TrainingShell = ({
     <TrainingContext.Provider value={state}>
       <Stack spacing={3}>
         {nav}
-        {trackIds.map((trackId) => (
+        {trackIds.map((trackId, trackIndex) => (
           <AudioPlayer
             key={trackId}
             resolveAudio={() => resolveAudio({ attemptId, trackId })}
+            initialPosition={
+              trackIndex === 0 ? (initialProgress?.positionSeconds ?? 0) : 0
+            }
+            onPosition={
+              trackIndex === 0
+                ? (seconds, isUrgent) =>
+                    reportProgress({ positionSeconds: seconds }, isUrgent)
+                : undefined
+            }
           />
         ))}
         {children}

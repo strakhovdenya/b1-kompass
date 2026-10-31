@@ -6,6 +6,7 @@ import {
   examContentSchema,
   findMaterialProblems,
   isGuestActive,
+  attemptProgressSchema,
   isLocale,
 } from './index';
 import type { ExamContent } from './index';
@@ -108,5 +109,38 @@ describe('material contract', () => {
       { code: 'missing-key', questionId: 'hoeren-2' },
       { code: 'unknown-key', questionId: 'hoeren-3' },
     ]);
+  });
+});
+
+describe('attemptProgressSchema', () => {
+  const valid = {
+    block: 'lesen',
+    positionSeconds: 17,
+    hoeren: { itemId: 'hoeren-3' },
+    lesen: { itemId: 'lesen-11', textId: 'lesen-text-3', paragraph: 2 },
+  };
+
+  it('accepts a complete place and a bare block', () => {
+    expect(attemptProgressSchema.safeParse(valid).success).toBe(true);
+    expect(attemptProgressSchema.safeParse({ block: 'hoeren' }).success).toBe(
+      true,
+    );
+  });
+
+  it('refuses unknown fields, negative or infinite positions', () => {
+    const bad = [
+      { ...valid, role: 'admin' },
+      { ...valid, score: 45 },
+      { ...valid, guestSessionId: 'x' },
+      { ...valid, positionSeconds: -1 },
+      { ...valid, positionSeconds: Infinity },
+      { ...valid, lesen: { ...valid.lesen, paragraph: 1.5 } },
+      { ...valid, hoeren: { itemId: 'hoeren-3', score: 1 } },
+      { ...valid, block: 'sprechen' },
+      { ...valid, hoeren: { itemId: 'x'.repeat(3000) } },
+    ];
+    for (const value of bad) {
+      expect(attemptProgressSchema.safeParse(value).success).toBe(false);
+    }
   });
 });

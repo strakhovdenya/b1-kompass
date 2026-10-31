@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
@@ -10,6 +11,7 @@ import type {
   SaveAnswerResult,
   Selections,
 } from '@b1k/domain';
+import { useTraining } from '../training/TrainingContext';
 import { PracticeSet } from '../practice/PracticeSet';
 import type { SaveAnswerInput } from '../practice/QuestionCard';
 import { HoerenPairView } from './HoerenPairView';
@@ -103,6 +105,13 @@ export const HoerenSingleScreen = ({
 }: HoerenSingleScreenProps) => {
   const t = useTranslations('hoeren');
   const tPractice = useTranslations('practice');
+  const { readProgress, reportProgress } = useTraining();
+  const stored = readProgress();
+  const initialStepKey = stored?.hoeren?.itemId ?? null;
+  const handleStepChange = useCallback(
+    (itemId: string) => reportProgress({ block: 'hoeren', hoeren: { itemId } }),
+    [reportProgress],
+  );
   const shown = selectQuestions(questions, groups);
   const shownGroups = [
     ...selectPairGroups(questions, groups),
@@ -136,6 +145,8 @@ export const HoerenSingleScreen = ({
           )
         }
         initialSelections={initialSelections}
+        initialStepKey={initialStepKey}
+        onStepChange={handleStepChange}
         saveAnswer={saveAnswer}
       />
     </Stack>

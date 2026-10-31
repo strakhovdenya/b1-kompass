@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  attemptProgressSchema,
   examContentSchema,
   selectAttemptScope,
   selectScoringPolicy,
@@ -7,6 +8,7 @@ import {
 } from '@b1k/domain';
 import type {
   AnswerKeys,
+  AttemptProgress,
   AttemptReview,
   AttemptScope,
   DtzLevel,
@@ -19,6 +21,8 @@ import type {
   ReviewResult,
   SaveAnswerError,
   SaveAnswerResult,
+  SaveProgressError,
+  SaveProgressResult,
   ScoringPolicy,
   Selections,
   SkillTotals,
@@ -46,6 +50,8 @@ export interface PracticeState {
   selections: Selections;
   trackIds: string[];
   review: AttemptReview | null;
+  // Where the guest stopped; null for a new or a completed attempt.
+  progress: AttemptProgress | null;
 }
 
 // Unknown fields such as role, owner or score are rejected, not ignored.
@@ -55,12 +61,23 @@ const saveAnswerInput = z.strictObject({
   optionId: z.string().min(1).max(10),
 });
 
+const saveProgressInput = z.strictObject({
+  attemptId: z.uuid(),
+  progress: attemptProgressSchema,
+});
+
 const attemptInput = z.strictObject({ attemptId: z.uuid() });
 
 const RULE_ERRORS: Readonly<Record<string, SaveAnswerError>> = {
   guest_session_invalid: 'session-invalid',
   attempt_not_found: 'attempt-not-found',
   option_not_allowed: 'option-not-allowed',
+};
+
+const PROGRESS_RULE_ERRORS: Readonly<Record<string, SaveProgressError>> = {
+  guest_session_invalid: 'session-invalid',
+  attempt_not_found: 'attempt-not-found',
+  progress_not_allowed: 'progress-not-allowed',
 };
 
 const FINISH_RULE_ERRORS: Readonly<Record<string, FinishAttemptError>> = {
@@ -77,6 +94,7 @@ interface AttemptRow {
   status: 'active' | 'completed';
   scope: AttemptScope;
   exam_version_id: string;
+  progress?: unknown;
 }
 
 interface AnswerRow {
@@ -106,7 +124,7 @@ interface VersionMaterial {
   content: ExamContent;
 }
 
-const ATTEMPT_COLUMNS = 'id, status, scope, exam_version_id';
+const ATTEMPT_COLUMNS = 'id, status, scope, exam_version_id, progress';
 const RESULT_COLUMNS = [
   'scope, score, max_score, correct_count, incorrect_count, skipped_count',
   'computed_at, percent, hoeren_score, hoeren_max, lesen_score, lesen_max',
@@ -323,6 +341,13 @@ const chooseVersion = async (
   return getPublishedVersion(deps, slug);
 };
 
+// A stored place that no longer fits the schema is dropped, so a bad row can
+// never break the page; the guest starts at the beginning.
+const parseStoredProgress = (stored: unknown): AttemptProgress | null => {
+  const parsed = attemptProgressSchema.safeParse(stored);
+  return parsed.success ? parsed.data : null;
+};
+
 // Opens the practice set: the material of the guest's active attempt, or of
 // the latest published version without one, and the guest's latest attempt
 // for it (open_attempt): a completed attempt comes with its review, otherwise
@@ -360,8 +385,54 @@ export const openPractice = async (
     selections,
     trackIds,
     review,
+    progress: review ? null : parseStoredProgress(attempt.progress),
   };
   return { status: 'ready', practice };
+};
+
+// The stored place of the guest's latest active attempt, read without opening
+// or starting anything; used only to choose the block a returning guest enters.
+export const readActiveProgress = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+): Promise<AttemptProgress | null> => {
+  const { data, error } = await deps.db
+    .from('attempts')
+    .select('progress')
+    .eq('guest_session_id', guest.sessionId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle<{ progress: unknown }>();
+  if (error) throw new Error('Progress lookup failed', { cause: error });
+  return data ? parseStoredProgress(data.progress) : null;
+};
+
+export const saveProgress = async (
+  deps: ServerDeps,
+  token: string | null | undefined,
+  input: unknown,
+): Promise<SaveProgressResult> => {
+  const parsed = saveProgressInput.safeParse(input);
+  if (!parsed.success) return { ok: false, error: 'invalid-input' };
+  const guest = await resolveGuestSession(deps, token);
+  if (!guest) return { ok: false, error: 'session-invalid' };
+  const { attemptId, progress } = parsed.data;
+  const { error } = await deps.db.rpc('save_attempt_progress', {
+    p_session_id: guest.sessionId,
+    p_attempt_id: attemptId,
+    p_progress: progress,
+    p_now: deps.clock.now().toISOString(),
+  });
+  if (error) {
+    const rule = ruleViolation(error);
+    const known = rule ? PROGRESS_RULE_ERRORS[rule] : undefined;
+    if (known) return { ok: false, error: known };
+    console.error({ error });
+    return { ok: false, error: 'unavailable' };
+  }
+  return { ok: true, progress };
 };
 
 export const saveAnswer = async (

@@ -57,8 +57,10 @@ const render = (initialReview: AttemptReview | null) =>
         trackIds={['track-1']}
         initialSelections={{ 'hoeren-1': 'a' }}
         initialReview={initialReview}
+        initialProgress={null}
         resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
         finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
+        saveProgress={async () => ({ ok: false, error: 'unavailable' })}
       >
         <p>block page</p>
       </TrainingShell>

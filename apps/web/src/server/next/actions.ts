@@ -3,10 +3,21 @@
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { isLocale } from '@b1k/domain';
-import type { FinishAttemptResult, SaveAnswerResult } from '@b1k/domain';
-import { finishAttempt, saveAnswer } from '../attempts/attempts';
+import type {
+  FinishAttemptResult,
+  SaveAnswerResult,
+  SaveProgressResult,
+} from '@b1k/domain';
+import {
+  finishAttempt,
+  readActiveProgress,
+  saveAnswer,
+  saveProgress,
+} from '../attempts/attempts';
+import type { ServerDeps } from '../db';
 import { resolveAttemptAudio } from '../audio/audio';
 import type { AudioAccessResult } from '../audio/audio';
+import type { GuestContext } from '../guest-session/session';
 import {
   createGuestSession,
   resolveGuestSession,
@@ -19,6 +30,19 @@ import {
   writeGuestCookie,
 } from './request';
 
+const LESEN_PATH = '/practice/lesen';
+
+// A returning guest enters the block where they stopped. Anything but an
+// active attempt with a stored Lesen place opens Hoeren, as before.
+const practiceEntry = async (
+  deps: ServerDeps,
+  guest: GuestContext | null,
+): Promise<string> => {
+  if (!guest) return '/practice';
+  const progress = await readActiveProgress(deps, guest);
+  return progress?.block === 'lesen' ? LESEN_PATH : '/practice';
+};
+
 // Over the site-wide limit no session and no cookie are created; the home
 // page shows the busy notice instead.
 export const continueAsGuest = async (): Promise<void> => {
@@ -29,13 +53,18 @@ export const continueAsGuest = async (): Promise<void> => {
     if (result.status === 'rate-limited') redirect('/?busy=1');
     await writeGuestCookie(result.created);
   }
-  redirect('/practice');
+  redirect(await practiceEntry(deps, current));
 };
 
 export const saveAnswerAction = async (
   input: unknown,
 ): Promise<SaveAnswerResult> =>
   saveAnswer(getServerDeps(), await readGuestToken(), input);
+
+export const saveProgressAction = async (
+  input: unknown,
+): Promise<SaveProgressResult> =>
+  saveProgress(getServerDeps(), await readGuestToken(), input);
 
 export const finishAttemptAction = async (
   input: unknown,

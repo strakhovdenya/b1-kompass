@@ -32,6 +32,9 @@ interface PracticeSetProps {
   // Lays out the cards of a group step; without it they are stacked.
   renderGroup?: (step: PracticeStep, cards: ReactNode[]) => ReactNode;
   initialSelections: Selections;
+  // The step the guest stopped at; an unknown key opens the first step.
+  initialStepKey?: string | null;
+  onStepChange?: (stepKey: string) => void;
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
 }
 
@@ -45,10 +48,19 @@ export const PracticeSet = ({
   groups = [],
   renderGroup,
   initialSelections,
+  initialStepKey = null,
+  onStepChange,
   saveAnswer,
 }: PracticeSetProps) => {
   const t = useTranslations('set');
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() =>
+    Math.max(
+      0,
+      buildSteps(questions, groups).findIndex(
+        (item) => item.key === initialStepKey,
+      ),
+    ),
+  );
   const [selections, setSelections] = useState<Selections>(initialSelections);
   const [unsaved, setUnsaved] = useState<
     Readonly<Record<string, UnsavedChoice>>
@@ -65,6 +77,10 @@ export const PracticeSet = ({
 
   const steps = buildSteps(questions, groups);
   const step = steps[index];
+  const stepKey = step?.key;
+  useEffect(() => {
+    if (stepKey) onStepChange?.(stepKey);
+  }, [stepKey, onStepChange]);
   if (!step) return null;
   const total = steps.length;
   const answered = questions.filter((item) =>

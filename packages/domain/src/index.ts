@@ -34,6 +34,16 @@ export type {
   MaterialContext,
   MaterialProblem,
 } from './material/schema';
+export {
+  MAX_POSITION_SECONDS,
+  MAX_PROGRESS_BYTES,
+  attemptProgressSchema,
+} from './progress/schema';
+export type {
+  AttemptProgress,
+  SaveProgressError,
+  SaveProgressResult,
+} from './progress/schema';
 export { selectScoringPolicy, toPercent } from './scoring/policy';
 export type {
   AttemptScope,
