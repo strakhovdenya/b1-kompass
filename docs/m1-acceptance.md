@@ -1,6 +1,6 @@
 # Приёмка M1
 
-Состояние на 2026-11-01. Итоговый отчёт задачи P5-T2 (Issue #14) по 19 критериям PRD [Guest Online Exam Trainer](prd/PRD-guest-online-exam-trainer.md). Ниже он дополнен отчётом P5-T1 (Issue #13) о четырёх независимых сеансах.
+Состояние на 2026-11-01. Итоговый отчёт задачи P5-T2 (Issue #14) по 19 критериям PRD [Guest Online Exam Trainer](prd/DONE-PRD-guest-online-exam-trainer.md). Ниже он дополнен отчётом P5-T1 (Issue #13) о четырёх независимых сеансах.
 
 ## Решение: M1 не принят
 

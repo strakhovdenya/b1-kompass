@@ -1,9 +1,12 @@
-# PRD: Guest Online Exam Trainer — M1
+# DONE — PRD: Guest Online Exam Trainer — M1
 
 **Date**: 2026-10-30
-**Status**: Draft
+**Status**: Done
+**Completed**: 2026-11-01 — отмечено завершённым владельцем проекта.
 **Affected part of the project**: web — планируемое веб-приложение; его серверные операции, облачная база и учебные ресурсы
 **Related issue/backlog item**: new feature — not yet filed as an issue
+
+Отметка Done фиксирует завершение работы по PRD по указанию владельца. Исходные требования и контекст подготовки сохранены ниже; фактически выполненные и ещё непроверенные проверки отражаются отдельно в [отчёте приёмки M1](../m1-acceptance.md).
 
 ## Goal
 
