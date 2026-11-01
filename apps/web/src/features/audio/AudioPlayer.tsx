@@ -241,6 +241,7 @@ export const AudioPlayer = ({
             variant="text"
             onClick={() => seekTo(Math.max(0, position - SKIP_BACK_SECONDS))}
             disabled={!canPlay}
+            data-testid="audio-back"
           >
             {t('back', { seconds: SKIP_BACK_SECONDS })}
           </Button>

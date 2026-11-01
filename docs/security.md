@@ -1,6 +1,6 @@
 # Безопасность B1 Kompass (M1)
 
-Состояние на задачу P1-T2 (#2) и лимит гостевых сеансов (#18). Здесь описано то, что реально введено и проверено; облачная проверка отмечена отдельно.
+Состояние на приёмку M1 (P5-T2, #14), 2026-11-01. Здесь описано то, что реально введено и проверено; облачная проверка отмечена отдельно. Итоговая матрица с результатом каждой проверки — в разделе «Приёмочная матрица доступа».
 
 ## Принципы
 
@@ -36,6 +36,45 @@
 | Зарегистрироваться (Supabase Auth) | ❌ | ❌ регистрация выключена (`enable_signup = false`) | — |
 
 Матрица описывает код и проверки на локальной Supabase и в CI. Права новых объектов P1-T2 в облачном проекте скриптом с publishable-ключом пока не проверялись (см. «Статус проверок»).
+
+## Приёмочная матрица доступа (#14)
+
+Обе таблицы проверяются одним прогоном на одной версии: `apps/web/tests/release-journey.spec.ts`, Playwright-проект `full`, синтетический полный комплект `test-full-dtz`, локальная Supabase. Каждая строка — шаг теста. Сервер вызывается через настоящие функции (`src/server/**`), Data API и Storage — клиентом с обычным publishable-ключом. После каждой группы отказов БД перечитывается: ответы, попытки, место, результат и сеанс владельца остаются прежними.
+
+### Разрешённые операции гостя
+
+Тест «release guest allowed operations pass access matrix».
+
+| Операция | Путь | Проверенный результат |
+| --- | --- | --- |
+| Войти без email и пароля | `createGuestSession` → `create_guest_session` | Строка `guest_sessions` с `locale = en`, срок ровно 720 часов от `created_at`. `resolveGuestSession` по токену возвращает тот же сеанс |
+| Выбрать язык интерфейса | `setGuestLocale` | В БД `locale = ru` только у этого сеанса |
+| Открыть опубликованный комплект | `openPractice` → `open_attempt` | 45 заданий. В выдаче нет `correct*` и `answer_keys`. Одна активная попытка |
+| Сохранить ответ | `saveAnswer` → `save_attempt_answer` | Ответ перечитан из `attempt_answers` |
+| Сохранить место | `saveProgress` → `save_attempt_progress` | `attempts.progress` равен отправленному |
+| Слушать запись своей попытки | `resolveAttemptAudio` | Выдаются только `url`, `contentType` и `expiresAt`. По URL скачиваются байты, `sha256` которых совпадает с `exam_version_audio.sha256` |
+| Завершить попытку | `finishAttempt` → `finish_attempt` | Одна строка `attempt_results`, балл посчитан сервером |
+| Получить разбор своей завершённой попытки | `getAttemptReview` | Тот же разбор. Решения совпадают с ключом версии |
+| Начать заново | `restartAttempt` → `restart_attempt` | Прежняя попытка `completed` с одним результатом, новая `active` без ответов |
+
+### Запрещённые пути
+
+Тест «release rejects guest privilege and private resource attacks».
+
+| Попытка | Путь | Проверенный результат |
+| --- | --- | --- |
+| Получить ключ до завершения | `getAttemptReview`, `restartAttempt` своей активной попытки | `not-completed`, ключ не выдан |
+| | HTML и RSC-ответы `/practice`, `/practice/lesen` владельца | Содержат его попытку, но не `correctOptionId`, `correct_option_id`, `review-solution`, `answer_keys` |
+| Действовать без сеанса или после срока | `saveAnswer`, `saveProgress`, `finishAttempt`, `getAttemptReview`, `restartAttempt`, `resolveAttemptAudio` с `null` и с истёкшим токеном (часы на `expires_at`) | `session-invalid` у всех шести |
+| Действовать в чужой попытке | те же операции с токеном другого гостя | `attempt-not-found`, у записи — `not-found`. Ответы чужого гостя не созданы |
+| Подменить роль, владельца, балл, уровень, статус, область, путь объекта | лишние поля `role`, `guestSessionId`, `score`, `level`, `status`, `scope`, `objectPath` во всех операциях | `invalid-input` у всех десяти вызовов |
+| Прочитать таблицы | Data API `select` на `answer_keys`, `attempt_answers`, `attempt_results`, `attempts`, `exam_version_audio`, `exam_versions`, `exams`, `guest_events`, `guest_sessions` | Ошибка у каждой, `data = null` |
+| Записать готовый результат, ключ, статус, владельца, срок, событие или материал | Data API `insert`/`update`/`delete` на `attempt_results`, `answer_keys`, `attempts`, `guest_sessions`, `attempt_answers`, `exam_versions`, `guest_events` | Ошибка у каждой записи. Состояние владельца не изменилось |
+| Вызвать функцию БД | `rpc` всех девяти функций: `create_guest_session`, `start_attempt`, `open_attempt`, `save_attempt_answer`, `save_attempt_progress`, `finish_attempt`, `restart_attempt`, `publish_exam_version`, `purge_expired_empty_guest_sessions` | `42501` у каждой. Поддельный сеанс и поддельный экзамен в БД не появились |
+| Прочитать или изменить запись в Storage | `exam-sources`: `download`, `createSignedUrl`, `list` (корень и `audio/`), публичный URL, `upload`, `update`, `remove` | Чтение, подпись и запись отклонены. Список пуст, публичный URL отвечает ошибкой ≥ 400, `remove` ничего не удаляет. Объект скачан сервисным ключом, `sha256` прежний |
+| Зарегистрироваться | Supabase Auth `signUp` | Ошибка, пользователь не создан |
+
+Личные ответы и общий кэш проверяет `apps/web/tests/access-matrix.spec.ts` «guest cache never returns another attempt answers». Гость A сохраняет ответы в Hören и Lesen. Перед каждым запросом гостя B и посетителя без cookie гость A запрашивает тот же адрес. Проверяются страницы `/practice` и `/practice/lesen`, а также записанные из браузера RSC-запросы клиентской навигации и prefetch с тем же `_rsc`. Каждый ответ получает `Cache-Control` с `private` и `no-store`, без `public`, `s-maxage`, `x-nextjs-cache` и `Age`. Ответы гостя A содержат его попытку и ответы, это контрольная проверка признаков. В ответах B и посетителя без cookie этих признаков нет, у B на экране не отмечено ни одного варианта.
 
 ## RLS и права
 
@@ -87,4 +126,8 @@
 | Те же права в облачном проекте Supabase | ручная проверка 2026-10-31 скриптом с publishable-ключом | ✅ все отказы подтверждены, регистрация выключена; см. `docs/deployment.md` |
 | Права новых объектов P1-T2 (`exam_version_audio`, `open_attempt`, `finish_attempt`) в облачном проекте | — | ⏳ скриптом с publishable-ключом не проверялись: миграция применена владельцем, но облачная проверка отказов после неё не выполнялась |
 | Задача очистки в облачном проекте (Integrations → Cron) | ручная проверка владельца после `supabase db push` | ⏳ не выполнена |
-| Работа сайта на Vercel по HTTPS | ручная проверка владельца | ⏳ не выполнена |
+| Приёмочная матрица: разрешённые операции, запрещённые серверные, Data API и Storage пути | `apps/web/tests/release-journey.spec.ts` «release guest allowed operations pass access matrix», «release rejects guest privilege and private resource attacks» | ✅ локальная Supabase 2026-11-01. CI `Quality` — на PR #34 |
+| Общий кэш не отдаёт чужие ответы | `apps/web/tests/access-matrix.spec.ts` «guest cache never returns another attempt answers» | ✅ локальная Supabase 2026-11-01. CI `Quality` — на PR #34 |
+| Production: заголовки и клиентский код | `curl https://b1-kompass.vercel.app/` 2026-10-31 23:23 UTC, только чтение | ✅ `200`, `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, HSTS, `nosniff`, `DENY`, `same-origin`. `/practice` без cookie → `307` на `/`, `http://` → `308` на HTTPS. В 12 JS-файлах главной (≈ 0,9 МБ) нет `sb_secret_`, `service_role`, `SUPABASE_SECRET_KEY`, адреса Supabase, `answer_keys`, `correct_option_id` |
+| Работа сайта на Vercel по HTTPS: вход, ответы, разбор | ручная проверка владельца | ⏳ не выполнена: гостевой маршрут на production не проходился (решение владельца: только чтение) |
+| Те же отказы Data API и Storage в облачном проекте после миграций #3–#12 | скрипт с publishable-ключом | ⏳ не выполнена |

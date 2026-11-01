@@ -32,8 +32,28 @@ export interface BrowserGuest {
   attemptId: string;
 }
 
-// A fresh guest entered through the home page, with its one active attempt
-// read back from the test database.
+export interface ContextAttempt {
+  token: string;
+  sessionId: string;
+  attemptId: string;
+}
+
+// The guest of a browser context and its one active attempt, read back from
+// the test database.
+export const activeAttemptOf = async (
+  context: BrowserContext,
+): Promise<ContextAttempt> => {
+  const token = await tokenOf(context);
+  const session = await readSessionByToken(token);
+  if (!session) throw new Error('guest session is missing');
+  const attempts = await readAttempts(session.id);
+  const active = attempts.filter((attempt) => attempt.status === 'active');
+  const [attempt] = active;
+  if (active.length !== 1 || !attempt) throw new Error('one active attempt');
+  return { token, sessionId: session.id, attemptId: attempt.id };
+};
+
+// A fresh guest entered through the home page.
 export const startBrowserGuest = async (
   browser: Browser,
 ): Promise<BrowserGuest> => {
@@ -43,13 +63,7 @@ export const startBrowserGuest = async (
   await page.getByRole('button', { name: 'Continue as guest' }).click();
   await page.waitForURL('**/practice');
   await expect(card(page, 'hoeren-1')).toBeVisible();
-  const token = await tokenOf(context);
-  const session = await readSessionByToken(token);
-  if (!session) throw new Error('guest session is missing');
-  const attempts = await readAttempts(session.id);
-  const attempt = attempts[0];
-  if (attempts.length !== 1 || !attempt) throw new Error('one attempt');
-  return { context, page, token, sessionId: session.id, attemptId: attempt.id };
+  return { context, page, ...(await activeAttemptOf(context)) };
 };
 
 export const audioOf = (page: Page): Locator =>
