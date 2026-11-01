@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it } from 'vitest';
 import type { ExamGroup, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
+import ruMessages from '../../../messages/ru.json';
 import {
   HoerenSingleScreen,
   selectQuestions,
@@ -119,5 +120,88 @@ describe('HoerenSingleScreen with a pair', () => {
     expect(html).toContain('Question 1 of 3');
     expect(html).toContain('Answered: 2 of 4');
     expect(html).toContain('data-testid="go-to-question-3"');
+  });
+});
+
+describe('HoerenSingleScreen introduction', () => {
+  const intro = (
+    shown: ExamQuestion[],
+    groups: ExamGroup[] = [],
+    locale: 'en' | 'ru' = 'en',
+  ) => {
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider
+        locale={locale}
+        messages={locale === 'en' ? messages : ruMessages}
+      >
+        <HoerenSingleScreen
+          questions={shown}
+          groups={groups}
+          initialSelections={{}}
+        />
+      </NextIntlClientProvider>,
+    );
+    const start = html.indexOf('Hören,');
+    return html.slice(start, html.indexOf('</p>', start));
+  };
+
+  const shared: ExamGroup = {
+    id: 'set-4',
+    kind: 'shared-set',
+    teil: 4,
+    trackId: 'track-127',
+    options: [
+      { id: 'a', text: 'Erste' },
+      { id: 'b', text: 'Zweite' },
+    ],
+    questionIds: ['h5'],
+  };
+
+  it('intro names only the parts of a short set', () => {
+    const short = [
+      question('h1', { number: 1, teil: 1 }),
+      question('h2', { number: 2, teil: 1 }),
+    ];
+    const text = intro(short, [pair, shared]);
+    expect(text).toContain('Hören, part 1: 2 questions');
+    for (const missing of ['parts', 'part 3', 'part 4', 'a–f']) {
+      expect(text).not.toContain(missing);
+    }
+    const russian = intro(short, [pair, shared], 'ru');
+    expect(russian).toContain('Hören, часть 1: 2 задания');
+    expect(russian).not.toContain('части');
+    expect(russian).not.toContain('a–f');
+  });
+
+  it('intro names pair and shared set of a full set', () => {
+    const text = intro(questions, [pair, shared]);
+    expect(text).toContain('Hören, parts 1 to 4: 5 questions');
+    expect(text).toContain('In part 3 the two questions of one conversation');
+    expect(text).toContain('In part 4 the whole list of statements a–f');
+    const russian = intro(questions, [pair, shared], 'ru');
+    expect(russian).toContain('Hören, части 1–4: 5 заданий');
+    expect(russian).toContain('В части 3');
+    expect(russian).toContain('В части 4');
+  });
+
+  it('intro omits the shared set when part 4 is missing', () => {
+    const text = intro(questions, [pair]);
+    expect(text).toContain('Hören, parts 1 to 3: 4 questions');
+    expect(text).toContain('In part 3 the two questions of one conversation');
+    expect(text).not.toContain('part 4');
+    expect(text).not.toContain('a–f');
+  });
+
+  it('hoeren intro keys exist in both languages', () => {
+    expect(Object.keys(ruMessages.hoeren).sort()).toEqual(
+      Object.keys(messages.hoeren).sort(),
+    );
+  });
+
+  it('intro of a single question has no missing parts', () => {
+    const text = intro([question('h1', { number: 1, teil: 1 })], [pair]);
+    expect(text).toContain('Hören, part 1: 1 question,');
+    expect(text).not.toContain('questions');
+    expect(text).not.toContain('part 3');
   });
 });
