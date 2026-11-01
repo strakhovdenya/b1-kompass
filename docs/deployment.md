@@ -118,7 +118,8 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 3. Storage и cron: бакет `exam-sources` создан миграцией и приватен. В Integrations → Cron есть задача `purge-expired-empty-guest-sessions`.
 4. Материал: доверенная загрузка с компьютера владельца. Короткий набор — `npm run seed:pilot`, полный пилот — `npm run prepare:pilot`, затем `npm run publish:pilot` (команды выше). Нужны `SUPABASE_URL`, `SUPABASE_SECRET_KEY` и файлы в `private/`. Повтор с тем же содержимым возвращает прежнюю версию, изменённый материал — новую.
 5. Vercel: проект с настройками выше, переменные Production и Preview. Деплой — merge в `main`.
-6. Проверка после деплоя: статус `Vercel: success` у head `main`. `curl -I https://b1-kompass.vercel.app/` → `200` и `Cache-Control: private, no-cache, no-store…`. Затем ручная приёмка по `docs/m1-acceptance.md`: вход, Hören, Lesen, разбор, «Пройти заново» на телефоне и компьютере, при выключенном компьютере владельца.
+6. Перед выпуском: `npx supabase migration list --linked` должна показать каждую миграцию и в Local, и в Remote. Пока в Remote нет `20261104…`–`20261106…`, страница `/practice` падает с «Something went wrong». `curl` главной этого не замечает.
+7. Проверка после деплоя: статус `Vercel: success` у head `main`. `curl -I https://b1-kompass.vercel.app/` → `200` и `Cache-Control: private, no-cache, no-store…`. Затем ручная приёмка по `docs/m1-acceptance.md`: вход, Hören, Lesen, разбор, «Пройти заново» на телефоне и компьютере, при выключенном компьютере владельца.
 
 Сайт и запись не зависят от компьютера владельца. Страницы отдаёт Vercel, данные и аудио — Supabase Storage. Docker и локальные процессы нужны только для разработки и тестов.
 
@@ -133,11 +134,11 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 | Реальное задание пилота | ✅ опубликовано доверенной загрузкой с ключом издателя |
 | Миграция `20261101000000_short_practice.sql` (P1-T2) в облаке | ✅ применена владельцем: `supabase migration list --linked` показывает `20261101000000` в Local и Remote. Seed из `main` после неё не работает: 5-аргументная `publish_exam_version` удалена |
 | Короткий набор Hören Teil 1 с оригинальной записью в облаке | ✅ опубликован владельцем 2026-10-31: `npm run seed:pilot` → `Pilot short set published: version 2de7ca2f-fc8b-4c62-bbfe-bc10e4f5c5fc`. Ключ — официальный ключ telc (Lösungen KB/AB, стр. 6). Запись — telc Track 127 (весь Hören DTZ, Teil 1 в начале). Ни ключ, ни запись в Git не хранятся |
-| Полный пилот (20 Hören, 25 Lesen) в облаке | ⏳ не опубликован; подготовка и загрузка описаны выше, сверку с оригиналом делает владелец |
+| Полный пилот (20 Hören, 25 Lesen) в облаке | ✅ опубликован владельцем 2026-11-01: `npm run publish:pilot`, версия `729d4787-8bc8-4190-8e15-68f898614372`. Файлы подготовлены `private/build-draft.mjs` и `npm run prepare:pilot` (ключ сверен с Lösungen: 45 из 45). Сверка заданий и записи с оригиналом ⏳ за владельцем |
 | Прослушивание и разбор в облаке | ⏳ не проверены |
 | Отказы publishable-ключа в облаке | ✅ 7 таблиц, запись балла, 3 функции, бакет `exam-sources` (чтение, список, загрузка), GraphQL — все отклонены |
 | Проект Vercel `b1-kompass` | ✅ создан: Root Directory `apps/web`, Node.js 24.x, GitHub `strakhovdenya/b1-kompass`, переменные Production/Preview (sensitive) |
-| Миграции #3–#12 (`20261102…`–`20261106…`) в облаке | ⏳ не проверено в рамках #14: `supabase migration list --linked` агентом не запускался, доступа к облаку нет |
+| Миграции `20261104…`–`20261106…` (#10–#12) в облаке | ✅ применены владельцем после того, как `/practice` на preview упал с «Something went wrong». Проверено агентом 2026-11-01: `supabase migration list --linked` показывает все 7 миграций в Local и Remote |
 | Production URL `https://b1-kompass.vercel.app` | ✅ отвечает по HTTPS. Статус `Vercel: success` у `e78806c` (head `main`, merge PR #33) в 2026-10-31 23:03 UTC. Проверка `curl` 2026-10-31 23:23 UTC, только чтение: главная `200` с «Continue as guest», `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, ответ из `fra1`; `/practice` без cookie → `307` на `/`; `http://` → `308` на HTTPS |
 | Гостевой маршрут на production (вход, ответ, разбор) | ⏳ не выполнялся: по решению владельца в #14 production проверялся только чтением, без создания гостевого сеанса |
 | Проверка с телефона и компьютера | ⏳ не выполнена |

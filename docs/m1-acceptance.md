@@ -22,7 +22,7 @@
 | Опубликованный URL | https://b1-kompass.vercel.app |
 | Deployed SHA (production) | `e78806cc3c08826926b20e67593015eaddcf3033`: head `main`, merge PR #33. Статус `Vercel: success` 2026-10-31 23:03 UTC (`gh api repos/strakhovdenya/b1-kompass/commits/e78806c/statuses`) |
 | Проверка production | 2026-10-31 23:23 UTC, только чтение (`curl`, решение владельца: без создания гостевого сеанса). Главная `200` с «Continue as guest», `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, HSTS, `nosniff`, `X-Frame-Options: DENY`, ответ из `fra1`. `/practice` без cookie → `307` на `/`, `http://` → `308` на HTTPS. В 12 JS-файлах главной (≈ 0,9 МБ) нет `sb_secret_`, `service_role`, `SUPABASE_SECRET_KEY`, адреса Supabase, `answer_keys`, `correct_option_id` |
-| Материал в облаке | Короткий набор Hören Teil 1, версия `2de7ca2f-fc8b-4c62-bbfe-bc10e4f5c5fc` (`docs/deployment.md`). Полный пилот ⏳ не опубликован |
+| Материал в облаке | Полный пилот (20 Hören + 25 Lesen, Track 127), версия `729d4787-8bc8-4190-8e15-68f898614372`: опубликован владельцем 2026-11-01 через `npm run publish:pilot` (ответ скрипта `Full pilot published`). До этого в облаке был только короткий набор Hören Teil 1, версия `2de7ca2f-fc8b-4c62-bbfe-bc10e4f5c5fc`. Агент облачную базу не читал: версия известна из вывода скрипта владельца |
 | Автотесты | Ветка `task/ISSUE-14-release-acceptance`, Windows 11, Node 24, локальная Supabase в Docker, 2026-11-01. `npm run typecheck`, `npm run lint` ✅; `npm test` ✅ 13 файлов, 66 тестов; `npm run build` ✅; `npm run test:e2e` ✅ 130 из 130 (проекты `chromium`, `pair`, `full`, `limits`), 3,6 мин |
 | Повторяемость | `npx playwright test release-journey.spec.ts access-matrix.spec.ts --project=full --repeat-each=4 --workers=2`: 28 из 28. Три длинных маршрута помечены `test.slow()`: в одном прогоне под нагрузкой они превысили 30 с по умолчанию (тайм-аут, не ошибка проверки) |
 | CI этой задачи | `Quality` на head PR задачи #14 — ссылка в PR и в Issue #14. Последний CI `main` до задачи: ✅ [run 41250755131](https://github.com/strakhovdenya/b1-kompass/actions/runs/41250755131) на `e78806c` |
@@ -33,10 +33,10 @@
 
 | AC | Автоматически: доказательства | Авто | Реально: опубликованный сайт, устройства | Итог |
 | --- | --- | --- | --- | --- |
-| AC-01 HTTPS-сайт, реальный экзамен на телефоне и компьютере | `release-journey.spec.ts` «release journey is accessible and responsive»: маршрут вход → Hören → Lesen → результат при 390×844 и 1440×900 | PASS | HTTPS и главная ✅ (`curl`). Полного пилота в облаке нет. Телефон и компьютер ⏳ | ⏳ непроверено |
+| AC-01 HTTPS-сайт, реальный экзамен на телефоне и компьютере | `release-journey.spec.ts` «release journey is accessible and responsive»: маршрут вход → Hören → Lesen → результат при 390×844 и 1440×900 | PASS | HTTPS и главная ✅ (`curl`). Владелец 2026-11-01 сообщил, что после публикации полного пилота маршрут открывается и работает (без деталей и без отметок по устройствам). Телефон и компьютер ⏳ | ⏳ непроверено |
 | AC-02 вход без пароля, English по умолчанию | `guest-entry.spec.ts` «fresh guest starts in English and owns locale», «ignores browser and previous account locale». `release-journey.spec.ts` «release guest allowed operations pass access matrix» (сеанс `en`, срок 720 ч). `guest-renewal.spec.ts` «expiry creates fresh guest without sliding deadline» | PASS | ⏳ | ⏳ непроверено |
 | AC-03 EN/RU без потери ответов и позиции | `full-training.spec.ts` «locale switches entire route without losing state». `hoeren-single.spec.ts` «both locale directions preserve actual media state». `multi-guest.spec.ts` «one guest actions never reset three others» | PASS | ⏳ | ⏳ непроверено |
-| AC-04 опубликован проверенный комплект 20 + 25 | `material-publication.spec.ts` «publishes validated full pilot with source references», «rejected pilot leaves no partial state». `multi-guest.spec.ts` «published test set retains all assessed questions and resource links», «pilot integrity fails on missing key or resource». Domain: «missing key refuses full exam scoring» | PASS (синтетический комплект) | Полный пилот в облаке ⏳ не опубликован. Сверка с PDF, ключом и Track 127 ⏳ | ⏳ непроверено |
+| AC-04 опубликован проверенный комплект 20 + 25 | `material-publication.spec.ts` «publishes validated full pilot with source references», «rejected pilot leaves no partial state». `multi-guest.spec.ts` «published test set retains all assessed questions and resource links», «pilot integrity fails on missing key or resource». Domain: «missing key refuses full exam scoring» | PASS (синтетический комплект) | Полный пилот в облаке опубликован 2026-11-01. Ключ сверен скриптом `private/build-draft.mjs` с текстом Lösungen: 45 из 45 совпали (проверка по тексту, не по изображению). Сверка заданий с PDF и записи Track 127 с оригиналом ⏳ | ⏳ непроверено |
 | AC-05 Hören Teil 1–4: одиночные, пара, общий набор | `hoeren-single.spec.ts`, `hoeren-pair.spec.ts` «paired questions render and save independently», `hoeren-complete.spec.ts` «shared pool remains visible for questions 18 to 20». Узкий экран: `release-journey.spec.ts` «narrow enlarged text keeps actions visible without focus trap» (Teil 1, пара и Teil 4 при 390 px и тексте 200 %) | PASS | ⏳ | ⏳ непроверено |
 | AC-06 Lesen рядом с текстом, переключение на узком | `lesen-layout.spec.ts` «responsive reading preserves selection», «long reading preserves anchor across viewport changes». `release-journey.spec.ts` (Text/Task при 390 px) | PASS | ⏳ | ⏳ непроверено |
 | AC-07 цельная запись, без компьютера владельца | `full-training.spec.ts` «switching blocks keeps attempt answers and playback». `hoeren-complete.spec.ts` «switching teil keeps one running recording». `release-journey.spec.ts` «release guest allowed operations pass access matrix» (байты по подписанному URL, совпадение `sha256`) | PASS | Разборчивость оригинала и воспроизведение на production ⏳. Работа при выключенном компьютере ⏳: по архитектуре компьютер не нужен (Vercel + Supabase Storage), фактически не проверялось | ⏳ непроверено |
@@ -65,13 +65,23 @@
 
 ⚠️ Наблюдение без исправления: при 390 px и тексте 200 % подписи кнопок плеера («▶ Play», «Back 5 s») и ссылок блоков переносятся внутри кнопки на 2–3 строки (высота около 110 px). Горизонтальной прокрутки и перекрытия нет, все действия видны и нажимаются. Это не дефект доступности, вид можно улучшить отдельной задачей.
 
+## Находки при ручной проверке сайта (2026-11-01)
+
+| Что обнаружено | Причина | Статус |
+| --- | --- | --- |
+| На preview и production `/practice` показывал «Something went wrong. Your saved answers are kept» | В облачной базе не были применены миграции `20261104000000` (#10), `20261105000000` (#11) и `20261106000000` (#12): `supabase migration list --linked` показывал их только в Local. Приложение с #10 читает `attempts.progress` и вызывает функции из этих миграций | ✅ устранено владельцем: после `supabase db push` все 7 миграций в Local и Remote (проверено агентом 2026-11-01) |
+| Нет перехода в Lesen, «Question 4 of 4» | В облаке был только короткий набор Hören Teil 1. Версия без заданий Lesen скрывает переключатель блоков | ✅ устранено владельцем: опубликован полный пилот, версия `729d4787…`. Старая активная попытка остаётся на прежней версии до «Finish attempt» и «Start again» (так задумано) |
+| Вводный текст Hören на коротком наборе говорит про части 1–4, пару Teil 3 и список a–f | Текст `hoeren.intro` одинаков для любого набора | не исправлено в этой задаче, заведён [#35](https://github.com/strakhovdenya/b1-kompass/issues/35) |
+
+Вывод для приёмки: проверка production только чтением (`curl`) не заметила, что страница практики падает. Страницы гостя на production проверяются только вручную по списку ниже. Перед выпуском сверяйте миграции облака командой `npx supabase migration list --linked` (`docs/deployment.md`).
+
 ## Ручная приёмка на устройствах (владелец)
 
 Заполняет владелец на опубликованном URL. Непроверенное не отмечается PASS.
 
 | # | Проверка | Покрывает AC | Устройство и дата | Результат |
 | --- | --- | --- | --- | --- |
-| 1 | Опубликовать полный пилот в облаке (`npm run publish:pilot`), сверить 45 заданий, ключ и Track 127 с оригиналом | 01, 04 | | ⏳ |
+| 1 | Полный пилот в облаке: публикация ✅ 2026-11-01, версия `729d4787…`. Остаётся сверить 45 заданий, ключ и Track 127 с оригиналом | 01, 04 | | ⏳ публикация ✅, сверка ⏳ |
 | 2 | Телефон, браузер по умолчанию: вход, English, Hören Teil 1–4, Lesen с переключением Text/Task, Finish, разбор, «Start again» | 01, 02, 05, 06, 08–10, 13 | | ⏳ |
 | 3 | Компьютер: тот же маршрут, Lesen рядом с текстом | 01, 05, 06 | | ⏳ |
 | 4 | EN/RU во время воспроизведения: ответы и позиция записи сохраняются | 03, 07 | | ⏳ |
