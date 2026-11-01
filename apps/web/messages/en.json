@@ -45,7 +45,7 @@
     "retry": "Load again"
   },
   "hoeren": {
-    "intro": "Hören, parts 1 to 4: {count, plural, one {# question} other {# questions}}, one answer each. In part 3 the two questions of one conversation are shown together. In part 4 the whole list of statements a–f stays visible for all three questions. You can change an answer at any time while the recording keeps playing.",
+    "intro": "Hören, {isRange, select, true {parts {first} to {last}} other {part {first}}}: {count, plural, one {# question} other {# questions}}, one answer each.{hasPairs, select, true { In part 3 the two questions of one conversation are shown together.} other {}}{hasSharedSet, select, true { In part 4 the whole list of statements a–f stays visible for all three questions.} other {}} You can change an answer at any time while the recording keeps playing.",
     "pairLegend": "One conversation, two questions: {first} and {second}. Answer each one separately.",
     "sharedSetLegend": "Hören, part 4: one list of statements a–f for questions {first} to {last}. Choose one statement for each question.",
     "sharedSetError": "This set of questions does not match the material and cannot be shown."

@@ -78,6 +78,39 @@ export const selectQuestions = (
   );
 };
 
+export type IntroValues = {
+  count: number;
+  first: number;
+  last: number;
+  isRange: string;
+  hasPairs: string;
+  hasSharedSet: string;
+};
+
+// The introduction names only what the screen shows: the parts of the
+// shown questions, and the pair and shared set notes only for groups with a
+// member on screen. The flags are strings because the messages select on them.
+export const describeIntro = (
+  shown: readonly ExamQuestion[],
+  pairGroups: readonly ExamGroup[],
+  sharedSetGroups: readonly ExamGroup[],
+): IntroValues => {
+  const teils = shown.map((question) => question.teil);
+  const first = Math.min(...teils);
+  const last = Math.max(...teils);
+  const shownIds = new Set(shown.map((question) => question.id));
+  const isShown = (group: ExamGroup): boolean =>
+    group.questionIds.some((id) => shownIds.has(id));
+  return {
+    count: shown.length,
+    first,
+    last,
+    isRange: String(first !== last),
+    hasPairs: String(pairGroups.some(isShown)),
+    hasSharedSet: String(sharedSetGroups.some(isShown)),
+  };
+};
+
 interface HoerenSingleScreenProps {
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
@@ -103,17 +136,16 @@ export const HoerenSingleScreen = ({
     [reportProgress],
   );
   const shown = selectQuestions(questions, groups);
-  const shownGroups = [
-    ...selectPairGroups(questions, groups),
-    ...selectSharedSetGroups(groups),
-  ];
+  const pairGroups = selectPairGroups(questions, groups);
+  const sharedSetGroups = selectSharedSetGroups(groups);
+  const shownGroups = [...pairGroups, ...sharedSetGroups];
   if (shown.length === 0) {
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
   return (
     <Stack spacing={3} data-testid="hoeren-screen">
       <Typography variant="body2" color="text.secondary">
-        {t('intro', { count: shown.length })}
+        {t('intro', describeIntro(shown, pairGroups, sharedSetGroups))}
       </Typography>
       <PracticeSet
         questions={shown}
