@@ -196,6 +196,7 @@ const ReviewEntry = ({ item, question }: ReviewEntryProps) => {
           variant="body2"
           color={OUTCOME_COLOR[item.outcome]}
           sx={{ fontWeight: 600 }}
+          data-testid="review-outcome"
         >
           {OUTCOME_MARK[item.outcome]}{' '}
           {t(`outcome.${OUTCOME_LABEL[item.outcome]}`)}

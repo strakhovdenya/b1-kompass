@@ -24,8 +24,11 @@
 | `SUPABASE_URL` | сервер Next.js, скрипт загрузки | URL проекта Supabase |
 | `SUPABASE_SECRET_KEY` | сервер Next.js, скрипт загрузки | секретный ключ (`sb_secret_…`, роль `service_role`). Никогда не публикуется в клиенте и не получает префикс `NEXT_PUBLIC_` |
 | `GUEST_SESSIONS_PER_MINUTE` | сервер Next.js, необязательна | сколько новых гостевых сеансов в минуту разрешено на весь сайт; по умолчанию 30, неверное значение тоже даёт 30. E2E-сервер запускается с тестовым значением из `apps/web/tests/support/env.ts` |
-| `PILOT_KEYS_FILE` | только скрипт загрузки | путь к приватному JSON с ключом, по умолчанию `private/pilot-keys.json` |
-| `PILOT_AUDIO_FILE` | только скрипт загрузки | путь к оригинальной записи Hören Teil 1 у владельца (`.mp3`, `.wav`, `.m4a` или `.ogg`), например `private/hoeren-teil-1.mp3`. Обязательна, значения по умолчанию нет |
+| `PRACTICE_EXAM_SLUG` | сервер Next.js, необязательна | slug экзамена, который открывает тренировка; по умолчанию пилот `telc-ajf-b12-dtz`. E2E-серверы задают тестовые комплекты (`test-full-dtz`, пара Teil 3) |
+| `PILOT_KEYS_FILE` | только скрипты загрузки | путь к приватному JSON с ключом, по умолчанию `private/pilot-keys.json` |
+| `PILOT_AUDIO_FILE` | только скрипты загрузки | путь к оригинальной записи у владельца (`.mp3`, `.wav`, `.m4a` или `.ogg`), например `private/track-127.mp3`. Обязательна, значения по умолчанию нет |
+| `PILOT_CONTENT_FILE` | только `publish:pilot` | путь к подготовленному JSON полного пилота, по умолчанию `private/pilot-content.json` |
+| `PILOT_DRAFT_FILE`, `PILOT_OUT_DIR` | только `prepare:pilot` | черновик пилота (по умолчанию `private/pilot-draft.json`) и папка результата (по умолчанию `private`) |
 
 Браузеру в M1 ключи Supabase не нужны. Шаблон для локального запуска — `apps/web/.env.example`.
 
@@ -103,11 +106,25 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 ### Vercel
 
 - Root Directory: `apps/web`, Framework: Next.js, Node.js 24.x.
-- Переменные `SUPABASE_URL` и `SUPABASE_SECRET_KEY` (Production и Preview), тип Sensitive.
+- Переменные `SUPABASE_URL` и `SUPABASE_SECRET_KEY` (Production и Preview), тип Sensitive. `GUEST_SESSIONS_PER_MINUTE` и `PRACTICE_EXAM_SLUG` необязательны: без них действуют значения по умолчанию (фактический набор переменных в проекте Vercel в #14 не сверялся).
+- Production собирается из `main` после merge PR; Preview — на каждый PR. Статус сборки виден в GitHub как статус `Vercel` коммита.
+
+## Развёртывание с нуля по шагам
+
+Порядок для владельца; значения секретов в документ не пишутся.
+
+1. Supabase: создать проект Free, затем `npx supabase link --project-ref <project-ref>` и `npx supabase db push`. Применяются все миграции `supabase/migrations/` по порядку: `20261031000000_guest_attempts`, `20261101000000_short_practice`, `20261102000000_guest_session_limits`, `20261103000000_full_exam_scope`, `20261104000000_attempt_progress`, `20261105000000_answer_revision`, `20261106000000_guest_renewal`. Проверка: `npx supabase migration list --linked` показывает каждую в Local и Remote.
+2. Auth: в Dashboard выключить регистрацию. Проверка: `GET https://<project-ref>.supabase.co/auth/v1/settings` с publishable-ключом → `disable_signup: true`.
+3. Storage и cron: бакет `exam-sources` создан миграцией и приватен. В Integrations → Cron есть задача `purge-expired-empty-guest-sessions`.
+4. Материал: доверенная загрузка с компьютера владельца. Короткий набор — `npm run seed:pilot`, полный пилот — `npm run prepare:pilot`, затем `npm run publish:pilot` (команды выше). Нужны `SUPABASE_URL`, `SUPABASE_SECRET_KEY` и файлы в `private/`. Повтор с тем же содержимым возвращает прежнюю версию, изменённый материал — новую.
+5. Vercel: проект с настройками выше, переменные Production и Preview. Деплой — merge в `main`.
+6. Проверка после деплоя: статус `Vercel: success` у head `main`. `curl -I https://b1-kompass.vercel.app/` → `200` и `Cache-Control: private, no-cache, no-store…`. Затем ручная приёмка по `docs/m1-acceptance.md`: вход, Hören, Lesen, разбор, «Пройти заново» на телефоне и компьютере, при выключенном компьютере владельца.
+
+Сайт и запись не зависят от компьютера владельца. Страницы отдаёт Vercel, данные и аудио — Supabase Storage. Docker и локальные процессы нужны только для разработки и тестов.
 
 ## Фактический статус публикации
 
-Состояние на 2026-10-31:
+Состояние на 2026-11-01 (обновлено при приёмке #14):
 
 | Что | Статус |
 | --- | --- |
@@ -120,7 +137,10 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 | Прослушивание и разбор в облаке | ⏳ не проверены |
 | Отказы publishable-ключа в облаке | ✅ 7 таблиц, запись балла, 3 функции, бакет `exam-sources` (чтение, список, загрузка), GraphQL — все отклонены |
 | Проект Vercel `b1-kompass` | ✅ создан: Root Directory `apps/web`, Node.js 24.x, GitHub `strakhovdenya/b1-kompass`, переменные Production/Preview (sensitive) |
-| Production URL `https://b1-kompass.vercel.app` | ⏳ появится после мержа приложения в `main`; работа не проверена |
+| Миграции #3–#12 (`20261102…`–`20261106…`) в облаке | ⏳ не проверено в рамках #14: `supabase migration list --linked` агентом не запускался, доступа к облаку нет |
+| Production URL `https://b1-kompass.vercel.app` | ✅ отвечает по HTTPS. Статус `Vercel: success` у `e78806c` (head `main`, merge PR #33) в 2026-10-31 23:03 UTC. Проверка `curl` 2026-10-31 23:23 UTC, только чтение: главная `200` с «Continue as guest», `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, ответ из `fra1`; `/practice` без cookie → `307` на `/`; `http://` → `308` на HTTPS |
+| Гостевой маршрут на production (вход, ответ, разбор) | ⏳ не выполнялся: по решению владельца в #14 production проверялся только чтением, без создания гостевого сеанса |
 | Проверка с телефона и компьютера | ⏳ не выполнена |
+| Работа при выключенном компьютере владельца | ⏳ не проверена фактически. По устройству развёртывания (Vercel и Supabase) компьютер не нужен |
 
 Успешная сборка не считается публикацией: статус обновляется только после реальной проверки по HTTPS.

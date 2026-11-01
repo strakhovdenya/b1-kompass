@@ -12,3 +12,20 @@ export const FULL_EXAM = {
 export const FULL_TRACK_ID = SYNTHETIC_TRACK_ID;
 
 export const FULL_PILOT = buildSyntheticPilot();
+
+export const fullKeyOf = (questionId: string): string => {
+  const key = FULL_PILOT.keys[questionId];
+  if (key === undefined) throw new Error(`no key for ${questionId}`);
+  return key;
+};
+
+// An option of the task other than its key: a wrong answer.
+export const fullWrongOf = (questionId: string): string => {
+  const question = FULL_PILOT.content.questions.find(
+    (item) => item.id === questionId,
+  );
+  const key = fullKeyOf(questionId);
+  const wrong = question?.options.find((option) => option.id !== key);
+  if (!wrong) throw new Error(`no wrong option for ${questionId}`);
+  return wrong.id;
+};

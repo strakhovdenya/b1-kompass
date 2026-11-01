@@ -94,7 +94,9 @@ export const readAnswers = async (
     .eq('attempt_id', attemptId)
     .returns<{ question_id: string; option_id: string }[]>();
   if (error) throw error;
-  return Object.fromEntries(data.map((row) => [row.question_id, row.option_id]));
+  return Object.fromEntries(
+    data.map((row) => [row.question_id, row.option_id]),
+  );
 };
 
 export const readResults = async (attemptId: string): Promise<unknown[]> => {
@@ -163,4 +165,22 @@ export const insertActiveAttempt = async (
     .single<{ id: string }>();
   if (error) throw error;
   return data.id;
+};
+
+export const readProgress = async (attemptId: string): Promise<unknown> => {
+  const { data, error } = await serviceDb
+    .from('attempts')
+    .select('progress')
+    .eq('id', attemptId)
+    .single<{ progress: unknown }>();
+  if (error) throw error;
+  return data.progress;
+};
+
+// The single result row of a completed attempt.
+export const readOnlyResult = async <T>(attemptId: string): Promise<T> => {
+  const rows = (await readResults(attemptId)) as T[];
+  const [row] = rows;
+  if (rows.length !== 1 || !row) throw new Error('one result row expected');
+  return row;
 };

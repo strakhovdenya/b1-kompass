@@ -1,6 +1,95 @@
-# M1: проверка собранного экзамена в четырёх независимых сеансах
+# Приёмка M1
 
-Отчёт задачи P5-T1 (Issue #13). Итоговая приёмка M1 по всем 19 критериям PRD, реальные устройства и опубликованный URL относятся к P5-T2 (Issue #14).
+Состояние на 2026-11-01. Итоговый отчёт задачи P5-T2 (Issue #14) по 19 критериям PRD [Guest Online Exam Trainer](prd/PRD-guest-online-exam-trainer.md). Ниже он дополнен отчётом P5-T1 (Issue #13) о четырёх независимых сеансах.
+
+## Решение: M1 не принят
+
+**M1 ещё не принят.** Автоматические проверки проходят, но обязательная ручная приёмка не выполнена:
+
+- опубликованный сайт не проверен на реальных телефоне и компьютере;
+- в облачной базе нет полного пилота (20 + 25), опубликован только короткий набор Hören Teil 1;
+- сверка пилота с оригиналом издателя не сделана;
+- работа при выключенном компьютере владельца не проверена фактически.
+
+Пока владелец не впишет результаты в раздел «Ручная приёмка на устройствах» с датой, критерии, требующие опубликованного маршрута или устройств, остаются ⏳.
+
+Отметки: **PASS** — подтверждено фактически; **FAIL** — проверка нашла дефект; **⏳ непроверено** — проверка не выполнялась. Автоматические и ручные проверки в таблице разделены. Итог PASS ставится только тогда, когда выполнены обе требуемые части.
+
+## Окружение проверок
+
+| Что | Значение |
+| --- | --- |
+| Опубликованный URL | https://b1-kompass.vercel.app |
+| Deployed SHA (production) | `e78806cc3c08826926b20e67593015eaddcf3033`: head `main`, merge PR #33. Статус `Vercel: success` 2026-10-31 23:03 UTC (`gh api repos/strakhovdenya/b1-kompass/commits/e78806c/statuses`) |
+| Проверка production | 2026-10-31 23:23 UTC, только чтение (`curl`, решение владельца: без создания гостевого сеанса). Главная `200` с «Continue as guest», `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, HSTS, `nosniff`, `X-Frame-Options: DENY`, ответ из `fra1`. `/practice` без cookie → `307` на `/`, `http://` → `308` на HTTPS. В 12 JS-файлах главной (≈ 0,9 МБ) нет `sb_secret_`, `service_role`, `SUPABASE_SECRET_KEY`, адреса Supabase, `answer_keys`, `correct_option_id` |
+| Материал в облаке | Короткий набор Hören Teil 1, версия `2de7ca2f-fc8b-4c62-bbfe-bc10e4f5c5fc` (`docs/deployment.md`). Полный пилот ⏳ не опубликован |
+| Автотесты | Ветка `task/ISSUE-14-release-acceptance`, Windows 11, Node 24, локальная Supabase в Docker, 2026-11-01. `npm run typecheck`, `npm run lint` ✅; `npm test` ✅ 13 файлов, 66 тестов; `npm run build` ✅; `npm run test:e2e` ✅ 130 из 130 (проекты `chromium`, `pair`, `full`, `limits`), 3,6 мин |
+| Повторяемость | `npx playwright test release-journey.spec.ts access-matrix.spec.ts --project=full --repeat-each=4 --workers=2`: 28 из 28. Три длинных маршрута помечены `test.slow()`: в одном прогоне под нагрузкой они превысили 30 с по умолчанию (тайм-аут, не ошибка проверки) |
+| CI этой задачи | `Quality` на head PR задачи #14 — ссылка в PR и в Issue #14. Последний CI `main` до задачи: ✅ [run 41250755131](https://github.com/strakhovdenya/b1-kompass/actions/runs/41250755131) на `e78806c` |
+
+Автотесты полного маршрута работают на синтетическом комплекте `test-full-dtz` (20 + 25, выдуманный текст и тестовый ключ, WAV-тон 60 с). Они доказывают поведение кода. Что на сайте настоящий пилот, они не доказывают.
+
+## Покрытие 19 критериев PRD
+
+| AC | Автоматически: доказательства | Авто | Реально: опубликованный сайт, устройства | Итог |
+| --- | --- | --- | --- | --- |
+| AC-01 HTTPS-сайт, реальный экзамен на телефоне и компьютере | `release-journey.spec.ts` «release journey is accessible and responsive»: маршрут вход → Hören → Lesen → результат при 390×844 и 1440×900 | PASS | HTTPS и главная ✅ (`curl`). Полного пилота в облаке нет. Телефон и компьютер ⏳ | ⏳ непроверено |
+| AC-02 вход без пароля, English по умолчанию | `guest-entry.spec.ts` «fresh guest starts in English and owns locale», «ignores browser and previous account locale». `release-journey.spec.ts` «release guest allowed operations pass access matrix» (сеанс `en`, срок 720 ч). `guest-renewal.spec.ts` «expiry creates fresh guest without sliding deadline» | PASS | ⏳ | ⏳ непроверено |
+| AC-03 EN/RU без потери ответов и позиции | `full-training.spec.ts` «locale switches entire route without losing state». `hoeren-single.spec.ts` «both locale directions preserve actual media state». `multi-guest.spec.ts` «one guest actions never reset three others» | PASS | ⏳ | ⏳ непроверено |
+| AC-04 опубликован проверенный комплект 20 + 25 | `material-publication.spec.ts` «publishes validated full pilot with source references», «rejected pilot leaves no partial state». `multi-guest.spec.ts` «published test set retains all assessed questions and resource links», «pilot integrity fails on missing key or resource». Domain: «missing key refuses full exam scoring» | PASS (синтетический комплект) | Полный пилот в облаке ⏳ не опубликован. Сверка с PDF, ключом и Track 127 ⏳ | ⏳ непроверено |
+| AC-05 Hören Teil 1–4: одиночные, пара, общий набор | `hoeren-single.spec.ts`, `hoeren-pair.spec.ts` «paired questions render and save independently», `hoeren-complete.spec.ts` «shared pool remains visible for questions 18 to 20». Узкий экран: `release-journey.spec.ts` «narrow enlarged text keeps actions visible without focus trap» (Teil 1, пара и Teil 4 при 390 px и тексте 200 %) | PASS | ⏳ | ⏳ непроверено |
+| AC-06 Lesen рядом с текстом, переключение на узком | `lesen-layout.spec.ts` «responsive reading preserves selection», «long reading preserves anchor across viewport changes». `release-journey.spec.ts` (Text/Task при 390 px) | PASS | ⏳ | ⏳ непроверено |
+| AC-07 цельная запись, без компьютера владельца | `full-training.spec.ts` «switching blocks keeps attempt answers and playback». `hoeren-complete.spec.ts` «switching teil keeps one running recording». `release-journey.spec.ts` «release guest allowed operations pass access matrix» (байты по подписанному URL, совпадение `sha256`) | PASS | Разборчивость оригинала и воспроизведение на production ⏳. Работа при выключенном компьютере ⏳: по архитектуре компьютер не нужен (Vercel + Supabase Storage), фактически не проверялось | ⏳ непроверено |
+| AC-08 один ответ, ключ скрыт до проверки | `hoeren-single.spec.ts` «single questions replace only their own answer». `full-training.spec.ts` «active or foreign review remains private». `release-journey.spec.ts` «release rejects guest privilege and private resource attacks» (HTML и RSC без ключа) | PASS | ⏳ | ⏳ непроверено |
+| AC-09 серверная проверка 20/25/45 | `scoring-security.spec.ts` «server scores persisted versioned answers». `full-training.spec.ts` «full training presents localized stored review». Domain: «full dtz scores hoeren lesen and total separately» | PASS | ⏳ | ⏳ непроверено |
+| AC-10 шкала DTZ 0–19 / 20–32 / 33–45, 15 + 18 = 33 = B1 | Domain: «dtz boundary scores use integer totals», «fifteen plus eighteen returns thirty three and B1», «nonfull and nonDTZ scopes have no official DTZ grade». `scoring-security.spec.ts` «short set attempt is finished without grade» | PASS | ⏳ | ⏳ непроверено |
+| AC-11 облачное сохранение, refresh, честные статусы | `attempt-restore.spec.ts` «restore recovers server confirmed position and answers». `attempt-races.spec.ts` «retry failure retains latest choice without false saved». `release-journey.spec.ts` «release failures never fake saved state» | PASS | ⏳ | ⏳ непроверено |
+| AC-12 30 дней без продления, новый `visitor_id` | `guest-entry.spec.ts` «guest expiry remains fixed before deadline», «rejects guest at expiry boundary». `guest-renewal.spec.ts` «expiry creates fresh guest without sliding deadline», «old guest rejected at exact expiry» | PASS | ⏳ вход на production. Сам срок проверяется только автотестом с часами сервера | ⏳ непроверено |
+| AC-13 «Пройти заново», одно завершение | `guest-renewal.spec.ts` «restart button opens new empty attempt retaining history», «restart cannot reset another active guest». `scoring-security.spec.ts` «client score and duplicate finish cannot forge result». `release-journey.spec.ts` «keyboard reaches and activates every release action» (новый запуск с клавиатуры) | PASS | ⏳ | ⏳ непроверено |
+| AC-14 четыре независимых сеанса | `multi-guest.spec.ts`: пять тестов (раздел P5-T1 ниже) | PASS | Четыре сеанса на реальных устройствах и production ⏳ | ⏳ непроверено |
+| AC-15 запреты Guest на сервере и в Data API/Storage | `release-journey.spec.ts` «release rejects guest privilege and private resource attacks»: 6 операций без сеанса и с истёкшим, 6 с чужой попыткой, 10 подмен полей, 9 таблиц, 9 записей, 9 функций (`42501`), 8 операций Storage, регистрация. «release guest allowed operations pass access matrix». Матрица — `docs/security.md` | PASS | Облако: отказы для объектов P1-T1 ✅ 2026-10-31 (`docs/deployment.md`). Объекты миграций #3–#12 скриптом не проверялись ⏳ | ⏳ непроверено |
+| AC-16 нет секретов и ключа в браузере, XSS, общий кэш | `access-matrix.spec.ts` «guest cache never returns another attempt answers». `full-training.spec.ts` «review escapes untrusted text and isolates cache». `QuestionCard.test.tsx` (экранирование). `release-journey.spec.ts` (HTML и RSC без ключа) | PASS | Production: заголовки `private, no-store`, бандл главной без секретов и ключа ✅. Страницы гостя на production ⏳ | ⏳ непроверено |
+| AC-17 телефон и компьютер, клавиатура, увеличенный текст, отказы | `release-journey.spec.ts`: «release journey is accessible and responsive», «keyboard reaches and activates every release action», «narrow enlarged text keeps actions visible without focus trap», «release failures never fake saved state». Текст 200 % задаётся размером шрифта браузера 32 px (CDP `Page.setFontSizes`). Проверяются: нет горизонтальной прокрутки, действия внутри окна и не перекрыты, кольцо фокуса видно, Tab и Shift+Tab без ловушки, статусы передаются текстом и `aria-*` | PASS (после исправления, см. «Дефекты приёмки») | Реальные телефон и компьютер, масштаб текста в ОС ⏳ | ⏳ непроверено |
+| AC-18 сборка, проверки, реальный цикл фабрики | `npm run typecheck`, `lint`, `test`, `build`, `test:e2e` (см. «Окружение проверок»). Цикл фабрики: #2 → PR #19, `Quality` ✅ ([factory-validation.md](factory-validation.md)) | PASS | Устройства не нужны. `Quality` этой задачи — в её PR | PASS |
+| AC-19 без регистрации, SMTP, импорта, словарей и модельного API | `enable_signup = false` (`supabase/config.toml`), регистрация с publishable-ключом отклоняется (AC-15). В `apps/web/src`, `packages/domain/src`, `scripts` и `package.json` нет клиентов OpenAI/Anthropic, словарей и почты. На экранах маршрута Tab доходит только до рабочих действий (тест «narrow enlarged text…»), будущих функций нет в `messages/*.json` | PASS | Production: главная показывает только «Continue as guest» ✅ (`curl`). Регистрация в облаке выключена ✅ 2026-10-31 | PASS |
+
+Итог: 2 из 19 PASS (AC-18, AC-19), 17 ⏳ непроверено, FAIL нет. Автоматическая часть — PASS у всех 19.
+
+## Дефекты приёмки
+
+| Дефект | Исправление | Регрессия |
+| --- | --- | --- |
+| Фокус клавиатуры почти не был виден. MUI показывает только бледный ripple, `outline` у кнопок, радио и ползунка — `none` (WCAG 2.4.7) | `apps/web/src/theme/ThemeRegistry.tsx`: сплошное кольцо 3 px цвета `primary` с отступом 2 px для `:focus-visible` и `.Mui-focusVisible` (кнопки, переключатели, радио, ползунок) | Каждый переход Tab в `release-journey.spec.ts` проверяет `:focus-visible`, `outline-style ≠ none`, ширину кольца ≥ 2 px и видимость элемента. До исправления тесты падали: `focus on button:Continue as guest`, ожидалось `outline-style` не `none` |
+
+Для тестов добавлены атрибуты `data-testid="audio-back"` (кнопка «назад 5 с») и `data-testid="review-outcome"` (строка исхода в разборе).
+
+⚠️ Наблюдение без исправления: при 390 px и тексте 200 % подписи кнопок плеера («▶ Play», «Back 5 s») и ссылок блоков переносятся внутри кнопки на 2–3 строки (высота около 110 px). Горизонтальной прокрутки и перекрытия нет, все действия видны и нажимаются. Это не дефект доступности, вид можно улучшить отдельной задачей.
+
+## Ручная приёмка на устройствах (владелец)
+
+Заполняет владелец на опубликованном URL. Непроверенное не отмечается PASS.
+
+| # | Проверка | Покрывает AC | Устройство и дата | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | Опубликовать полный пилот в облаке (`npm run publish:pilot`), сверить 45 заданий, ключ и Track 127 с оригиналом | 01, 04 | | ⏳ |
+| 2 | Телефон, браузер по умолчанию: вход, English, Hören Teil 1–4, Lesen с переключением Text/Task, Finish, разбор, «Start again» | 01, 02, 05, 06, 08–10, 13 | | ⏳ |
+| 3 | Компьютер: тот же маршрут, Lesen рядом с текстом | 01, 05, 06 | | ⏳ |
+| 4 | EN/RU во время воспроизведения: ответы и позиция записи сохраняются | 03, 07 | | ⏳ |
+| 5 | Refresh посреди Hören и посреди Lesen: ответы, задание и позиция восстановлены | 11, 12 | | ⏳ |
+| 6 | Только клавиатура на компьютере; текст 200 % в настройках браузера на телефоне и компьютере | 17 | | ⏳ |
+| 7 | Режим полёта во время ответа: ошибка видна, выбор остаётся, без ложного Saved, повтор сохраняет | 11, 17 | | ⏳ |
+| 8 | Запись: play/pause, перемотка; переход между заданиями и блоками не перезапускает; оригинал разборчив | 07 | | ⏳ |
+| 9 | Четыре браузера или устройства одновременно слушают с разных позиций и отвечают | 14 | | ⏳ |
+| 10 | Компьютер владельца выключен: сайт и запись работают с телефона | 01, 07 | | ⏳ |
+| 11 | Скрипт с publishable-ключом против облака: таблицы, функции и бакет миграций #3–#12 отклоняются; страницы гостя отдаются с `private, no-store` | 15, 16 | | ⏳ |
+
+M1 принят, только когда пункты 1–11 отмечены PASS с датой и устройством, а `Quality` PR задачи #14 успешен.
+
+---
+
+# P5-T1: проверка собранного экзамена в четырёх независимых сеансах
+
+Отчёт задачи P5-T1 (Issue #13), сохранён без изменений по существу.
 
 Состояние на 2026-10-31. Отметки: ✅ проверено фактически, ⏳ не проверено, ⚠️ замечание.
 
