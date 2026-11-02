@@ -53,6 +53,14 @@
       }
     ]
   },
+  "skillRules": [
+    {
+      "path": "apps/web",
+      "extensions": [".ts", ".tsx"],
+      "label": "web app (Next.js, React, MUI)",
+      "skills": ["vercel-react-best-practices", "mui", "ui-ux"]
+    }
+  ],
   "agentEnvironment": [
     "No Docker and no local Supabase: the Playwright specs in apps/web/tests run only in CI (job Quality).",
     "No running next dev or next start server; starting a server in the background is forbidden.",
