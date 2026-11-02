@@ -1,11 +1,14 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { admitOperation, resolveLifecycle } from '../index';
+import { admitOperation, resolveLifecycle } from '@b1k/domain';
 import type {
   AttemptProgress,
   AttemptOperation,
   LifecycleInput,
   LifecycleState,
-} from '../index';
+} from '@b1k/domain';
 
 // Synthetic oracle (not a real recording profile): Hören 25 min,
 // transition 60 s, Lesen 45 min.
@@ -66,6 +69,43 @@ const deepFreeze = <T extends object>(value: T): T => {
     if (typeof child === 'object' && child !== null) deepFreeze(child);
   }
   return Object.freeze(value);
+};
+
+// Type-checks a consumer snippet against the real public package, so a
+// compile error is observed without any suppression comment in the test.
+const MISSING_PROPERTY_CODE = 2741;
+const DOMAIN_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+).replaceAll('\\', '/');
+const CONSUMER_FILE = `${DOMAIN_DIR}/src/attempts/consumer.virtual.ts`;
+
+const compileConsumer = (
+  lines: readonly string[],
+): readonly ts.Diagnostic[] => {
+  const source = lines.join('\n');
+  const configPath = `${DOMAIN_DIR}/tsconfig.json`;
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(
+    config.config,
+    ts.sys,
+    DOMAIN_DIR,
+  );
+  const host = ts.createCompilerHost(parsed.options);
+  const readFile = host.readFile.bind(host);
+  const fileExists = host.fileExists.bind(host);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.fileExists = (name) => name === CONSUMER_FILE || fileExists(name);
+  host.readFile = (name) => (name === CONSUMER_FILE ? source : readFile(name));
+  host.getSourceFile = (name, languageVersion, onError) =>
+    name === CONSUMER_FILE
+      ? ts.createSourceFile(name, source, languageVersion)
+      : getSourceFile(name, languageVersion, onError);
+  const program = ts.createProgram([CONSUMER_FILE], parsed.options, host);
+  const sourceFile = program.getSourceFile(CONSUMER_FILE);
+  if (!sourceFile) throw new Error('consumer snippet was not compiled');
+  return program.getSemanticDiagnostics(sourceFile);
 };
 
 afterEach(() => {
@@ -492,39 +532,83 @@ describe('lifecycle refusals', () => {
   });
 
   it('late or terminal submit and cancel cannot bypass pure admission', () => {
-    const inputs = [timedInput('hoeren'), timedInput('lesen'), examInput];
-    const lateAt = [601_000, 901_000, EXAM_END_MS];
-    for (const [index, input] of inputs.entries()) {
+    const lateCases: [string, LifecycleInput, number[]][] = [
+      ['timed hoeren', timedInput('hoeren'), [601_000, 601_001, 9_000_000]],
+      ['timed lesen', timedInput('lesen'), [901_000, 901_001, 9_000_000]],
+      ['exam', examInput, [EXAM_END_MS, EXAM_END_MS + 1, 9_000_000]],
+    ];
+    for (const [label, input, lateTimes] of lateCases) {
       for (const operation of [submit, cancel]) {
+        const name = `${label} ${operation.kind}`;
         const timely = admitOperation(input, operation, 2000);
-        expect(timely, `timely ${input.mode} ${operation.kind}`).toMatchObject({
+        expect(timely, `timely ${name}`).toEqual({
           ok: true,
           changed: false,
+          state: resolve(input, 2000),
         });
-        const late = admitOperation(input, operation, lateAt[index] ?? 0);
-        expect(late, `late ${input.mode} ${operation.kind}`).toMatchObject({
-          ok: false,
-          reason: 'closed-phase',
-        });
-        const done = admitOperation(
-          { ...input, status: 'submitted' },
-          operation,
-          2000,
-        );
-        expect(done).toMatchObject({ ok: false, reason: 'closed-phase' });
+        for (const atMs of lateTimes) {
+          const late = admitOperation(input, operation, atMs);
+          expect(late, `late ${name} at ${atMs}`).toEqual({
+            ok: false,
+            reason: 'closed-phase',
+            state: resolve(input, atMs),
+          });
+          const closed = resolve(input, atMs);
+          expect(closed.phase).toBe('closed');
+          expect(closed.deadlineMs).toBeNull();
+          expect(closed.remainingMs).toBe(0);
+        }
+      }
+    }
+
+    const terminalInputs = [
+      trainingInput,
+      timedInput('hoeren'),
+      timedInput('lesen'),
+      examInput,
+    ];
+    for (const status of ['submitted', 'completed', 'cancelled']) {
+      for (const base of terminalInputs) {
+        const input = { ...base, status };
+        for (const operation of [submit, cancel]) {
+          const name = `${status} ${input.mode} ${input.selection} ${operation.kind}`;
+          const refused = admitOperation(input, operation, 2000);
+          expect(refused, name).toEqual({
+            ok: false,
+            reason: 'closed-phase',
+            state: resolve(input, 2000),
+          });
+          expect(resolve(input, 2000).phase, name).toBe('closed');
+        }
       }
     }
     expect(admitOperation(trainingInput, submit, 1e13)).toMatchObject({
       ok: true,
     });
+    expect(admitOperation(trainingInput, cancel, 1e13)).toMatchObject({
+      ok: true,
+    });
   });
 
   it('public legacy dto preserves mandatory field boundary', () => {
-    const legacy: AttemptProgress = { block: 'lesen' };
-    expect(legacy.block).toBe('lesen');
-    // @ts-expect-error the mandatory block field is still required
-    const missing: AttemptProgress = { positionSeconds: 3 };
-    expect(missing.positionSeconds).toBe(3);
+    const importLine = "import type { AttemptProgress } from '@b1k/domain';";
+    const legacy = compileConsumer([
+      importLine,
+      "export const legacy: AttemptProgress = { block: 'lesen' };",
+    ]);
+    expect(legacy).toEqual([]);
+
+    const missing = compileConsumer([
+      importLine,
+      'export const missing: AttemptProgress = { positionSeconds: 3 };',
+    ]);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]?.code).toBe(MISSING_PROPERTY_CODE);
+    const message = ts.flattenDiagnosticMessageText(
+      missing[0]?.messageText ?? '',
+      ' ',
+    );
+    expect(message).toContain("'block'");
   });
 
   it('active reading no op cannot admit early or closed transition', () => {
@@ -579,5 +663,38 @@ describe('lifecycle review regressions', () => {
       reason: 'invalid-input',
       error: 'invalid-operation',
     });
+  });
+});
+
+describe('lifecycle schedule bounds', () => {
+  it('finite inputs whose schedule overflows are rejected', () => {
+    const overflowing: LifecycleInput[] = [
+      {
+        ...examInput,
+        durations: {
+          hoerenMs: Number.MAX_VALUE,
+          transitionMs: Number.MAX_VALUE,
+          lesenMs: 1,
+        },
+      },
+      {
+        ...timedInput('hoeren'),
+        startedAtMs: Number.MAX_VALUE,
+        durations: { hoerenMs: Number.MAX_VALUE },
+      },
+    ];
+    for (const input of overflowing) {
+      const atMs = input.startedAtMs;
+      expect(resolveLifecycle(input, atMs)).toEqual({
+        ok: false,
+        error: 'invalid-duration',
+      });
+      expect(admitOperation(input, submit, atMs)).toEqual({
+        ok: false,
+        reason: 'invalid-input',
+        error: 'invalid-duration',
+      });
+    }
+    expect(resolveLifecycle(examInput, 0).ok).toBe(true);
   });
 });

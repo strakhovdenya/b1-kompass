@@ -124,11 +124,13 @@ const parse = (input: LifecycleInput, atMs: number): ParseResult => {
 
   const durationError = parseDurations(input, mode, selection);
   if (durationError) return fail(durationError);
+  const { hoerenMs = 0, transitionMs = 0, lesenMs = 0 } = input.durations;
+  const latestEndMs = startedAtMs + hoerenMs + transitionMs + lesenMs;
+  if (!Number.isFinite(latestEndMs)) return fail('invalid-duration');
 
   const closedSkills = parseSkills(input.closedSkills);
   if (!closedSkills) return fail('invalid-state');
 
-  const { hoerenMs = 0, transitionMs = 0, lesenMs = 0 } = input.durations;
   if (lesenStartedAtMs !== null) {
     const transitionStartMs = startedAtMs + hoerenMs;
     const transitionEndMs = transitionStartMs + transitionMs;
