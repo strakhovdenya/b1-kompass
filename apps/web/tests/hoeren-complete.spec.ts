@@ -8,6 +8,11 @@ import {
   readAttempts,
   readSessionByToken,
 } from './support/db';
+import {
+  CHOICE_URL,
+  HOEREN_URL,
+  startFromChoice,
+} from './support/guest-browser';
 
 // The synthetic full set: hoeren-1..4 Teil 1, 5..9 Teil 2, 10..17 four Teil 3
 // pairs, 18..20 the Teil 4 shared set with the options a-f.
@@ -28,7 +33,8 @@ const statusOf = (cardLocator: Locator) =>
 const startGuest = async (page: Page) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
   await expect(card(page, 'hoeren-1')).toBeVisible();
 };
 
@@ -314,7 +320,7 @@ test('network failure preserves navigation and selection', async ({
   const attempt = await attemptOf(context);
   await goTo(page, 18);
 
-  await context.route('**/practice', (route) =>
+  await context.route(HOEREN_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   const target = card(page, 'hoeren-18');
@@ -330,7 +336,7 @@ test('network failure preserves navigation and selection', async ({
   await expect(optionIn(target, 'd')).toBeChecked();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'error');
 
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   await target.getByRole('button').click();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({ 'hoeren-18': 'd' });

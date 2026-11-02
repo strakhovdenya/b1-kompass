@@ -1,15 +1,20 @@
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Page } from '@playwright/test';
 import type { ExamQuestion } from '@b1k/domain';
-import { openPractice, saveAnswer } from '../src/server/attempts/attempts';
+import { saveAnswer } from '../src/server/attempts/attempts';
 import { resolveGuestSession } from '../src/server/guest-session/session';
-import type { CreatedGuest } from '../src/server/guest-session/session';
+import type {
+  CreatedGuest,
+  GuestContext,
+} from '../src/server/guest-session/session';
+import type { ServerDeps } from '../src/server/db';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   createPublicClient,
   depsAt,
   depsNow,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readResults,
@@ -18,6 +23,7 @@ import {
   serviceDb,
 } from './support/db';
 import { readTestSupabaseEnv } from './support/env';
+import { HOEREN_URL, enterAndStart } from './support/guest-browser';
 
 const PROMPT = 'Was soll Herr Rossi machen?';
 const OPTION_A = 'Den anderen Teilnehmern Bescheid sagen.';
@@ -25,10 +31,9 @@ const OPTION_B = 'In der Sprachschule anrufen.';
 const OPTION_C = 'Sofort in den Kurs kommen.';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// The guest enters, sees the choice and starts the training explicitly.
 const startGuest = async (page: Page) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(page.getByText(PROMPT)).toBeVisible();
 };
 
@@ -58,10 +63,10 @@ const option = (page: Page, text: string) =>
 const saveStatus = (page: Page) => page.getByTestId('save-status');
 
 const openReady = async (
-  deps: Parameters<typeof openPractice>[0],
-  guest: Parameters<typeof openPractice>[1],
+  deps: ServerDeps,
+  created: { token: string; guest: GuestContext },
 ) => {
-  const opened = await openPractice(deps, guest);
+  const opened = await openStarted(deps, created);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   return opened.practice;
 };
@@ -76,7 +81,7 @@ const firstQuestion = (practice: { questions: readonly ExamQuestion[] }) => {
 // real server functions.
 const guestWithAnswer = async (optionId: string) => {
   const created = await newGuest(depsNow());
-  const practice = await openReady(depsNow(), created.guest);
+  const practice = await openReady(depsNow(), created);
   const saved = await saveAnswer(depsNow(), created.token, {
     attemptId: practice.attemptId,
     questionId: firstQuestion(practice).id,
@@ -172,8 +177,9 @@ test('saves one real answer after server acknowledgement', async ({ page }) => {
   await expect(option(page, OPTION_C)).toBeVisible();
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'idle');
 
-  // The initial document carries the task but no key and no server secret.
-  const html = await (await page.request.get('/practice')).text();
+  // The initial document of the attempt address carries the task but no key
+  // and no server secret.
+  const html = await (await page.request.get(page.url())).text();
   expect(html).toContain(PROMPT);
   expect(html).not.toMatch(/correct/i);
   expect(html).not.toContain('answer_keys');
@@ -203,7 +209,7 @@ test('failed save retains selection without false saved status', async ({
 }) => {
   await startGuest(page);
   const attempt = await activeAttemptOf((await sessionOf(page.context())).id);
-  await page.route('**/practice', async (route) => {
+  await page.route(HOEREN_URL, async (route) => {
     if (route.request().method() === 'POST') {
       await route.fulfill({ status: 503, body: 'unavailable' });
     } else {
@@ -218,7 +224,7 @@ test('failed save retains selection without false saved status', async ({
   await expect(option(page, OPTION_C)).toBeChecked();
   expect(await readAnswers(attempt.id)).toEqual({});
 
-  await page.unroute('**/practice');
+  await page.unroute(HOEREN_URL);
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'saved');
   await expect(option(page, OPTION_C)).toBeChecked();
@@ -229,7 +235,7 @@ test('authorized guest reads and saves scoped attempt', async () => {
   const first = await newGuest(depsNow());
   const second = await newGuest(depsNow());
 
-  const practice = await openReady(depsNow(), first.guest);
+  const practice = await openReady(depsNow(), first);
   expect(Object.keys(firstQuestion(practice)).sort()).toEqual(
     ['id', 'kind', 'number', 'options', 'prompt', 'skill', 'teil'],
   );
@@ -245,11 +251,11 @@ test('authorized guest reads and saves scoped attempt', async () => {
   expect(saved).toMatchObject({ ok: true, questionId: 'hoeren-1', optionId: 'b' });
   expect(await readAnswers(practice.attemptId)).toEqual({ 'hoeren-1': 'b' });
 
-  const again = await openReady(depsNow(), first.guest);
+  const again = await openReady(depsNow(), first);
   expect(again.attemptId).toBe(practice.attemptId);
   expect(again.selections).toEqual({ 'hoeren-1': 'b' });
 
-  const others = await openReady(depsNow(), second.guest);
+  const others = await openReady(depsNow(), second);
   expect(others.attemptId).not.toBe(practice.attemptId);
   expect(others.selections).toEqual({});
 
@@ -426,7 +432,7 @@ test('guest expiry remains fixed before deadline', async () => {
   const nearDeadline = depsAt(new Date(expiresAt - 60_000));
   const guest = await resolveGuestSession(nearDeadline, created.token);
   expect(guest?.sessionId).toBe(created.guest.sessionId);
-  const practice = await openReady(nearDeadline, created.guest);
+  const practice = await openReady(nearDeadline, created);
   const saved = await saveAnswer(nearDeadline, created.token, {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
@@ -448,7 +454,7 @@ test('guest expiry remains fixed before deadline', async () => {
 
 test('rejects guest at expiry boundary', async () => {
   const { created } = await createdAtStart();
-  const practice = await openReady(depsNow(), created.guest);
+  const practice = await openReady(depsNow(), created);
   await saveAnswer(depsNow(), created.token, {
     attemptId: practice.attemptId,
     questionId: 'hoeren-1',
@@ -473,7 +479,7 @@ test('rejects guest at expiry boundary', async () => {
     .update({ status: 'completed' })
     .eq('id', practice.attemptId)
     .throwOnError();
-  expect(await openPractice(atExpiry, created.guest)).toEqual({
+  expect(await openStarted(atExpiry, created)).toEqual({
     status: 'session-invalid',
   });
   const direct = await serviceDb.rpc('save_attempt_answer', {

@@ -11,6 +11,9 @@ const PAIR_PORT = 3101;
 const FULL_PORT = 3102;
 const LIMITS_SPEC = '**/guest-limits.spec.ts';
 const PAIR_SPEC = '**/hoeren-pair.spec.ts';
+// Lifts the active index and NOT NULL of exam_id inside rolled-back
+// transactions: it runs alone, after the ordinary projects.
+const MIGRATION_SPEC = '**/m1-migration.spec.ts';
 // The specs written for the pilot short set. Every other spec runs against
 // the synthetic full set, so new specs need no change here.
 const SHORT_SET_SPECS = [
@@ -20,6 +23,10 @@ const SHORT_SET_SPECS = [
   '**/short-practice.spec.ts',
 ];
 const env = readTestSupabaseEnv();
+
+// Each server trusts exactly its own origin: a request from a sibling port
+// is as foreign as any other site.
+const originOf = (port: number): string => `http://localhost:${port}`;
 
 const serverEnv = {
   SUPABASE_URL: env.url,
@@ -41,7 +48,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   // The limit spec fills the site-wide window and purges sessions of the
-  // whole database, so it runs alone after every other spec.
+  // whole database, so it runs alone after every other spec, the migration
+  // spec included.
   projects: [
     {
       name: 'chromium',
@@ -58,16 +66,23 @@ export default defineConfig({
     },
     {
       name: 'full',
-      testIgnore: [...SHORT_SET_SPECS, PAIR_SPEC, LIMITS_SPEC],
+      testIgnore: [...SHORT_SET_SPECS, PAIR_SPEC, MIGRATION_SPEC, LIMITS_SPEC],
       use: {
         ...devices['Desktop Chrome'],
         baseURL: `http://localhost:${FULL_PORT}`,
       },
     },
     {
+      name: 'migration',
+      testMatch: MIGRATION_SPEC,
+      dependencies: ['chromium', 'pair', 'full'],
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
       name: 'limits',
       testMatch: LIMITS_SPEC,
-      dependencies: ['chromium', 'pair', 'full'],
+      dependencies: ['migration'],
       use: { ...devices['Desktop Chrome'] },
     },
   ],
@@ -77,7 +92,7 @@ export default defineConfig({
       url: `http://localhost:${PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
-      env: serverEnv,
+      env: { ...serverEnv, APP_ORIGIN: originOf(PORT) },
     },
     // The same build, serving the test exam with a Teil 3 pair.
     {
@@ -85,7 +100,11 @@ export default defineConfig({
       url: `http://localhost:${PAIR_PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
-      env: { ...serverEnv, PRACTICE_EXAM_SLUG: PAIR_EXAM.slug },
+      env: {
+        ...serverEnv,
+        APP_ORIGIN: originOf(PAIR_PORT),
+        PRACTICE_EXAM_SLUG: PAIR_EXAM.slug,
+      },
     },
     // The same build, serving the synthetic full DTZ set.
     {
@@ -93,7 +112,11 @@ export default defineConfig({
       url: `http://localhost:${FULL_PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
-      env: { ...serverEnv, PRACTICE_EXAM_SLUG: FULL_EXAM.slug },
+      env: {
+        ...serverEnv,
+        APP_ORIGIN: originOf(FULL_PORT),
+        PRACTICE_EXAM_SLUG: FULL_EXAM.slug,
+      },
     },
   ],
 });

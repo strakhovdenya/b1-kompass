@@ -16,6 +16,8 @@ import {
   serviceDb,
 } from './support/db';
 import {
+  CHOICE_URL,
+  HOEREN_URL,
   card,
   expectStatus,
   finishFromShell,
@@ -397,10 +399,17 @@ test('one guest actions never reset three others', async ({ browser }) => {
   await expect(actor.page.locator('html')).toHaveAttribute('lang', 'ru');
   observed = await expectUntouched(observed);
 
-  // 4. Finish and start a new run.
+  // 4. Finish and start a new run: "start again" opens the choice without
+  // creating anything; the new run exists only after the explicit start.
   await finishFromShell(actor.page);
   await actor.page.getByTestId('restart-attempt').click();
-  await actor.page.waitForURL('**/practice');
+  await actor.page.waitForURL(CHOICE_URL);
+  await expect(actor.page.getByTestId('mode-selection')).toBeVisible();
+  expect(await readAttempts(actor.sessionId)).toEqual([
+    { id: actor.attemptId, status: 'completed' },
+  ]);
+  await actor.page.getByTestId('start-attempt').click();
+  await actor.page.waitForURL(HOEREN_URL);
   await expect(actor.page.getByTestId('attempt-review')).toBeHidden();
   await expect(actor.page.getByTestId('finish-attempt')).toBeVisible();
   const actorAttempts = await readAttempts(actor.sessionId);
@@ -657,7 +666,7 @@ test('one delayed listener does not block others', async ({ browser }) => {
   const release = signal();
   const arrived = signal();
   cleanups.push(release.resolve);
-  await delayed.context.route('**/practice', async (route: Route) => {
+  await delayed.context.route(HOEREN_URL, async (route: Route) => {
     const request = route.request();
     const body = request.postData() ?? '';
     const isSave = body.includes('"questionId":"hoeren-1"');

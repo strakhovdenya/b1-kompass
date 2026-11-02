@@ -5,7 +5,13 @@ import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import { TrainingShell } from './TrainingShell';
 
-vi.mock('next/navigation', () => ({ usePathname: () => '/practice/lesen' }));
+const ATTEMPT_ID = '00000000-0000-4000-8000-000000000000';
+
+vi.mock('next/navigation', () => ({
+  usePathname: () =>
+    '/practice/test-exam/attempts/00000000-0000-4000-8000-000000000000/lesen',
+  useRouter: () => ({ push: () => undefined }),
+}));
 
 const question = (
   id: string,
@@ -52,7 +58,8 @@ const render = (initialReview: AttemptReview | null) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <TrainingShell
-        attemptId="00000000-0000-4000-8000-000000000000"
+        examSlug="test-exam"
+        attemptId={ATTEMPT_ID}
         questions={questions}
         trackIds={['track-1']}
         initialSelections={{ 'hoeren-1': 'a' }}
@@ -63,7 +70,6 @@ const render = (initialReview: AttemptReview | null) =>
         saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
         finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
         saveProgress={async () => ({ ok: false, error: 'unavailable' })}
-        restartAttempt={async () => ({ ok: false, error: 'unavailable' })}
       >
         <p>block page</p>
       </TrainingShell>
@@ -77,6 +83,10 @@ describe('TrainingShell', () => {
     expect(html).toContain('data-testid="audio-element"');
     expect(html).toContain('data-testid="block-link-hoeren"');
     expect(html).toContain('data-testid="block-link-lesen"');
+    expect(html).toContain(`href="/practice/test-exam/attempts/${ATTEMPT_ID}"`);
+    expect(html).toContain(
+      `href="/practice/test-exam/attempts/${ATTEMPT_ID}/lesen"`,
+    );
     expect(html).toContain('data-testid="finish-attempt"');
     expect(html).toContain('Answered in total: 1 of 3.');
     expect(html).not.toContain('data-testid="finish-confirmation"');

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
-import { FULL_PILOT } from './support/full-exam';
+import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
 import {
   finishAttempt,
   getAttemptReview,
@@ -17,6 +17,13 @@ import {
   readSession,
   readSessionByToken,
 } from './support/db';
+import {
+  HOEREN_URL,
+  LESEN_URL,
+  attemptLesenUrl,
+  attemptUrl,
+  enterAndStart,
+} from './support/guest-browser';
 
 const DB_CONTAINER = 'supabase_db_b1-kompass';
 const LOCALE_CHECK = 'guest_sessions_locale_check';
@@ -123,10 +130,9 @@ const card = (page: Page, questionId: string): Locator =>
 const optionIn = (cardLocator: Locator, optionId: string): Locator =>
   cardLocator.locator(`input[value="${optionId}"]`);
 
+// Entry, choice and the explicit start of the free training.
 const startGuest = async (page: Page) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(card(page, 'hoeren-1')).toBeVisible();
 };
 
@@ -174,7 +180,7 @@ const openSeeded = async (
   await startGuest(page);
   const attempt = await attemptOf(context);
   await seed(attempt.token, attempt.id, markOf);
-  await page.goto('/practice');
+  await page.goto(attemptUrl(FULL_EXAM.slug, attempt.id));
   await expect(card(page, 'hoeren-1')).toBeVisible();
   return { page, attempt };
 };
@@ -285,13 +291,13 @@ const documentMarker = (page: Page) =>
 
 const goToLesen = async (page: Page) => {
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
 };
 
 const goToHoeren = async (page: Page) => {
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(card(page, 'hoeren-1')).toBeVisible();
 };
 
@@ -335,7 +341,7 @@ test('full training presents localized stored review', async ({ browser }) => {
     expectedOutcomes('lesen', answers),
   );
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(page.getByTestId('review-item')).toHaveCount(20);
   expect(await reviewOutcomes(page)).toEqual(
     expectedOutcomes('hoeren', answers),
@@ -375,7 +381,7 @@ test('empty attempt shows zero result', async ({ browser }) => {
   );
   await expect(page.locator('[data-outcome="skipped"]')).toHaveCount(20);
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('review-item')).toHaveCount(25);
   await expect(page.locator('[data-outcome="skipped"]')).toHaveCount(25);
   await context.close();
@@ -471,7 +477,11 @@ test('active or foreign review remains private', async ({
     attemptId: attempt.id,
   });
   expect(active).toEqual({ ok: false, error: 'not-completed' });
-  for (const path of ['/practice', '/practice/lesen']) {
+  const ownerPaths = [
+    attemptUrl(FULL_EXAM.slug, attempt.id),
+    attemptLesenUrl(FULL_EXAM.slug, attempt.id),
+  ];
+  for (const path of ownerPaths) {
     expectNoLeak(await (await page.request.get(path)).text());
   }
 
@@ -510,11 +520,28 @@ test('active or foreign review remains private', async ({
     { name: GUEST_COOKIE, value: stranger.token, url: baseURL },
   ]);
   const strangerPage = await strangerContext.newPage();
+  // The owner's own addresses give the stranger nothing of the attempt.
+  // The refused page names the requested id only in its own route tree; no
+  // shell, answer or review of the attempt is rendered.
+  for (const path of ownerPaths) {
+    const response = await strangerPage.request.get(path);
+    expect(response.status()).toBe(404);
+    const body = await response.text();
+    expectNoLeak(body);
+    expect(body).not.toContain(`data-attempt-id="${attempt.id}"`);
+    expect(body).not.toContain('data-testid="training-shell"');
+    expect(body).not.toContain('checked=""');
+  }
+  // The legacy addresses lead the stranger to their own choice only; its
+  // mode radio is checked, so no answer marker is compared there.
   for (const path of ['/practice', '/practice/lesen']) {
-    const body = await (await strangerPage.request.get(path)).text();
+    const response = await strangerPage.request.get(path);
+    expect(new URL(response.url()).pathname).toBe(
+      `/practice/${FULL_EXAM.slug}`,
+    );
+    const body = await response.text();
     expectNoLeak(body);
     expect(body).not.toContain(attempt.id);
-    expect(body).not.toContain('checked=""');
   }
   await strangerContext.close();
   await ownerContext.close();
@@ -542,7 +569,8 @@ test('completed attempt refuses block changes', async ({ browser }) => {
   expect(added.ok).toBe(false);
   expect(await readAnswers(attempt.id)).toEqual(stored);
 
-  await page.goto('/practice');
+  // A completed attempt is reached by its own address.
+  await page.goto(attemptUrl(FULL_EXAM.slug, attempt.id));
   await expect(page.getByTestId('attempt-review')).toBeVisible();
   await expect(page.locator('[data-testid^="question-card-"]')).toHaveCount(0);
   await context.close();
@@ -560,7 +588,7 @@ test('locale switches entire route without losing state', async ({
       ? 'skip'
       : MIXED(question),
   );
-  await page.goto('/practice');
+  await page.goto(attemptUrl(FULL_EXAM.slug, attempt.id));
   await waitForPlayer(page);
   await startPlayback(page);
   const target = card(page, 'hoeren-1');
@@ -588,7 +616,7 @@ test('locale switches entire route without losing state', async ({
     'Завершить попытку',
   );
 
-  await context.route('**/practice/lesen', (route) =>
+  await context.route(LESEN_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   await page.getByTestId('finish-attempt').click();
@@ -597,7 +625,7 @@ test('locale switches entire route without losing state', async ({
     'Попытка не завершена',
   );
   expect(await readResults(attempt.id)).toEqual([]);
-  await context.unroute('**/practice/lesen');
+  await context.unroute(LESEN_URL);
 
   await finishFromShell(page, true);
 
@@ -663,18 +691,24 @@ test('review escapes untrusted text and isolates cache', async ({
   ).toBeUndefined();
   expect(await page.locator('script', { hasText: 'alert' }).count()).toBe(0);
 
-  const response = await page.request.get('/practice');
+  const reviewPath = attemptUrl(FULL_EXAM.slug, attempt.id);
+  const response = await page.request.get(reviewPath, { maxRedirects: 0 });
+  expect(response.status()).toBe(200);
   expect(response.headers()['cache-control']).toContain('no-store');
 
   const second = await browser.newContext();
   const otherPage = await second.newPage();
   await startGuest(otherPage);
-  const body = await (await otherPage.request.get('/practice/lesen')).text();
-  expect(body).not.toContain('data-outcome');
-  expect(body).not.toContain('attempt-review');
-  await expect(otherPage.getByTestId('attempt-review')).toHaveCount(0);
   const other = await attemptOf(second);
   expect(other.id).not.toBe(attempt.id);
+  // The other guest's own Lesen page and the first guest's review address
+  // both carry no review.
+  for (const path of [attemptLesenUrl(FULL_EXAM.slug, other.id), reviewPath]) {
+    const body = await (await otherPage.request.get(path)).text();
+    expect(body).not.toContain('data-outcome');
+    expect(body).not.toContain('attempt-review');
+  }
+  await expect(otherPage.getByTestId('attempt-review')).toHaveCount(0);
   expect(await readResults(other.id)).toEqual([]);
   await first.close();
   await second.close();
@@ -756,7 +790,7 @@ test('finish from either block gives one result', async ({ browser }) => {
   const context = await browser.newContext();
   const { page: hoerenPage, attempt } = await openSeeded(context, MIXED);
   const lesenPage = await context.newPage();
-  await lesenPage.goto('/practice/lesen');
+  await lesenPage.goto(attemptLesenUrl(FULL_EXAM.slug, attempt.id));
   await expect(lesenPage.getByTestId('reading-text')).toBeVisible();
 
   await expect(hoerenPage.getByTestId('hoeren-screen')).toBeVisible();
@@ -790,12 +824,13 @@ test('completed lesen route shows review', async ({ browser }) => {
   });
   expect(finished.ok).toBe(true);
 
-  await page.goto('/practice/lesen');
-  expect(new URL(page.url()).pathname).toBe('/practice/lesen');
+  const lesenPath = attemptLesenUrl(FULL_EXAM.slug, attempt.id);
+  await page.goto(lesenPath);
+  expect(new URL(page.url()).pathname).toBe(lesenPath);
   await expect(page.getByTestId('attempt-review')).toBeVisible();
   await expect(page.getByTestId('review-item')).toHaveCount(25);
   await expect(page.getByTestId('reading-text')).toHaveCount(0);
-  await page.goto('/practice');
+  await page.goto(attemptUrl(FULL_EXAM.slug, attempt.id));
   await expect(page.getByTestId('review-item')).toHaveCount(20);
   await context.close();
 });

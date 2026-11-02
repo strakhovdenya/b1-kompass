@@ -1,12 +1,25 @@
+import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  readAttemptPage,
+  startAttempt,
+} from '../../src/server/attempts/attempts';
+import type {
+  PracticeState,
+  StartAttemptResult,
+} from '../../src/server/attempts/attempts';
 import { createServiceClient } from '../../src/server/db';
 import type { Clock, ServerDeps } from '../../src/server/db';
 import {
   createGuestSession,
   hashGuestToken,
 } from '../../src/server/guest-session/session';
-import type { CreatedGuest } from '../../src/server/guest-session/session';
+import type {
+  CreatedGuest,
+  GuestContext,
+} from '../../src/server/guest-session/session';
+import { PILOT_EXAM_SLUG } from '../../src/server/material/published';
 import { TEST_GUEST_SESSIONS_PER_MINUTE, readTestSupabaseEnv } from './env';
 
 const env = readTestSupabaseEnv();
@@ -151,8 +164,18 @@ export const insertRawVersion = async (
   return version.data.id;
 };
 
+const examIdOfVersion = async (versionId: string): Promise<string> => {
+  const { data, error } = await serviceDb
+    .from('exam_versions')
+    .select('exam_id')
+    .eq('id', versionId)
+    .single<{ exam_id: string }>();
+  if (error) throw error;
+  return data.exam_id;
+};
+
 // An active attempt written straight into the test database, for a version
-// the server cannot open.
+// the server cannot open. It has no run: the reader refuses it.
 export const insertActiveAttempt = async (
   sessionId: string,
   versionId: string,
@@ -160,7 +183,12 @@ export const insertActiveAttempt = async (
 ): Promise<string> => {
   const { data, error } = await serviceDb
     .from('attempts')
-    .insert({ guest_session_id: sessionId, exam_version_id: versionId, scope })
+    .insert({
+      guest_session_id: sessionId,
+      exam_id: await examIdOfVersion(versionId),
+      exam_version_id: versionId,
+      scope,
+    })
     .select('id')
     .single<{ id: string }>();
   if (error) throw error;
@@ -183,4 +211,144 @@ export const readOnlyResult = async <T>(attemptId: string): Promise<T> => {
   const [row] = rows;
   if (rows.length !== 1 || !row) throw new Error('one result row expected');
   return row;
+};
+
+export interface ExamVersionRef {
+  examId: string;
+  versionId: string;
+}
+
+// The exam and its latest published version: what a new start runs on.
+export const latestVersionOf = async (
+  slug: string,
+): Promise<ExamVersionRef | null> => {
+  const { data, error } = await serviceDb
+    .from('exam_versions')
+    .select('id, exam_id, exams!inner(slug)')
+    .eq('exams.slug', slug)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle<{ id: string; exam_id: string }>();
+  if (error) throw error;
+  return data ? { examId: data.exam_id, versionId: data.id } : null;
+};
+
+export interface StartBody {
+  commandId: string;
+  examSlug: string;
+  mode: string;
+  purpose: string;
+  selection: string;
+  sourceAttemptId: string | null;
+  expectedVersionId: string;
+}
+
+// The body of an explicit start of the free training of the whole set on
+// the latest version, as the choice screen sends it.
+export const startBody = async (
+  slug: string,
+  overrides: Partial<StartBody> = {},
+): Promise<StartBody> => {
+  const latest = await latestVersionOf(slug);
+  if (!latest) throw new Error(`no published version of ${slug}`);
+  return {
+    commandId: randomUUID(),
+    examSlug: slug,
+    mode: 'training',
+    purpose: 'normal',
+    selection: 'all',
+    sourceAttemptId: null,
+    expectedVersionId: latest.versionId,
+    ...overrides,
+  };
+};
+
+// The real start scenario, as the Route Handler calls it.
+export const startFor = async (
+  deps: ServerDeps,
+  token: string | null,
+  slug: string,
+  overrides: Partial<StartBody> = {},
+): Promise<StartAttemptResult> =>
+  startAttempt(deps, token, await startBody(slug, overrides));
+
+export type OpenedPractice =
+  | { status: 'ready'; practice: PracticeState }
+  | { status: 'session-invalid' }
+  | { status: 'no-material' };
+
+// One attempt read by its own address, as the attempt layout reads it.
+export const readOpened = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  slug: string,
+  attemptId: string,
+): Promise<OpenedPractice> => {
+  const page = await readAttemptPage(deps, guest, slug, attemptId);
+  if (page.status !== 'ready') {
+    throw new Error(`attempt ${attemptId} is ${page.status}`);
+  }
+  return { status: 'ready', practice: page.practice };
+};
+
+// The explicit replacement of the M1 openPractice in specs: an explicit
+// start, which names the guest's own active attempt of the exam when there is
+// one (conflict), then the read of that attempt by its address.
+export const openStarted = async (
+  deps: ServerDeps,
+  created: { token: string; guest: GuestContext },
+  slug: string = PILOT_EXAM_SLUG,
+): Promise<OpenedPractice> => {
+  if (!(await latestVersionOf(slug))) return { status: 'no-material' };
+  const started = await startFor(deps, created.token, slug);
+  if (!started.ok) {
+    if (started.failure === 'session-invalid') {
+      return { status: 'session-invalid' };
+    }
+    throw new Error(`start failed: ${started.failure}`);
+  }
+  return readOpened(deps, created.guest, slug, started.result.attemptId);
+};
+
+export interface StoredRun {
+  mode: string;
+  purpose: string;
+  selection: string;
+  source_attempt_id: string | null;
+  assignment: { versionId: string; questionIds: string[] };
+  accepted_at: string;
+  cancel_reason: string | null;
+}
+
+export const readRunRows = async (attemptId: string): Promise<StoredRun[]> => {
+  const { data, error } = await serviceDb
+    .from('attempt_runs')
+    .select('*')
+    .eq('attempt_id', attemptId)
+    .returns<StoredRun[]>();
+  if (error) throw error;
+  return data;
+};
+
+export const readCommandRows = async (
+  sessionId: string,
+): Promise<{ command_id: string; kind: string; attempt_id: string }[]> => {
+  const { data, error } = await serviceDb
+    .from('attempt_commands')
+    .select('command_id, kind, attempt_id')
+    .eq('guest_session_id', sessionId)
+    .returns<{ command_id: string; kind: string; attempt_id: string }[]>();
+  if (error) throw error;
+  return data;
+};
+
+export const readEventKinds = async (attemptId: string): Promise<string[]> => {
+  const { data, error } = await serviceDb
+    .from('guest_events')
+    .select('kind')
+    .eq('attempt_id', attemptId)
+    .order('id')
+    .returns<{ kind: string }[]>();
+  if (error) throw error;
+  return data.map((row) => row.kind);
 };

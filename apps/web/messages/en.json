@@ -24,6 +24,26 @@
     "unavailable": "The practice is not available right now. Please try again later.",
     "source": "Source: {publisher}, {title}, page {page}"
   },
+  "choice": {
+    "modeLabel": "How do you want to practise?",
+    "mode": {
+      "training": "Free training",
+      "timedBlock": "Timed block",
+      "exam": "Full exam with time limit"
+    },
+    "trainingDetail": "{count, plural, one {# task} other {All # tasks}} of Hören and Lesen, no time limit. You can switch between the blocks and finish when you are ready.",
+    "comingSoon": "Coming soon.",
+    "start": "Start training",
+    "starting": "Starting…",
+    "active": "You have a training of this exam in progress. Continue it or finish it before starting a new one.",
+    "continue": "Continue",
+    "conflict": "A training of this exam is already in progress. Continue it first.",
+    "changed": "The material was updated. Check the choice and start again.",
+    "error": "The training could not be started. Please try again.",
+    "notEnabled": "This mode is not available yet.",
+    "incompatible": "This attempt cannot be opened in this version of the trainer.",
+    "notFound": "This attempt was not found."
+  },
   "save": {
     "idle": "Choose one answer.",
     "saving": "Saving…",

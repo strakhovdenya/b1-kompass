@@ -1,13 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   finishAttempt,
   getAttemptReview,
-  openPractice,
-  restartAttempt,
   saveAnswer,
   saveProgress,
+  startAttempt,
 } from '../src/server/attempts/attempts';
 import { resolveAttemptAudio } from '../src/server/audio/audio';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
@@ -20,7 +19,9 @@ import {
   createPublicClient,
   depsAt,
   depsNow,
+  latestVersionOf,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readOnlyResult,
@@ -28,6 +29,8 @@ import {
   readResults,
   readSession,
   serviceDb,
+  startBody,
+  startFor,
 } from './support/db';
 import {
   FULL_EXAM,
@@ -38,7 +41,12 @@ import {
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
+  CHOICE_URL,
+  HOEREN_URL,
+  LESEN_URL,
   activeAttemptOf,
+  attemptLesenUrl,
+  attemptUrl,
   card,
   expectStatus,
   optionIn,
@@ -94,7 +102,13 @@ const enterAsGuestByKeyboard = async (page: Page, screen: string) => {
   const entry = page.getByRole('button', { name: 'Continue as guest' });
   await tabTo(page, entry, `${screen} home`);
   await page.keyboard.press('Enter');
-  await page.waitForURL('**/practice');
+  // The entry opens the choice; the training starts only by its own button.
+  await page.waitForURL(CHOICE_URL);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await expectUsableLayout(page, `${screen} choice`);
+  await tabTo(page, page.getByTestId('start-attempt'), `${screen} choice`);
+  await page.keyboard.press('Enter');
+  await page.waitForURL(HOEREN_URL);
   await expect(card(page, 'hoeren-1')).toBeVisible();
 };
 
@@ -148,7 +162,7 @@ const keyboardJourney = async (page: Page, viewport: ViewportSize) => {
   await answerByKeyboard(page, 'hoeren-18', wrongOf('hoeren-18'), screen);
 
   await activate(page, 'block-link-lesen', 'Enter', screen);
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
   await expectUsableLayout(page, `${screen} lesen text`);
   if (viewport.width < WIDE.width) {
@@ -198,7 +212,9 @@ test('release failures never fake saved state', async ({ browser }) => {
     const page = await context.newPage();
     await page.goto('/');
     await page.getByRole('button', { name: 'Continue as guest' }).click();
-    await page.waitForURL('**/practice');
+    await page.waitForURL(CHOICE_URL);
+    await page.getByTestId('start-attempt').click();
+    await page.waitForURL(HOEREN_URL);
     const { attemptId } = await activeAttemptOf(context);
     const status = page.getByTestId('audio-status');
     await expect(status).toHaveAttribute('data-status', 'error');
@@ -209,7 +225,7 @@ test('release failures never fake saved state', async ({ browser }) => {
     await optionIn(card(page, 'hoeren-1'), keyOf('hoeren-1')).check();
     await expectStatus(card(page, 'hoeren-1'), 'saved');
     await page.getByTestId('block-link-lesen').click();
-    await page.waitForURL('**/practice/lesen');
+    await page.waitForURL(LESEN_URL);
     await optionIn(card(page, 'lesen-1'), wrongOf('lesen-1')).check();
     await expectStatus(card(page, 'lesen-1'), 'saved');
     await expect(status).toHaveAttribute('data-status', 'error');
@@ -231,7 +247,7 @@ test('release failures never fake saved state', async ({ browser }) => {
     const { context, page, attemptId } = guest;
     await waitForPlayer(page);
     const isAction = (method: string) => method === 'POST';
-    for (const path of ['**/practice', '**/practice/lesen']) {
+    for (const path of [HOEREN_URL, LESEN_URL]) {
       await context.route(path, (route) =>
         isAction(route.request().method())
           ? route.fulfill({ status: 503, body: 'unavailable' })
@@ -253,7 +269,7 @@ test('release failures never fake saved state', async ({ browser }) => {
     await expect(saved).toHaveCount(0);
 
     await page.getByTestId('block-link-lesen').click();
-    await page.waitForURL('**/practice/lesen');
+    await page.waitForURL(LESEN_URL);
     const lesen = card(page, 'lesen-1');
     await optionIn(lesen, keyOf('lesen-1')).check();
     await expectStatus(lesen, 'error');
@@ -272,13 +288,13 @@ test('release failures never fake saved state', async ({ browser }) => {
       { id: attemptId, status: 'active' },
     ]);
 
-    await context.unroute('**/practice');
-    await context.unroute('**/practice/lesen');
+    await context.unroute(HOEREN_URL);
+    await context.unroute(LESEN_URL);
     await tabTo(page, lesen.getByRole('button'), 'lesen retry');
     await page.keyboard.press('Enter');
     await expectStatus(lesen, 'saved');
     await page.getByTestId('block-link-hoeren').click();
-    await page.waitForURL('**/practice');
+    await page.waitForURL(HOEREN_URL);
     await expectStatus(hoeren, 'error');
     await expect(optionIn(hoeren, keyOf('hoeren-1'))).toBeChecked();
     await tabTo(page, hoeren.getByRole('button'), 'hoeren retry');
@@ -292,10 +308,11 @@ test('release failures never fake saved state', async ({ browser }) => {
   });
 });
 
-// A guest made through the real server with an attempt on the full set.
+// A guest made through the real server with an explicitly started attempt
+// on the full set.
 const serverGuest = async () => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest, FULL_EXAM.slug);
+  const opened = await openStarted(depsNow(), created, FULL_EXAM.slug);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   return { ...created, practice: opened.practice };
 };
@@ -411,8 +428,11 @@ test('release guest allowed operations pass access matrix', async () => {
   });
 
   await test.step('start a new run', async () => {
-    const restarted = await restartAttempt(depsNow(), token, { attemptId });
-    if (!restarted.ok) throw new Error(`restart: ${restarted.error}`);
+    // After completion a new run is a new explicit start of the exam.
+    const started = await startFor(depsNow(), token, FULL_EXAM.slug);
+    if (!started.ok) throw new Error(`start: ${started.failure}`);
+    expect(started.result.outcome).toBe('accepted');
+    const restarted = { attemptId: started.result.attemptId };
     expect(restarted.attemptId).not.toBe(attemptId);
     const attempts = await readAttempts(guest.sessionId);
     expect(attempts).toHaveLength(2);
@@ -430,7 +450,9 @@ test('release guest allowed operations pass access matrix', async () => {
 const TABLES = [
   'answer_keys',
   'attempt_answers',
+  'attempt_commands',
   'attempt_results',
+  'attempt_runs',
   'attempts',
   'exam_version_audio',
   'exam_versions',
@@ -493,15 +515,20 @@ test('release rejects guest privilege and private resource attacks', async ({
     expect(
       await getAttemptReview(depsNow(), owner.token, { attemptId }),
     ).toEqual({ ok: false, error: 'not-completed' });
-    expect(await restartAttempt(depsNow(), owner.token, { attemptId })).toEqual(
-      { ok: false, error: 'not-completed' },
-    );
+    // While the attempt is active a new start creates nothing: it names the
+    // active attempt as a conflict.
+    expect(
+      await startFor(depsNow(), owner.token, FULL_EXAM.slug),
+    ).toMatchObject({ ok: true, result: { outcome: 'conflict', attemptId } });
     const context = await browser.newContext();
     await context.addCookies([
       { name: GUEST_COOKIE, value: owner.token, url: baseURL },
     ]);
     const page = await context.newPage();
-    for (const path of ['/practice', '/practice/lesen']) {
+    for (const path of [
+      attemptUrl(FULL_EXAM.slug, attemptId),
+      attemptLesenUrl(FULL_EXAM.slug, attemptId),
+    ]) {
       for (const headers of [{}, { RSC: '1' }] as Record<string, string>[]) {
         const response = await page.request.get(path, { headers });
         expect(response.status()).toBe(200);
@@ -523,12 +550,15 @@ test('release rejects guest privilege and private resource attacks', async ({
         await saveProgress(deps, token, { attemptId, progress: PROGRESS }),
         await finishAttempt(deps, token, { attemptId }),
         await getAttemptReview(deps, token, { attemptId }),
-        await restartAttempt(deps, token, { attemptId }),
         await resolveAttemptAudio(deps, token, track),
       ];
       for (const refusal of refusals) {
         expect(refusal).toMatchObject({ ok: false, error: 'session-invalid' });
       }
+      expect(await startFor(deps, token, FULL_EXAM.slug)).toEqual({
+        ok: false,
+        failure: 'session-invalid',
+      });
     }
     await expectOwnerUnchanged();
   });
@@ -540,11 +570,15 @@ test('release rejects guest privilege and private resource attacks', async ({
       await saveProgress(depsNow(), token, { attemptId, progress: PROGRESS }),
       await finishAttempt(depsNow(), token, { attemptId }),
       await getAttemptReview(depsNow(), token, { attemptId }),
-      await restartAttempt(depsNow(), token, { attemptId }),
     ];
     for (const refusal of refusals) {
       expect(refusal).toEqual({ ok: false, error: 'attempt-not-found' });
     }
+    // A start of the stranger only ever names the stranger's own attempt.
+    expect(await startFor(depsNow(), token, FULL_EXAM.slug)).toMatchObject({
+      ok: true,
+      result: { outcome: 'conflict', attemptId: stranger.practice.attemptId },
+    });
     expect(await resolveAttemptAudio(depsNow(), token, track)).toEqual({
       ok: false,
       error: 'not-found',
@@ -576,10 +610,6 @@ test('release rejects guest privilege and private resource attacks', async ({
         attemptId,
         role: 'owner',
       }),
-      await restartAttempt(depsNow(), owner.token, {
-        attemptId,
-        scope: 'short-set',
-      }),
       await resolveAttemptAudio(depsNow(), owner.token, {
         ...track,
         objectPath: (await trackOf(versionId)).object_path,
@@ -588,11 +618,26 @@ test('release rejects guest privilege and private resource attacks', async ({
     for (const refusal of forged) {
       expect(refusal).toMatchObject({ ok: false, error: 'invalid-input' });
     }
+    const body = await startBody(FULL_EXAM.slug);
+    for (const extra of [
+      { scope: 'short-set' },
+      { guestSessionId: stranger.guest.sessionId },
+      { status: 'completed' },
+      { score: 45 },
+      { acceptedAt: '2000-01-01T00:00:00Z' },
+    ]) {
+      expect(
+        await startAttempt(depsNow(), owner.token, { ...body, ...extra }),
+      ).toEqual({ ok: false, failure: 'invalid-input' });
+    }
     await expectOwnerUnchanged();
   });
 
   const anon = createPublicClient();
   const now = new Date().toISOString();
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full set is not published');
+  const { examId } = latest;
   const forgedHash = hashGuestToken(`forged-${Date.now()}`);
   const forgedSlug = `forged-release-${Date.now().toString(36)}`;
 
@@ -646,17 +691,17 @@ test('release rejects guest privilege and private resource attacks', async ({
         p_now: now,
         p_limit: 1000,
       },
-      start_attempt: {
+      m2_start_attempt: {
         p_session_id: sessionId,
-        p_exam_version_id: versionId,
-        p_now: now,
+        p_exam_id: examId,
+        p_command_id: randomUUID(),
+        p_mode: 'training',
+        p_purpose: 'normal',
+        p_selection: 'all',
+        p_source_attempt_id: null,
+        p_version_id: versionId,
         p_scope: 'full-exam',
-      },
-      open_attempt: {
-        p_session_id: sessionId,
-        p_exam_version_id: versionId,
-        p_now: now,
-        p_scope: 'full-exam',
+        p_question_ids: FULL_PILOT.content.questions.map((item) => item.id),
       },
       save_attempt_answer: {
         p_session_id: sessionId,
@@ -690,13 +735,6 @@ test('release rejects guest privilege and private resource attacks', async ({
         p_lesen_max: 25,
         p_level: 'B1',
       },
-      restart_attempt: {
-        p_session_id: sessionId,
-        p_attempt_id: attemptId,
-        p_exam_version_id: versionId,
-        p_now: now,
-        p_scope: 'full-exam',
-      },
       publish_exam_version: {
         p_slug: forgedSlug,
         p_title: 'Forged',
@@ -711,6 +749,36 @@ test('release rejects guest privilege and private resource attacks', async ({
       const { data, error } = await anon.rpc(name, args);
       expect(data, name).toBeNull();
       expect(error?.code, name).toBe('42501');
+    }
+    // The M1 entry points are gone: neither key finds them any more.
+    const removed = {
+      start_attempt: {
+        p_session_id: sessionId,
+        p_exam_version_id: versionId,
+        p_now: now,
+        p_scope: 'full-exam',
+      },
+      open_attempt: {
+        p_session_id: sessionId,
+        p_exam_version_id: versionId,
+        p_now: now,
+        p_scope: 'full-exam',
+      },
+      restart_attempt: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_exam_version_id: versionId,
+        p_now: now,
+        p_scope: 'full-exam',
+      },
+    };
+    for (const [name, args] of Object.entries(removed)) {
+      const publicCall = await anon.rpc(name, args);
+      expect(publicCall.data, name).toBeNull();
+      expect(publicCall.error, name).not.toBeNull();
+      const serviceCall = await serviceDb.rpc(name, args);
+      expect(serviceCall.data, name).toBeNull();
+      expect(serviceCall.error?.code, name).toBe('PGRST202');
     }
     const sessions = await serviceDb
       .from('guest_sessions')
@@ -865,7 +933,7 @@ test('keyboard reaches and activates every release action', async ({
   await answerByKeyboard(page, 'hoeren-11', keyOf('hoeren-11'), screen);
 
   await activate(page, 'block-link-lesen', 'Enter', screen);
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('block-link-lesen')).toHaveAttribute(
     'aria-current',
     'page',
@@ -893,11 +961,19 @@ test('keyboard reaches and activates every release action', async ({
   expectDistinctTexts(await outcomeTexts(page));
 
   await activate(page, 'block-link-hoeren', 'Enter', screen);
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(page.getByTestId('review-item')).toHaveCount(20);
   expectDistinctTexts(await outcomeTexts(page));
 
+  // "Start again" opens the choice; the new run is the explicit start there.
   await activate(page, 'restart-attempt', 'Enter', screen);
+  await page.waitForURL(CHOICE_URL);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  expect(await readAttempts(attempt.sessionId)).toEqual([
+    { id: attempt.attemptId, status: 'completed' },
+  ]);
+  await activate(page, 'start-attempt', 'Enter', screen);
+  await page.waitForURL(HOEREN_URL);
   await expect(card(page, 'hoeren-1')).toBeVisible();
   const attempts = await readAttempts(attempt.sessionId);
   expect(attempts).toHaveLength(2);
@@ -919,7 +995,10 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
   await expectEnlargedText(page);
   await expectAccessibleScreen(page, 'home');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await expectAccessibleScreen(page, 'choice');
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
   const attempt = await activeAttemptOf(context);
   await waitForPlayer(page);
 
@@ -943,7 +1022,7 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
   await expectAccessibleScreen(page, 'hoeren teil 4 set');
 
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
   await expectAccessibleScreen(page, 'lesen text');
   await page.getByTestId('lesen-view-questions').click();
@@ -962,7 +1041,7 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
   await expect(page.getByTestId('attempt-review')).toBeVisible();
   await expectAccessibleScreen(page, 'lesen review');
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(page.getByTestId('review-item')).toHaveCount(20);
   await expectAccessibleScreen(page, 'hoeren review');
 
