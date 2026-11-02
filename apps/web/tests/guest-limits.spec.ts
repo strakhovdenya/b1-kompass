@@ -2,16 +2,19 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { openPractice } from '../src/server/attempts/attempts';
+import { buildAssignment, examContentSchema } from '@b1k/domain';
 import { createGuestSession } from '../src/server/guest-session/session';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
+import { PILOT_EXAM_SLUG } from '../src/server/material/published';
 import {
   createPublicClient,
   depsAt,
+  latestVersionOf,
   readAttempts,
   readSession,
   serviceDb,
 } from './support/db';
+import { installM2Fixtures, psql, quote } from './support/sql';
 import { TEST_GUEST_SESSIONS_PER_MINUTE } from './support/env';
 
 // This spec runs alone after every other spec (project `limits`): it fills
@@ -190,14 +193,42 @@ test('purges expired empty guest sessions', async () => {
   expect(await findSessionIds([...expired, ...atBoundary])).toEqual([]);
 });
 
+// An attempt started long ago, for a session that has expired since. The
+// production start judges the guest by the database clock, so the history is
+// written by the trusted test-only wrapper of the same admission kernel with
+// the explicit moment of that start.
+const startedAt = async (sessionId: string, at: Date): Promise<string> => {
+  const latest = await latestVersionOf(PILOT_EXAM_SLUG);
+  if (!latest) throw new Error('the pilot is not published');
+  const { data, error } = await serviceDb
+    .from('exam_versions')
+    .select('content, exams!inner(format)')
+    .eq('id', latest.versionId)
+    .single<{ content: unknown; exams: { format: string } }>();
+  if (error) throw error;
+  const built = buildAssignment({
+    format: data.exams.format,
+    versionId: latest.versionId,
+    content: examContentSchema.parse(data.content),
+    selection: 'all',
+  });
+  if (!built.ok) throw new Error(`assignment: ${built.error}`);
+  const { scope, questionIds } = built.assignment;
+  installM2Fixtures();
+  return psql(`select attempt_id from m2_test.start_attempt_at(
+    ${quote(sessionId)}, ${quote(latest.examId)}, gen_random_uuid(),
+    'training', 'normal', 'all', null, ${quote(latest.versionId)},
+    ${quote(scope)}, ${quote(JSON.stringify(questionIds))}::jsonb,
+    ${quote(at.toISOString())})`);
+};
+
 test('keeps sessions with attempts or before expiry', async () => {
   const now = new Date(Date.UTC(2033, 5, 1));
   const start = new Date(now.getTime() - 40 * DAY_MS);
   const created = await createGuestSession(depsAt(start), LIMIT);
   if (created.status !== 'created') throw new Error('guest was rate-limited');
   const { guest } = created.created;
-  const opened = await openPractice(depsAt(start), guest);
-  if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
+  const attemptId = await startedAt(guest.sessionId, start);
   const notExpired = await insertSessions(
     1,
     new Date(now.getTime() - TERM_MS + SECOND_MS),
@@ -207,7 +238,7 @@ test('keeps sessions with attempts or before expiry', async () => {
   const kept = [guest.sessionId, ...notExpired];
   expect((await findSessionIds(kept)).sort()).toEqual([...kept].sort());
   expect(await readAttempts(guest.sessionId)).toEqual([
-    { id: opened.practice.attemptId, status: 'active' },
+    { id: attemptId, status: 'active' },
   ]);
   await deleteSessions(kept);
 });

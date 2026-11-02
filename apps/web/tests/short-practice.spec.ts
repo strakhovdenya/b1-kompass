@@ -12,7 +12,6 @@ import {
 import {
   finishAttempt,
   getAttemptReview,
-  openPractice,
   saveAnswer,
 } from '../src/server/attempts/attempts';
 import { resolveAttemptAudio } from '../src/server/audio/audio';
@@ -21,14 +20,18 @@ import { getPublishedVersion } from '../src/server/material/published';
 import {
   createPublicClient,
   depsNow,
+  latestVersionOf,
   newGuest,
+  openStarted,
   readAnswers,
+  readOpened,
   readAttempts,
   readResults,
   readSessionByToken,
   serviceDb,
 } from './support/db';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
+import { enterAndStart } from './support/guest-browser';
 
 const PROMPTS = {
   'hoeren-1': 'Was soll Herr Rossi machen?',
@@ -41,10 +44,9 @@ const AUDIO_BUCKET = 'exam-sources';
 
 // Helpers --------------------------------------------------------------------
 
+// The guest enters, sees the choice and starts the training explicitly.
 const startGuest = async (page: Page) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(page.getByText(PROMPTS['hoeren-1'])).toBeVisible();
 };
 
@@ -98,7 +100,7 @@ const objectPathOf = async (audio: Locator): Promise<string> => {
 // A guest created through the real server with the given saved answers.
 const guestWith = async (answers: Record<string, string>) => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest);
+  const opened = await openStarted(depsNow(), created);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const attemptId = opened.practice.attemptId;
   for (const [questionId, optionId] of Object.entries(answers)) {
@@ -309,7 +311,7 @@ test('short attempt gets scoped server result', async ({ page }) => {
   await answerOnPage(page, 4, 'Sich telefonisch melden.');
   await expect(page.getByTestId('set-answered')).toContainText('Answered: 3 of 4');
 
-  const html = await (await page.request.get('/practice')).text();
+  const html = await (await page.request.get(page.url())).text();
   expect(html).not.toContain('review-solution');
   expect(html).not.toContain('correctOptionId');
 
@@ -473,8 +475,13 @@ test('completed owned attempt exposes review', async () => {
   ).toEqual({ 'hoeren-1': 'c', 'hoeren-2': null, 'hoeren-3': 'a', 'hoeren-4': null });
   expect(JSON.stringify(review)).not.toContain(other.versionId);
 
-  // The page of the same guest restores the review of the completed attempt.
-  const opened = await openPractice(depsNow(), guest.guest);
+  // The address of the completed attempt restores its review.
+  const opened = await readOpened(
+    depsNow(),
+    guest.guest,
+    PILOT_EXAM.slug,
+    guest.attemptId,
+  );
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   expect(opened.practice.attemptId).toBe(guest.attemptId);
   expect(opened.practice.review).toEqual(review);
@@ -564,6 +571,20 @@ test('denies early foreign review and client score', async () => {
       p_now: new Date().toISOString(),
     });
     expect(opened.error).not.toBeNull();
+    const pilot = await latestVersionOf(PILOT_EXAM.slug);
+    const started = await anon.rpc('m2_start_attempt', {
+      p_session_id: owner.guest.sessionId,
+      p_exam_id: pilot?.examId,
+      p_command_id: crypto.randomUUID(),
+      p_mode: 'training',
+      p_purpose: 'normal',
+      p_selection: 'all',
+      p_source_attempt_id: null,
+      p_version_id: pilot?.versionId,
+      p_scope: 'short-set',
+      p_question_ids: QUESTION_IDS,
+    });
+    expect(started.error).not.toBeNull();
     await ownerUntouched();
 
     // The server scores the stored answer: a is wrong for task 1.

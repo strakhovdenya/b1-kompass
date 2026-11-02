@@ -3,7 +3,14 @@ import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { createServiceClient, readServiceConfig, systemClock } from '../db';
 import type { ServerDeps } from '../db';
+import {
+  attemptLesenPath,
+  attemptPath,
+  choicePath,
+} from '../../features/training/attempt-client';
+import { findOwnedActive } from '../attempts/read';
 import { GUEST_COOKIE } from '../guest-session/cookie';
+import { PILOT_EXAM_SLUG } from '../material/published';
 import { resolveGuestSession } from '../guest-session/session';
 import type { CreatedGuest, GuestContext } from '../guest-session/session';
 
@@ -26,6 +33,11 @@ export const readGuestSessionsPerMinute = (): number => {
   const isValid = Number.isSafeInteger(value) && value > 0;
   return isValid ? value : DEFAULT_GUEST_SESSIONS_PER_MINUTE;
 };
+
+// The exam of the legacy addresses and of the entry: the configured pilot
+// by default. It never chooses the exam of an attempt already started.
+export const readDefaultExamSlug = (): string =>
+  process.env.PRACTICE_EXAM_SLUG || PILOT_EXAM_SLUG;
 
 export const readGuestToken = async (): Promise<string | null> => {
   const store = await cookies();
@@ -58,3 +70,20 @@ export const getCurrentGuest = cache(async (): Promise<GuestContext | null> => {
     return null;
   }
 });
+
+// Where a guest enters an exam: their own active attempt of it, in the block
+// where they stopped, or the choice. Nothing is created or started here.
+export const resolveExamEntry = async (
+  deps: ServerDeps,
+  guest: GuestContext | null,
+  examSlug: string,
+  block: 'hoeren' | 'lesen' | null = null,
+): Promise<string> => {
+  if (!guest) return choicePath(examSlug);
+  const active = await findOwnedActive(deps, guest, examSlug);
+  if (!active) return choicePath(examSlug);
+  const isLesen = (block ?? active.progress?.block) === 'lesen';
+  return isLesen
+    ? attemptLesenPath(active.examSlug, active.attemptId)
+    : attemptPath(active.examSlug, active.attemptId);
+};

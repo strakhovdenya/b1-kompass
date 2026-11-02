@@ -1,10 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ExamQuestion } from '@b1k/domain';
-import {
-  finishAttempt,
-  openPractice,
-  saveAnswer,
-} from '../src/server/attempts/attempts';
+import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
@@ -12,7 +8,9 @@ import {
   depsNow,
   insertActiveAttempt,
   insertRawVersion,
+  latestVersionOf,
   newGuest,
+  openStarted,
   readAnswers,
   readAttemptScope,
   readAttempts,
@@ -22,6 +20,7 @@ import {
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
+import { CHOICE_URL, startFromChoice } from './support/guest-browser';
 
 const { content, keys } = FULL_PILOT;
 
@@ -111,7 +110,7 @@ const CONTROL_RESULT = {
 // A guest created through the real server with an attempt on the given exam.
 const guestOn = async (slug?: string) => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest, slug);
+  const opened = await openStarted(depsNow(), created, slug);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const { attemptId, versionId } = opened.practice;
   return { ...created, attemptId, versionId };
@@ -148,7 +147,8 @@ test('full version attempt opens with full exam scope', async ({ page }) => {
   // A new guest starts in English, so the entry button has its English name.
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
   await expect(page.getByTestId('set-position')).toBeVisible();
   await expect(page.locator('h1')).toHaveText(FULL_EXAM.title);
 
@@ -322,6 +322,8 @@ test('public client cannot call scope functions', async () => {
   const attemptsBefore = await readAttempts(guest.guest.sessionId);
   const anon = createPublicClient();
 
+  // The M1 opening function is removed; its M2 replacement, the explicit
+  // start, is closed to the public key like every trusted function.
   const opened = await anon.rpc('open_attempt', {
     p_session_id: guest.guest.sessionId,
     p_exam_version_id: guest.versionId,
@@ -329,7 +331,22 @@ test('public client cannot call scope functions', async () => {
     p_scope: 'full-exam',
   });
   expect(opened.data).toBeNull();
-  expect(opened.error?.code).toBe('42501');
+  expect(opened.error?.code).toBe('PGRST202');
+  const exam = await latestVersionOf(FULL_EXAM.slug);
+  const started = await anon.rpc('m2_start_attempt', {
+    p_session_id: guest.guest.sessionId,
+    p_exam_id: exam?.examId,
+    p_command_id: crypto.randomUUID(),
+    p_mode: 'training',
+    p_purpose: 'normal',
+    p_selection: 'all',
+    p_source_attempt_id: null,
+    p_version_id: guest.versionId,
+    p_scope: 'full-exam',
+    p_question_ids: content.questions.map((question) => question.id),
+  });
+  expect(started.data).toBeNull();
+  expect(started.error?.code).toBe('42501');
 
   const finished = await anon.rpc('finish_attempt', {
     p_session_id: guest.guest.sessionId,
@@ -367,7 +384,7 @@ test('missing key or invalid pinned version refuses finish', async () => {
     const { 'lesen-7': _missing, ...partialKeys } = keys;
     const slug = uniqueSlug('missing-key');
     await insertRawVersion({ slug, content, keys: partialKeys });
-    const opened = await openPractice(depsNow(), guest.guest, slug);
+    const opened = await openStarted(depsNow(), guest, slug);
     if (opened.status !== 'ready')
       throw new Error(`practice: ${opened.status}`);
     const { attemptId } = opened.practice;

@@ -6,6 +6,42 @@ import { readAttempts, readSessionByToken } from './db';
 // Browser helpers for specs that drive several guests at once: each guest is
 // its own browser context with its own cookie, session and attempt.
 
+// Addresses of the M2 routes. A glob `*` never crosses a slash.
+export const CHOICE_URL = '**/practice/*';
+export const HOEREN_URL = '**/practice/*/attempts/*';
+export const LESEN_URL = '**/practice/*/attempts/*/lesen';
+
+export const attemptUrl = (slug: string, attemptId: string): string =>
+  `/practice/${slug}/attempts/${attemptId}`;
+
+export const attemptLesenUrl = (slug: string, attemptId: string): string =>
+  `${attemptUrl(slug, attemptId)}/lesen`;
+
+// The attempt id of the current address of an attempt page.
+export const attemptIdOf = (page: Page): string => {
+  const match = /\/attempts\/([0-9a-f-]{36})(?:\/|$)/.exec(
+    new URL(page.url()).pathname,
+  );
+  if (!match?.[1]) throw new Error(`not an attempt address: ${page.url()}`);
+  return match[1];
+};
+
+// The explicit start from the choice screen: the only way the browser
+// creates an attempt. It ends on the Hören page of the new attempt.
+export const startFromChoice = async (page: Page) => {
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+};
+
+// A new guest enters through the home page and starts the training.
+export const enterAndStart = async (page: Page) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
+};
+
 export const card = (page: Page, questionId: string): Locator =>
   page.getByTestId(`question-card-${questionId}`);
 
@@ -59,9 +95,7 @@ export const startBrowserGuest = async (
 ): Promise<BrowserGuest> => {
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(card(page, 'hoeren-1')).toBeVisible();
   return { context, page, ...(await activeAttemptOf(context)) };
 };
@@ -183,13 +217,13 @@ export const screenOf = async (page: Page): Promise<ScreenSnapshot> => {
 
 export const goToLesen = async (page: Page) => {
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
 };
 
 export const goToHoeren = async (page: Page) => {
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(card(page, 'hoeren-1')).toBeVisible();
 };
 

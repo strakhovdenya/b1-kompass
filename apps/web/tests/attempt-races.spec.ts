@@ -10,22 +10,25 @@ import type {
   Route,
 } from '@playwright/test';
 import { selectScoringPolicy } from '@b1k/domain';
-import {
-  finishAttempt,
-  openPractice,
-  saveAnswer,
-} from '../src/server/attempts/attempts';
+import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
 import {
   depsNow,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readResults,
   readSessionByToken,
   serviceDb,
 } from './support/db';
+import {
+  HOEREN_URL,
+  LESEN_URL,
+  attemptIdOf,
+  enterAndStart,
+} from './support/guest-browser';
 
 // Network failures and competing requests against the real server actions
 // and the test database. Saves carry the revision of the choice: the order
@@ -164,9 +167,7 @@ const tokenOf = async (context: BrowserContext): Promise<string> => {
 const startGuest = async (browser: Browser) => {
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(card(page, TARGET)).toBeVisible();
   const token = await tokenOf(context);
   const session = await readSessionByToken(token);
@@ -174,13 +175,14 @@ const startGuest = async (browser: Browser) => {
   const attempts = await readAttempts(session.id);
   const [attempt] = attempts;
   if (attempts.length !== 1 || !attempt) throw new Error('one attempt');
+  expect(attemptIdOf(page)).toBe(attempt.id);
   return { context, page, token, attemptId: attempt.id };
 };
 
 // A guest with an active attempt of the full set, through the real server.
 const serverGuest = async () => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest, FULL_EXAM.slug);
+  const opened = await openStarted(depsNow(), created, FULL_EXAM.slug);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const { attemptId } = opened.practice;
   const save = (questionId: string, optionId: string, revision: number) =>
@@ -196,13 +198,13 @@ const serverGuest = async () => {
 
 const goToLesen = async (page: Page) => {
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
 };
 
 const goToHoeren = async (page: Page) => {
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(card(page, TARGET)).toBeVisible();
 };
 
@@ -269,7 +271,7 @@ test('out of order saves keep newest accepted choice', async ({ browser }) => {
   const releases = [signal(), signal()];
   const delivered = [signal(), signal()];
   let saves = 0;
-  await context.route('**/practice', async (route: Route) => {
+  await context.route(HOEREN_URL, async (route: Route) => {
     const request = route.request();
     if (!isSaveOf(request, TARGET)) return route.continue();
     const index = saves++;
@@ -375,7 +377,7 @@ test('delayed retry of old choice cannot roll back newer', async ({
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
   const held: { request: CapturedRequest | null } = { request: null };
-  await context.route('**/practice', async (route: Route) => {
+  await context.route(HOEREN_URL, async (route: Route) => {
     const request = route.request();
     if (isSaveOf(request, TARGET) && !held.request) {
       held.request = await capture(request);
@@ -384,7 +386,7 @@ test('delayed retry of old choice cannot roll back newer', async ({
   });
   await optionIn(target, 'a').check();
   await expectStatus(target, 'saved');
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   expect(await readStoredAnswers(attemptId, TARGET)).toEqual([
     { option_id: 'a', revision: 1 },
   ]);
@@ -411,7 +413,7 @@ test('lost save response retry is idempotent', async ({ browser }) => {
   const { context, page, token, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
   const held: { request: CapturedRequest | null } = { request: null };
-  await context.route('**/practice', async (route: Route) => {
+  await context.route(HOEREN_URL, async (route: Route) => {
     const request = route.request();
     if (!isSaveOf(request, TARGET) || held.request) return route.continue();
     // The server executes the save; its response is lost on the way back.
@@ -560,7 +562,7 @@ test('network retry preserves and eventually confirms selection', async ({
 }) => {
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
-  await context.route('**/practice', (route: Route) =>
+  await context.route(HOEREN_URL, (route: Route) =>
     isSaveOf(route.request(), TARGET) ? route.abort() : route.continue(),
   );
   await optionIn(target, 'c').check();
@@ -574,7 +576,7 @@ test('network retry preserves and eventually confirms selection', async ({
   await expect(optionIn(target, 'c')).toBeChecked();
   await expectStatus(target, 'error');
 
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   await statusOf(target).getByRole('button').click();
   await expectStatus(target, 'saved');
   await expect(optionIn(target, 'c')).toBeChecked();
@@ -593,7 +595,7 @@ test('retry failure retains latest choice without false saved', async ({
   await expectStatus(target, 'saved');
 
   let refused = 0;
-  await context.route('**/practice', (route: Route) => {
+  await context.route(HOEREN_URL, (route: Route) => {
     if (!isSaveOf(route.request(), TARGET)) return route.continue();
     refused++;
     return route.abort();
@@ -615,7 +617,7 @@ test('retry failure retains latest choice without false saved', async ({
   ]);
 
   // Once the network is back, the latest choice is the one confirmed.
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   await statusOf(target).getByRole('button').click();
   await expectStatus(target, 'saved');
   await expect(optionIn(target, 'c')).toBeChecked();
@@ -626,12 +628,12 @@ test('retry failure retains latest choice without false saved', async ({
 test('unsaved hoeren answer blocks finish from lesen', async ({ browser }) => {
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
-  await context.route('**/practice', (route: Route) =>
+  await context.route(HOEREN_URL, (route: Route) =>
     isSaveOf(route.request(), TARGET) ? route.abort() : route.continue(),
   );
   await optionIn(target, 'a').check();
   await expectStatus(target, 'error');
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   expect(await readAnswers(attemptId)).toEqual({});
 
   await goToLesen(page);

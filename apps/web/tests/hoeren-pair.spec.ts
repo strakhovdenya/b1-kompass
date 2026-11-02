@@ -10,6 +10,11 @@ import {
   readSession,
   readSessionByToken,
 } from './support/db';
+import {
+  CHOICE_URL,
+  HOEREN_URL,
+  startFromChoice,
+} from './support/guest-browser';
 import { PAIR_PROMPTS } from './support/pair-exam';
 
 // The test exam of this spec: one Teil 3 pair, served by the second e2e
@@ -26,7 +31,8 @@ const TOLERANCE_SECONDS = 0.5;
 const startGuest = async (page: Page) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
   await expect(page.getByText(PAIR_PROMPTS.trueFalse)).toBeVisible();
 };
 
@@ -127,7 +133,7 @@ const switchLanguage = async (page: Page, name: string, lang: string) => {
 // option that question does not have, so the server itself refuses it
 // (option-not-allowed). Saves of other questions and other actions pass.
 const refuseSavesOf = (context: BrowserContext, questionId: string) =>
-  context.route('**/practice', (route) => {
+  context.route(HOEREN_URL, (route) => {
     const request = route.request();
     const body = request.postData() ?? '';
     const isSave = request.method() === 'POST' && body.includes(questionId);
@@ -324,7 +330,7 @@ test('changing second answer preserves first selection', async ({
   await page.keyboard.press('Tab');
   const retry = second.getByRole('button');
   await expect(retry).toBeFocused();
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   await page.keyboard.press('Enter');
   await expect(statusOf(second)).toHaveAttribute('data-status', 'saved');
   await expect(optionIn(first, RICHTIG)).toBeChecked();

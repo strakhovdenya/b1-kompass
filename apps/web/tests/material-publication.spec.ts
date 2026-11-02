@@ -11,22 +11,21 @@ import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import type { PublishOutcome } from '../../../scripts/lib/publish-exam-version';
 import { FULL_PILOT_TRACK_ID } from '../../../scripts/lib/pilot';
 import { publishFullPilot } from '../../../scripts/publish-pilot';
-import {
-  finishAttempt,
-  openPractice,
-  saveAnswer,
-} from '../src/server/attempts/attempts';
+import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
 import { getPublishedVersion } from '../src/server/material/published';
 import {
   createPublicClient,
   depsNow,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readResults,
   serviceDb,
 } from './support/db';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
+import { CHOICE_URL } from './support/guest-browser';
+import { psql, quote } from './support/sql';
 
 const AUDIO_BUCKET = 'exam-sources';
 // Attempt ids that sort before and after any random id, fresh on every run.
@@ -115,26 +114,37 @@ const openReady = async (
   guest: Awaited<ReturnType<typeof newGuest>>,
   slug: string,
 ) => {
-  const opened = await openPractice(depsNow(), guest.guest, slug);
+  const opened = await openStarted(depsNow(), guest, slug);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   return opened.practice;
 };
 
+// An active attempt written straight into the test database with its exam,
+// then given its run by the real scoped M1 transfer (owner-only, through
+// psql). A second active attempt of the same exam is refused by the slot
+// index: the insert error is returned and nothing else is written.
 const insertAttempt = async (
   sessionId: string,
   versionId: string,
   fields: { id: string; createdAt: string },
   answers: Record<string, string>,
-) => {
+): Promise<{ code?: string } | null> => {
+  const version = await serviceDb
+    .from('exam_versions')
+    .select('exam_id')
+    .eq('id', versionId)
+    .single<{ exam_id: string }>();
+  if (version.error) throw version.error;
   const inserted = await serviceDb.from('attempts').insert({
     id: fields.id,
     guest_session_id: sessionId,
+    exam_id: version.data.exam_id,
     exam_version_id: versionId,
     status: 'active',
     created_at: fields.createdAt,
     updated_at: fields.createdAt,
   });
-  if (inserted.error) throw inserted.error;
+  if (inserted.error) return inserted.error;
   const rows = Object.entries(answers).map(([questionId, optionId]) => ({
     attempt_id: fields.id,
     question_id: questionId,
@@ -142,6 +152,8 @@ const insertAttempt = async (
   }));
   const saved = await serviceDb.from('attempt_answers').insert(rows);
   if (saved.error) throw saved.error;
+  psql(`select * from m2_private.backfill_m1_attempts(${quote(fields.id)})`);
+  return null;
 };
 
 // Publication ----------------------------------------------------------------
@@ -396,26 +408,34 @@ test('two active attempts resume the latest created', async () => {
   const laterId = lowId();
   const earlierId = highId();
   // The later attempt has the smaller id and is on the older version, so
-  // neither "highest id" nor "latest version" would pick it.
-  await insertAttempt(
-    sessionId,
-    oldVersion.versionId,
-    { id: laterId, createdAt: '2026-10-01T10:00:00.000Z' },
-    { 'hoeren-1': 'a' },
-  );
-  await insertAttempt(
+  // neither "highest id" nor "latest version" would pick it. Since M2 one
+  // slot per guest and exam exists on any version: the second active attempt
+  // is refused by the database, and M1 duplicates are resolved by the
+  // migration with the same latest-created rule (m1-migration.spec.ts).
+  expect(
+    await insertAttempt(
+      sessionId,
+      oldVersion.versionId,
+      { id: laterId, createdAt: '2026-10-01T10:00:00.000Z' },
+      { 'hoeren-1': 'a' },
+    ),
+  ).toBeNull();
+  const second = await insertAttempt(
     sessionId,
     newVersion.versionId,
     { id: earlierId, createdAt: '2026-09-01T10:00:00.000Z' },
     { 'hoeren-3': 'c' },
   );
+  expect(second?.code).toBe('23505');
 
   const practice = await openReady(guest, exam.slug);
   expect(practice.attemptId).toBe(laterId);
   expect(practice.versionId).toBe(oldVersion.versionId);
   expect(practice.selections).toEqual({ 'hoeren-1': 'a' });
-  expect(await readAttempts(sessionId)).toHaveLength(2);
-  expect(await readAnswers(earlierId)).toEqual({ 'hoeren-3': 'c' });
+  expect(await readAttempts(sessionId)).toEqual([
+    { id: laterId, status: 'active' },
+  ]);
+  expect(await readAnswers(earlierId)).toEqual({});
   expect(await readAnswers(laterId)).toEqual({ 'hoeren-1': 'a' });
 });
 
@@ -428,32 +448,54 @@ test('equal created_at resumes the highest id', async () => {
   const createdAt = '2026-10-01T10:00:00.000Z';
   const lowerId = lowId();
   const higherId = highId();
-  await insertAttempt(
+  // One slot per guest and exam: an equal created_at no longer yields two
+  // active attempts. The migration breaks such M1 ties by the highest id
+  // (m1-migration.spec.ts); a new second active attempt is refused.
+  expect(
+    await insertAttempt(
+      sessionId,
+      oldVersion.versionId,
+      { id: higherId, createdAt },
+      { 'hoeren-4': 'b' },
+    ),
+  ).toBeNull();
+  const second = await insertAttempt(
     sessionId,
     newVersion.versionId,
     { id: lowerId, createdAt },
     { 'hoeren-2': 'a' },
   );
-  await insertAttempt(
-    sessionId,
-    oldVersion.versionId,
-    { id: higherId, createdAt },
-    { 'hoeren-4': 'b' },
-  );
+  expect(second?.code).toBe('23505');
 
   const practice = await openReady(guest, exam.slug);
   expect(practice.attemptId).toBe(higherId);
   expect(practice.versionId).toBe(oldVersion.versionId);
   expect(practice.selections).toEqual({ 'hoeren-4': 'b' });
-  expect(await readAttempts(sessionId)).toHaveLength(2);
-  expect(await readAnswers(lowerId)).toEqual({ 'hoeren-2': 'a' });
+  expect(await readAttempts(sessionId)).toEqual([
+    { id: higherId, status: 'active' },
+  ]);
+  expect(await readAnswers(lowerId)).toEqual({});
   expect(await readAnswers(higherId)).toEqual({ 'hoeren-4': 'b' });
 });
 
-test('pilot exam slug is the default of openPractice', async () => {
+test('pilot exam slug is the default of openPractice', async ({ page }) => {
   const guest = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), guest.guest);
+  const opened = await openStarted(depsNow(), guest);
   if (opened.status !== 'ready') throw new Error('practice is missing');
   const version = await getPublishedVersion(depsNow(), PILOT_EXAM.slug);
   expect(opened.practice.versionId).toBe(version?.versionId);
+  expect(opened.practice.examSlug).toBe(PILOT_EXAM.slug);
+
+  // The entry of a new guest on a server without PRACTICE_EXAM_SLUG opens the
+  // choice of the pilot exam, and the legacy address leads there too.
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await page.waitForURL(CHOICE_URL);
+  expect(new URL(page.url()).pathname).toBe(`/practice/${PILOT_EXAM.slug}`);
+  await page.goto('/practice');
+  expect(new URL(page.url()).pathname).toBe(`/practice/${PILOT_EXAM.slug}`);
+  await expect(page.getByTestId('mode-selection')).toHaveAttribute(
+    'data-exam-slug',
+    PILOT_EXAM.slug,
+  );
 });

@@ -1,15 +1,21 @@
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
-import { openPractice, saveAnswer } from '../src/server/attempts/attempts';
+import { saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   depsNow,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readSession,
   readSessionByToken,
 } from './support/db';
+import {
+  CHOICE_URL,
+  HOEREN_URL,
+  startFromChoice,
+} from './support/guest-browser';
 
 // The seeded pilot short set: four single-choice Hören tasks of one recording.
 const PROMPTS = [
@@ -25,7 +31,8 @@ const promptOf = (number: number): string => PROMPTS[number - 1] ?? '';
 const startGuest = async (page: Page) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
   await expect(page.getByText(promptOf(1))).toBeVisible();
 };
 
@@ -243,7 +250,7 @@ test('all published single questions are reachable and durable', async ({
 
 test('single answer refuses unknown question and invalid option', async () => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest);
+  const opened = await openStarted(depsNow(), created);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   const { attemptId } = opened.practice;
   const save = (questionId: string, optionId: string) =>
@@ -310,7 +317,7 @@ test('single navigation failure retains selection and media state', async ({
   await startPlayback(page, 6);
 
   // Saving fails: the error is visible, the choice stays and nothing is stored.
-  await context.route('**/practice', (route) =>
+  await context.route(HOEREN_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   await goTo(page, 2);
@@ -332,7 +339,7 @@ test('single navigation failure retains selection and media state', async ({
 
   // The recording address fails too; once saving works again the answer is kept.
   await context.route(SIGN_URL, (route) => route.abort());
-  await context.unroute('**/practice');
+  await context.unroute(HOEREN_URL);
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({

@@ -4,7 +4,6 @@ import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   finishAttempt,
-  openPractice,
   saveAnswer,
   saveProgress,
 } from '../src/server/attempts/attempts';
@@ -14,20 +13,32 @@ import {
   depsAt,
   depsNow,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
+  readEventKinds,
+  readOpened,
   readResults,
   readSession,
   readSessionByToken,
   serviceDb,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import {
+  HOEREN_URL,
+  LESEN_URL,
+  attemptIdOf,
+  attemptLesenUrl,
+  attemptUrl,
+  enterAndStart,
+} from './support/guest-browser';
 
 // The synthetic full set: lesen-11 is the first task of the long Teil 3 text
 // (lesen-text-3, 24 paragraphs); the recording is 60 seconds long.
 
 const { keys } = FULL_PILOT;
 const WIDE = { width: 1440, height: 900 };
+const SLUG = FULL_EXAM.slug;
 const HOEREN_TASK = 'hoeren-3';
 const LONG_TASK = 11;
 const LONG_QUESTION = `lesen-${LONG_TASK}`;
@@ -186,9 +197,7 @@ const startGuest = async (browser: Browser, options: StartOptions = {}) => {
   const context = await browser.newContext({ viewport: WIDE });
   await options.beforeLoad?.(context);
   const page = await context.newPage();
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await expect(card(page, 'hoeren-1')).toBeVisible();
   const token = await tokenOf(context);
   const session = await readSessionByToken(token);
@@ -196,6 +205,7 @@ const startGuest = async (browser: Browser, options: StartOptions = {}) => {
   const attempts = await readAttempts(session.id);
   const [attempt] = attempts;
   if (attempts.length !== 1 || !attempt) throw new Error('one attempt');
+  expect(attemptIdOf(page)).toBe(attempt.id);
   if (!options.beforeLoad) {
     await expectProgressSaved(attempt.id, { block: 'hoeren' });
   }
@@ -236,7 +246,7 @@ const reachPlace = async (page: Page, attemptId: string) => {
   await expectProgressSaved(attemptId, { block: 'hoeren' });
 
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await page.getByTestId(`go-to-question-${LONG_TASK}`).click();
   const reading = page.getByTestId('reading-text');
   await expect(reading).toHaveAttribute('data-text-id', LONG_TEXT);
@@ -258,7 +268,7 @@ const reachPlace = async (page: Page, attemptId: string) => {
 // Back in Hören the guest finds the task they left, not the first one.
 const expectHoerenPlaceKept = async (page: Page) => {
   await page.getByTestId('block-link-hoeren').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(HOEREN_URL);
   await expect(page.getByTestId('go-to-question-3')).toHaveAttribute(
     'aria-current',
     'step',
@@ -301,7 +311,7 @@ const validProgress = {
 // real functions.
 const guestWithProgress = async () => {
   const created = await newGuest(depsNow());
-  const opened = await openPractice(depsNow(), created.guest, FULL_EXAM.slug);
+  const opened = await openStarted(depsNow(), created, SLUG);
   if (opened.status !== 'ready') throw new Error('practice is not ready');
   const { attemptId } = opened.practice;
   const saved = await saveProgress(depsNow(), created.token, {
@@ -318,7 +328,7 @@ test('restore recovers server confirmed position and answers', async ({
   const { context, page, token, sessionId, attemptId } =
     await startGuest(browser);
   await seedAnswers(token, attemptId);
-  await page.goto('/practice');
+  await page.goto(attemptUrl(SLUG, attemptId));
   await reachPlace(page, attemptId);
 
   const stored = await readStoredAttempt(attemptId);
@@ -336,7 +346,8 @@ test('restore recovers server confirmed position and answers', async ({
   const other = await context.newPage();
   await other.goto('/');
   await other.getByRole('button', { name: 'Continue as guest' }).click();
-  await other.waitForURL('**/practice/lesen');
+  await other.waitForURL(LESEN_URL);
+  expect(attemptIdOf(other)).toBe(attemptId);
   await expectPlaceRestored(other);
 
   expect(await readStoredAttempts(sessionId)).toEqual([stored]);
@@ -359,8 +370,11 @@ test('restore shows completed result without new attempt', async ({
   const finished = await finishAttempt(depsNow(), token, { attemptId });
   expect(finished.ok).toBe(true);
   const results = await readResults(attemptId);
+  const events = await readEventKinds(attemptId);
+  expect(events).toEqual(['start', 'finish']);
 
-  await page.goto('/practice');
+  // A completed attempt is reached by its own address; nothing is started.
+  await page.goto(attemptUrl(SLUG, attemptId));
   await expect(page.getByTestId('attempt-review')).toBeVisible();
   await page.reload();
   await expect(page.getByTestId('attempt-review')).toBeVisible();
@@ -370,14 +384,22 @@ test('restore shows completed result without new attempt', async ({
   expect(attempts.map((item) => item.id)).toEqual([attemptId]);
   expect(attempts[0]?.status).toBe('completed');
   expect(await readResults(attemptId)).toEqual(results);
+  expect(await readEventKinds(attemptId)).toEqual(events);
 
   const guest = await resolveGuestSession(depsNow(), token);
   if (!guest) throw new Error('guest is not active');
-  const opened = await openPractice(depsNow(), guest, FULL_EXAM.slug);
+  const opened = await readOpened(depsNow(), guest, SLUG, attemptId);
   if (opened.status !== 'ready') throw new Error('practice is not ready');
   expect(opened.practice.attemptId).toBe(attemptId);
   expect(opened.practice.progress).toBeNull();
   expect(opened.practice.review?.attemptId).toBe(attemptId);
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': keyOf('hoeren-1'),
+    'hoeren-2': keyOf('hoeren-2'),
+    [LONG_QUESTION]: keyOf(LONG_QUESTION),
+  });
+  const after = await readStoredAttempts(sessionId);
+  expect(after).toEqual(attempts);
   await context.close();
 });
 
@@ -396,7 +418,7 @@ test('restore refuses foreign session', async () => {
   });
   expect(written).toEqual({ ok: false, error: 'attempt-not-found' });
 
-  const opened = await openPractice(depsNow(), intruder.guest, FULL_EXAM.slug);
+  const opened = await openStarted(depsNow(), intruder, SLUG);
   if (opened.status !== 'ready') throw new Error('practice is not ready');
   expect(opened.practice.attemptId).not.toBe(owner.attemptId);
   expect(opened.practice.progress).toBeNull();
@@ -426,15 +448,11 @@ test('restore refuses foreign or expired session', async () => {
     },
   });
   expect(written).toEqual({ ok: false, error: 'session-invalid' });
-  const opened = await openPractice(expired, owner.guest, FULL_EXAM.slug);
+  const opened = await openStarted(expired, owner, SLUG);
   expect(opened).toEqual({ status: 'session-invalid' });
 
   const foreign = await newGuest(depsNow());
-  const foreignOpened = await openPractice(
-    depsNow(),
-    foreign.guest,
-    FULL_EXAM.slug,
-  );
+  const foreignOpened = await openStarted(depsNow(), foreign, SLUG);
   if (foreignOpened.status !== 'ready') throw new Error('not ready');
   expect(foreignOpened.practice.progress).toBeNull();
   expect(foreignOpened.practice.attemptId).not.toBe(owner.attemptId);
@@ -502,7 +520,7 @@ test('blocked autoplay keeps restored seek position', async ({ browser }) => {
     };
   });
 
-  await page.goto('/practice');
+  await page.goto(attemptUrl(SLUG, attemptId));
   await waitForPlayer(page);
   await expect.poll(() => timeOf(page)).toBeCloseTo(SEEK_SECONDS, 0);
   await page.waitForTimeout(1_500);
@@ -530,7 +548,7 @@ test('restored locale roundtrip keeps durable answers and seek', async ({
 }) => {
   const { context, page, token, attemptId } = await startGuest(browser);
   await seedAnswers(token, attemptId);
-  await page.goto('/practice');
+  await page.goto(attemptUrl(SLUG, attemptId));
   await reachPlace(page, attemptId);
   await page.reload();
   await expectPlaceRestored(page);
@@ -558,7 +576,7 @@ test('invalid restored position has safe bounded fallback', async ({
     hoeren: { itemId: 'hoeren-1' },
     positionSeconds: 5_000,
   });
-  await page.goto('/practice');
+  await page.goto(attemptUrl(SLUG, attemptId));
   await waitForPlayer(page);
   await expect.poll(() => timeOf(page)).toBeGreaterThan(RECORDING_SECONDS - 1);
   expect(await timeOf(page)).toBeLessThanOrEqual(RECORDING_SECONDS);
@@ -570,7 +588,7 @@ test('invalid restored position has safe bounded fallback', async ({
     block: 'lesen',
     lesen: { itemId: LONG_QUESTION, textId: LONG_TEXT, paragraph: 99 },
   });
-  await page.goto('/practice/lesen');
+  await page.goto(attemptLesenUrl(SLUG, attemptId));
   const reading = page.getByTestId('reading-text');
   await expect(reading).toHaveAttribute('data-text-id', LONG_TEXT);
   await expect(reading).toHaveAttribute('data-anchor', '0');
@@ -595,7 +613,7 @@ test('invalid restored locale cannot reset attempt', async ({ browser }) => {
 
   storeUnsupportedLocale(sessionId, 'de');
   try {
-    await page.goto('/practice/lesen');
+    await page.goto(attemptLesenUrl(SLUG, attemptId));
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page.getByTestId('finish-attempt')).toHaveText(
       'Finish attempt',
@@ -620,7 +638,7 @@ test('progress failure does not block answers', async ({ browser }) => {
   let refusedSaves = 0;
   const { context, page, attemptId } = await startGuest(browser, {
     beforeLoad: (target) =>
-      target.route(/\/practice(\/lesen)?$/, (route) => {
+      target.route(/\/practice\/[^/]+\/attempts\/[^/]+(\/lesen)?$/, (route) => {
         const request = route.request();
         const body = request.postData() ?? '';
         if (request.method() === 'POST' && body.includes('"progress"')) {

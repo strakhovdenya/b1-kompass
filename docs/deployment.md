@@ -24,7 +24,8 @@
 | `SUPABASE_URL` | сервер Next.js, скрипт загрузки | URL проекта Supabase |
 | `SUPABASE_SECRET_KEY` | сервер Next.js, скрипт загрузки | секретный ключ (`sb_secret_…`, роль `service_role`). Никогда не публикуется в клиенте и не получает префикс `NEXT_PUBLIC_` |
 | `GUEST_SESSIONS_PER_MINUTE` | сервер Next.js, необязательна | сколько новых гостевых сеансов в минуту разрешено на весь сайт; по умолчанию 30, неверное значение тоже даёт 30. E2E-сервер запускается с тестовым значением из `apps/web/tests/support/env.ts` |
-| `PRACTICE_EXAM_SLUG` | сервер Next.js, необязательна | slug экзамена, который открывает тренировка; по умолчанию пилот `telc-ajf-b12-dtz`. E2E-серверы задают тестовые комплекты (`test-full-dtz`, пара Teil 3) |
+| `PRACTICE_EXAM_SLUG` | сервер Next.js, необязательна | slug экзамена по умолчанию: его выбор открывает «Continue as guest», на его активную попытку ведут старые `/practice` и `/practice/lesen`; по умолчанию пилот `telc-ajf-b12-dtz`. Начатую попытку не выбирает: она открывается по своему адресу. E2E-серверы задают тестовые комплекты (`test-full-dtz`, пара Teil 3) |
+| `APP_ORIGIN` | сервер Next.js; обязательна в Production | один точный origin сайта (схема, хост, порт при необходимости; без пути, query, учётных данных и `*`), например `https://<домен-сайта>`. Команды (`POST /api/attempts/*`) принимаются только с этим `Origin`. Задана — действует в любом окружении; некорректное значение — ошибка настройки и отказ мутаций. Не задана: в Preview (`VERCEL_ENV=preview`) берётся `https://` + `VERCEL_URL`, в Production и любом другом окружении мутации отклоняются. Host и forwarded-host запроса не используются; алиас ветки без явной `APP_ORIGIN` не доверяется. Не секрет, но и не `NEXT_PUBLIC_`: читается только в `server/next`. E2E: каждый из трёх серверов получает свой `http://localhost:3100`, `:3101`, `:3102` |
 | `PILOT_KEYS_FILE` | только скрипты загрузки | путь к приватному JSON с ключом, по умолчанию `private/pilot-keys.json` |
 | `PILOT_AUDIO_FILE` | только скрипты загрузки | путь к оригинальной записи у владельца (`.mp3`, `.wav`, `.m4a` или `.ogg`), например `private/track-127.mp3`. Обязательна, значения по умолчанию нет |
 | `PILOT_CONTENT_FILE` | только `publish:pilot` | путь к подготовленному JSON полного пилота, по умолчанию `private/pilot-content.json` |
@@ -107,13 +108,14 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 
 - Root Directory: `apps/web`, Framework: Next.js, Node.js 24.x.
 - Переменные `SUPABASE_URL` и `SUPABASE_SECRET_KEY` (Production и Preview), тип Sensitive. `GUEST_SESSIONS_PER_MINUTE` и `PRACTICE_EXAM_SLUG` необязательны: без них действуют значения по умолчанию (фактический набор переменных в проекте Vercel в #14 не сверялся).
+- `APP_ORIGIN` (#39): в Production — публичный origin сайта; без неё в Production старт попытки отклоняется. В Preview её не задавать (production-значение не наследуется): используется `https://${VERCEL_URL}`. Если preview открывают через алиас ветки, для Preview нужно явно задать этот алиас. ⏳ В проекте Vercel владельцем ещё не задана — не проверено.
 - Production собирается из `main` после merge PR; Preview — на каждый PR. Статус сборки виден в GitHub как статус `Vercel` коммита.
 
 ## Развёртывание с нуля по шагам
 
 Порядок для владельца; значения секретов в документ не пишутся.
 
-1. Supabase: создать проект Free, затем `npx supabase link --project-ref <project-ref>` и `npx supabase db push`. Применяются все миграции `supabase/migrations/` по порядку: `20261031000000_guest_attempts`, `20261101000000_short_practice`, `20261102000000_guest_session_limits`, `20261103000000_full_exam_scope`, `20261104000000_attempt_progress`, `20261105000000_answer_revision`, `20261106000000_guest_renewal`. Проверка: `npx supabase migration list --linked` показывает каждую в Local и Remote.
+1. Supabase: создать проект Free, затем `npx supabase link --project-ref <project-ref>` и `npx supabase db push`. Применяются все миграции `supabase/migrations/` по порядку: `20261031000000_guest_attempts`, `20261101000000_short_practice`, `20261102000000_guest_session_limits`, `20261103000000_full_exam_scope`, `20261104000000_attempt_progress`, `20261105000000_answer_revision`, `20261106000000_guest_renewal`, `20261107000000_m2_attempt_lifecycle`. Проверка: `npx supabase migration list --linked` показывает каждую в Local и Remote.
 2. Auth: в Dashboard выключить регистрацию. Проверка: `GET https://<project-ref>.supabase.co/auth/v1/settings` с publishable-ключом → `disable_signup: true`.
 3. Storage и cron: бакет `exam-sources` создан миграцией и приватен. В Integrations → Cron есть задача `purge-expired-empty-guest-sessions`.
 4. Материал: доверенная загрузка с компьютера владельца. Короткий набор — `npm run seed:pilot`, полный пилот — `npm run prepare:pilot`, затем `npm run publish:pilot` (команды выше). Нужны `SUPABASE_URL`, `SUPABASE_SECRET_KEY` и файлы в `private/`. Повтор с тем же содержимым возвращает прежнюю версию, изменённый материал — новую.

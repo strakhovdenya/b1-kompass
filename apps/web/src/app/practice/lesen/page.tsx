@@ -1,41 +1,26 @@
 import { redirect } from 'next/navigation';
-import Stack from '@mui/material/Stack';
-import Typography from '@mui/material/Typography';
-import { LesenScreen } from '../../../features/lesen/LesenScreen';
-import { getOpenedPractice } from '../../../server/attempts/opened';
-import { getCurrentGuest, getServerDeps } from '../../../server/next/request';
+import {
+  getCurrentGuest,
+  getServerDeps,
+  readDefaultExamSlug,
+  resolveExamEntry,
+} from '../../../server/next/request';
 
 export const dynamic = 'force-dynamic';
 
-const LesenPage = async () => {
+// The M1 address of Lesen: the Lesen page of the guest's own active attempt
+// of the default exam, or the choice. It never starts an attempt.
+const LegacyLesenPage = async () => {
   const guest = await getCurrentGuest();
   if (!guest) redirect('/');
-  const opened = await getOpenedPractice(
-    getServerDeps(),
-    guest,
-    process.env.PRACTICE_EXAM_SLUG,
-  );
-  if (opened.status === 'session-invalid') redirect('/');
-  if (opened.status === 'no-material') return null;
-
-  const { practice } = opened;
-  const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
-  if (!hasLesen) redirect('/practice');
-  // A completed attempt shows its review from the shell at this address.
-  if (practice.review) return null;
-
-  return (
-    <Stack spacing={3}>
-      <Typography component="h1" variant="h5" lang="de">
-        {practice.examTitle}
-      </Typography>
-      <LesenScreen
-        questions={practice.questions}
-        texts={practice.texts}
-        initialSelections={practice.selections}
-      />
-    </Stack>
+  redirect(
+    await resolveExamEntry(
+      getServerDeps(),
+      guest,
+      readDefaultExamSlug(),
+      'lesen',
+    ),
   );
 };
 
-export default LesenPage;
+export default LegacyLesenPage;

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { readAnswers, readAttempts, readSessionByToken } from './support/db';
+import { LESEN_URL, enterAndStart } from './support/guest-browser';
 
 // The synthetic full set: lesen-1..5 Teil 1, 6..10 Teil 2 (nine options),
 // 11..16 Teil 3 (the long text), 17..19 Teil 4, 20..25 Teil 5 (gap marks).
@@ -33,11 +34,9 @@ const goTo = (page: Page, number: number) =>
 const openGuest = async (browser: Browser) => {
   const context = await browser.newContext({ viewport: WIDE });
   const page = await context.newPage();
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await enterAndStart(page);
   await page.getByTestId('block-link-lesen').click();
-  await page.waitForURL('**/practice/lesen');
+  await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('reading-text')).toBeVisible();
   return { context, page };
 };
@@ -106,7 +105,10 @@ test('lesen renders complete linked source materials', async ({ browser }) => {
 
 test('lesen state carries texts without answer keys', async ({ browser }) => {
   const { context, page } = await openGuest(browser);
-  const response = await context.request.get('/practice/lesen');
+  // The real Lesen page of the guest's own attempt, by its own address.
+  const response = await context.request.get(new URL(page.url()).pathname, {
+    maxRedirects: 0,
+  });
   expect(response.ok()).toBe(true);
   const html = await response.text();
   expect(html).toContain('Langer Lesetext zu Teil 3');
@@ -170,7 +172,7 @@ test('responsive transition preserves unrelated answers', async ({
 
 test('failed save survives layout switch', async ({ browser }) => {
   const { context, page } = await openGuest(browser);
-  await context.route('**/practice/lesen', (route) =>
+  await context.route(LESEN_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   const target = card(page, 'lesen-1');
@@ -190,7 +192,7 @@ test('failed save survives layout switch', async ({ browser }) => {
   await expect(optionIn(target, 'b')).toBeChecked();
   await expect(statusOf(target).getByRole('button')).toBeVisible();
 
-  await context.unroute('**/practice/lesen');
+  await context.unroute(LESEN_URL);
   await statusOf(target).getByRole('button').click();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({ 'lesen-1': 'b' });

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -15,7 +15,6 @@ import type {
   AttemptReview,
   ExamQuestion,
   FinishAttemptResult,
-  RestartAttemptResult,
   SaveAnswerResult,
   SaveProgressResult,
   Selections,
@@ -23,7 +22,8 @@ import type {
 import { AudioPlayer } from '../audio/AudioPlayer';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
-import type { RestartStatus, ReviewBlock } from '../results/AttemptReviewView';
+import type { ReviewBlock } from '../results/AttemptReviewView';
+import { attemptLesenPath, attemptPath, choicePath } from './attempt-client';
 import { hasSaving, hasUnsaved, isUnsaved, useAnswerStore } from './answers';
 import type { PendingAnswers, SaveAnswerInput } from './answers';
 import { TrainingContext } from './TrainingContext';
@@ -38,10 +38,6 @@ export interface FinishAttemptInput {
   attemptId: string;
 }
 
-export interface RestartAttemptInput {
-  attemptId: string;
-}
-
 export interface SaveProgressInput {
   attemptId: string;
   progress: AttemptProgress;
@@ -49,17 +45,19 @@ export interface SaveProgressInput {
 
 type FinishStatus = 'idle' | 'confirming' | 'finishing' | 'unsaved' | 'error';
 
-const LESEN_PATH = '/practice/lesen';
-
 // While the recording plays the position is saved at most this often.
 const PROGRESS_INTERVAL_MS = 10_000;
 
-const BLOCKS: readonly { block: ReviewBlock; href: string }[] = [
-  { block: 'hoeren', href: '/practice' },
-  { block: 'lesen', href: LESEN_PATH },
+const BLOCK_PATHS: readonly {
+  block: ReviewBlock;
+  pathOf: (examSlug: string, attemptId: string) => string;
+}[] = [
+  { block: 'hoeren', pathOf: attemptPath },
+  { block: 'lesen', pathOf: attemptLesenPath },
 ];
 
 interface TrainingShellProps {
+  examSlug: string;
   attemptId: string;
   questions: readonly ExamQuestion[];
   trackIds: readonly string[];
@@ -71,7 +69,6 @@ interface TrainingShellProps {
   saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
   finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
   saveProgress: (input: SaveProgressInput) => Promise<SaveProgressResult>;
-  restartAttempt: (input: RestartAttemptInput) => Promise<RestartAttemptResult>;
   children: ReactNode;
 }
 
@@ -104,6 +101,7 @@ const countUnsaved = (
 // finish point: while a choice is unconfirmed nothing is finished, and the
 // server computes the result, the shell only shows what it returns.
 export const TrainingShell = ({
+  examSlug,
   attemptId,
   questions,
   trackIds,
@@ -115,11 +113,11 @@ export const TrainingShell = ({
   saveAnswer,
   finishAttempt,
   saveProgress,
-  restartAttempt,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
   const pathname = usePathname();
+  const router = useRouter();
   const {
     selections,
     pending,
@@ -134,7 +132,6 @@ export const TrainingShell = ({
   });
   const [review, setReview] = useState(initialReview);
   const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
-  const [restartStatus, setRestartStatus] = useState<RestartStatus>('idle');
   const isSaving = hasSaving(pending);
   // Once the finish request is sent no answer is changed: the server scores
   // the answers it holds at that moment.
@@ -146,7 +143,8 @@ export const TrainingShell = ({
     [chooseAnswer],
   );
 
-  const current: ReviewBlock = pathname.startsWith(LESEN_PATH)
+  const lesenPath = attemptLesenPath(examSlug, attemptId);
+  const current: ReviewBlock = pathname.startsWith(lesenPath)
     ? 'lesen'
     : 'hoeren';
   const currentRef = useRef(current);
@@ -240,9 +238,9 @@ export const TrainingShell = ({
     [selections, pending, review, choose, retry, readProgress, reportProgress],
   );
 
-  const blocks = BLOCKS.filter(({ block }) =>
+  const blocks = BLOCK_PATHS.filter(({ block }) =>
     questions.some((question) => question.skill === block),
-  );
+  ).map(({ block, pathOf }) => ({ block, href: pathOf(examSlug, attemptId) }));
   const unanswered = {
     hoeren: countUnanswered(questions, selections, 'hoeren'),
     lesen: countUnanswered(questions, selections, 'lesen'),
@@ -282,20 +280,9 @@ export const TrainingShell = ({
     setFinishStatus('error');
   };
 
-  // The server starts the new run and sends the guest to its beginning; the
-  // layout then mounts a new shell for the new attempt, so nothing of this
-  // one is carried over.
-  const restart = async () => {
-    setRestartStatus('restarting');
-    try {
-      const result = await restartAttempt({ attemptId });
-      // A redirected action resolves without a result.
-      setRestartStatus(result?.ok === false ? 'error' : 'idle');
-    } catch (error) {
-      console.error({ error });
-      setRestartStatus('error');
-    }
-  };
+  // Starting again only opens the choice of the exam: a new attempt is
+  // created there by an explicit start, never by this button.
+  const restart = () => router.push(choicePath(examSlug));
 
   const requestFinish = () => {
     if (isUnsavedLeft) setFinishStatus('unsaved');
@@ -336,8 +323,7 @@ export const TrainingShell = ({
             review={review}
             questions={questions}
             block={blocks.length > 1 ? current : undefined}
-            onRestart={() => void restart()}
-            restartStatus={restartStatus}
+            onRestart={restart}
           />
         </Stack>
       </TrainingContext.Provider>

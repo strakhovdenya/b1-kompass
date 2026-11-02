@@ -2,8 +2,6 @@ import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import {
   finishAttempt,
-  openPractice,
-  restartAttempt,
   saveAnswer,
   saveProgress,
 } from '../src/server/attempts/attempts';
@@ -21,15 +19,27 @@ import {
   createPublicClient,
   depsAt,
   depsNow,
+  latestVersionOf,
   newGuest,
+  openStarted,
   readAnswers,
   readAttempts,
   readResults,
   readSession,
   readSessionByToken,
   serviceDb,
+  startBody,
+  startFor,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import {
+  CHOICE_URL,
+  HOEREN_URL,
+  attemptIdOf,
+  attemptLesenUrl,
+  attemptUrl,
+  startFromChoice,
+} from './support/guest-browser';
 
 // The synthetic full set. Events are read per visitor_id or attempt_id:
 // other specs write their own events at the same time.
@@ -117,8 +127,11 @@ const readVisitorId = async (sessionId: string): Promise<string> => {
   return data.visitor_id;
 };
 
-const openReady = async (deps: ServerDeps, guest: GuestContext) => {
-  const opened = await openPractice(deps, guest, FULL_EXAM.slug);
+const openReady = async (
+  deps: ServerDeps,
+  created: { token: string; guest: GuestContext },
+) => {
+  const opened = await openStarted(deps, created, FULL_EXAM.slug);
   if (opened.status !== 'ready') throw new Error(`practice: ${opened.status}`);
   return opened.practice;
 };
@@ -144,16 +157,19 @@ const finish = async (token: string, attemptId: string) => {
   return result.review;
 };
 
-const restart = async (token: string, attemptId: string) => {
-  const result = await restartAttempt(depsNow(), token, { attemptId });
-  if (!result.ok) throw new Error(`restart: ${result.error}`);
-  return result.attemptId;
+// "Start again" only opens the choice; the new run is a new explicit start
+// with its own commandId. While an attempt of the exam is active the start
+// is a conflict that names it, so a repeat never creates a second one.
+const restart = async (token: string) => {
+  const result = await startFor(depsNow(), token, FULL_EXAM.slug);
+  if (!result.ok) throw new Error(`start again: ${result.failure}`);
+  return result.result.attemptId;
 };
 
 // A guest whose first attempt has stored answers and is completed.
 const completedGuest = async () => {
   const created = await newGuest(depsNow());
-  const practice = await openReady(depsNow(), created.guest);
+  const practice = await openReady(depsNow(), created);
   await save(depsNow(), created.token, practice.attemptId, 'hoeren-1');
   await save(depsNow(), created.token, practice.attemptId, 'lesen-1');
   await finish(created.token, practice.attemptId);
@@ -172,11 +188,13 @@ const sessionOf = async (context: BrowserContext) => {
   return session;
 };
 
-// Entry through the real home page; the page language is English here.
+// Entry through the real home page and an explicit start from the choice;
+// the page language is English here.
 const enterAsGuest = async (page: Page) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Continue as guest' }).click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  await startFromChoice(page);
   await expect(page.getByTestId('question-card-hoeren-1')).toBeVisible();
 };
 
@@ -226,7 +244,7 @@ test('expiry creates fresh guest without sliding deadline', async ({
   const nearDeadline = depsAt(new Date(expiresAt - MINUTE_MS));
   const read = await resolveGuestSession(nearDeadline, created.token);
   expect(read?.sessionId).toBe(created.guest.sessionId);
-  const practice = await openReady(nearDeadline, created.guest);
+  const practice = await openReady(nearDeadline, created);
   await save(nearDeadline, created.token, practice.attemptId, 'hoeren-1');
   expect(await readSession(created.guest.sessionId)).toEqual(before);
 
@@ -273,7 +291,7 @@ test('expiry creates fresh guest without sliding deadline', async ({
 
 test('old guest rejected at exact expiry', async () => {
   const created = await newGuest(depsNow());
-  const practice = await openReady(depsNow(), created.guest);
+  const practice = await openReady(depsNow(), created);
   await save(depsNow(), created.token, practice.attemptId, 'hoeren-1');
   const events = await readEvents(created.guest.visitorId);
   expect(await countEvents(created.guest.visitorId)).toEqual({
@@ -311,7 +329,7 @@ test('restart button opens new empty attempt retaining history', async ({
   });
   expect(progressed.ok).toBe(true);
   await finish(token, attemptId);
-  await page.goto('/practice/lesen');
+  await page.goto(attemptLesenUrl(FULL_EXAM.slug, attemptId));
   await expect(page.getByTestId('attempt-review')).toBeVisible();
 
   const [oldRow] = await readStoredAttempts(sessionId);
@@ -321,8 +339,11 @@ test('restart button opens new empty attempt retaining history', async ({
   expect(Object.keys(oldAnswers)).toHaveLength(2);
   expect(oldResults).toHaveLength(1);
 
+  // Start again opens the choice of the exam and creates nothing yet.
   await page.getByTestId('restart-attempt').click();
-  await page.waitForURL('**/practice');
+  await page.waitForURL(CHOICE_URL);
+  expect(await readStoredAttempts(sessionId)).toHaveLength(1);
+  await startFromChoice(page);
   await expect(page.getByTestId('attempt-review')).toBeHidden();
   await expect(page.getByTestId('finish-attempt')).toBeVisible();
   const shownId = await shellAttemptId(page);
@@ -359,89 +380,133 @@ test('restart button opens new empty attempt retaining history', async ({
 
 test('repeated restart returns existing active attempt', async () => {
   const guest = await completedGuest();
-  const first = await restart(guest.token, guest.completedId);
+  const body = await startBody(FULL_EXAM.slug);
+  const started = await startFor(depsNow(), guest.token, FULL_EXAM.slug, body);
+  if (!started.ok) throw new Error(`start: ${started.failure}`);
+  expect(started.result.outcome).toBe('accepted');
+  const first = started.result.attemptId;
   const rows = await readStoredAttempts(guest.guest.sessionId);
   const events = await countEvents(guest.guest.visitorId);
   expect(rows).toHaveLength(2);
   expect(events.start).toBe(2);
 
-  const second = await restart(guest.token, guest.completedId);
-  expect(second).toBe(first);
+  // The same command again returns its attempt; a new command while it is
+  // active is a conflict naming it. Neither writes anything.
+  expect(
+    await startFor(depsNow(), guest.token, FULL_EXAM.slug, body),
+  ).toMatchObject({
+    ok: true,
+    result: { outcome: 'accepted', attemptId: first },
+  });
+  expect(await startFor(depsNow(), guest.token, FULL_EXAM.slug)).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: first },
+  });
   expect(await readStoredAttempts(guest.guest.sessionId)).toEqual(rows);
   expect(await countEvents(guest.guest.visitorId)).toEqual(events);
 
-  const reopened = await openReady(depsNow(), guest.guest);
+  const reopened = await openReady(depsNow(), guest);
   expect(reopened.attemptId).toBe(first);
   expect(reopened.review).toBeNull();
 
-  // An older completed run (a stale tab) also continues the active one.
+  // A stale tab of an older completed run starts again from the choice: it
+  // meets the active run and continues it.
   await finish(guest.token, first);
-  const third = await restart(guest.token, first);
+  const third = await restart(guest.token);
   const runs = await readStoredAttempts(guest.guest.sessionId);
   const counts = await countEvents(guest.guest.visitorId);
-  expect(await restart(guest.token, guest.completedId)).toBe(third);
+  expect(await restart(guest.token)).toBe(third);
   expect(await readStoredAttempts(guest.guest.sessionId)).toEqual(runs);
   expect(await countEvents(guest.guest.visitorId)).toEqual(counts);
 });
 
 test('restart rejects foreign or active attempt', async () => {
   const owner = await completedGuest();
-  const activeId = await restart(owner.token, owner.completedId);
+  const activeId = await restart(owner.token);
   const stranger: CreatedGuest = await newGuest(depsNow());
-  await openReady(depsNow(), stranger.guest);
+  await openReady(depsNow(), stranger);
 
   const ownerRows = await readStoredAttempts(owner.guest.sessionId);
   const strangerRows = await readStoredAttempts(stranger.guest.sessionId);
   const ownerEvents = await readEvents(owner.guest.visitorId);
   const strangerEvents = await readEvents(stranger.guest.visitorId);
 
-  const foreign = { attemptId: owner.completedId };
-  expect(await restartAttempt(depsNow(), stranger.token, foreign)).toEqual({
-    ok: false,
-    error: 'attempt-not-found',
+  // A start builds on no foreign attempt: naming one as a source is not
+  // enabled; an active run is a conflict, never replaced.
+  const foreign = {
+    purpose: 'error-repeat',
+    sourceAttemptId: owner.completedId,
+  };
+  expect(
+    await startFor(depsNow(), stranger.token, FULL_EXAM.slug, foreign),
+  ).toEqual({ ok: false, failure: 'not-enabled' });
+  expect(await startFor(depsNow(), owner.token, FULL_EXAM.slug)).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: activeId },
   });
   expect(
-    await restartAttempt(depsNow(), owner.token, { attemptId: activeId }),
-  ).toEqual({ ok: false, error: 'not-completed' });
-  expect(
-    await restartAttempt(depsAt(owner.guest.expiresAt), owner.token, foreign),
-  ).toEqual({ ok: false, error: 'session-invalid' });
-  expect(await restartAttempt(depsNow(), null, foreign)).toEqual({
+    await startFor(depsAt(owner.guest.expiresAt), owner.token, FULL_EXAM.slug),
+  ).toEqual({ ok: false, failure: 'session-invalid' });
+  expect(await startFor(depsNow(), null, FULL_EXAM.slug)).toEqual({
     ok: false,
-    error: 'session-invalid',
+    failure: 'session-invalid',
   });
+  const scored = { score: 45 } as Partial<
+    Awaited<ReturnType<typeof startBody>>
+  >;
   expect(
-    await restartAttempt(depsNow(), owner.token, { ...foreign, score: 45 }),
-  ).toEqual({ ok: false, error: 'invalid-input' });
+    await startFor(depsNow(), owner.token, FULL_EXAM.slug, scored),
+  ).toEqual({ ok: false, failure: 'invalid-input' });
 
-  // The database refuses the same calls on its own.
-  const direct = (sessionId: string, attemptId: string, now: Date) =>
-    serviceDb.rpc('restart_attempt', {
+  // The database refuses on its own: the M1 restart no longer exists, and
+  // the start checks the guest term, the version and the assignment.
+  const removed = await serviceDb.rpc('restart_attempt', {
+    p_session_id: owner.guest.sessionId,
+    p_attempt_id: owner.completedId,
+    p_exam_version_id: '00000000-0000-4000-8000-000000000000',
+    p_now: new Date().toISOString(),
+    p_scope: 'full-exam',
+  });
+  expect(removed.error?.code).toBe('PGRST202');
+
+  const exam = await latestVersionOf(FULL_EXAM.slug);
+  if (!exam) throw new Error('full exam is missing');
+  const allIds = FULL_PILOT.content.questions.map((question) => question.id);
+  const expired = await newGuest(depsAt(new Date(Date.now() - 31 * DAY_MS)));
+  const fresh = await newGuest(depsNow());
+  const direct = (sessionId: string, overrides: Record<string, unknown>) =>
+    serviceDb.rpc('m2_start_attempt', {
       p_session_id: sessionId,
-      p_attempt_id: attemptId,
-      p_exam_version_id: '00000000-0000-4000-8000-000000000000',
-      p_now: now.toISOString(),
+      p_exam_id: exam.examId,
+      p_command_id: crypto.randomUUID(),
+      p_mode: 'training',
+      p_purpose: 'normal',
+      p_selection: 'all',
+      p_source_attempt_id: null,
+      p_version_id: exam.versionId,
       p_scope: 'full-exam',
+      p_question_ids: allIds,
+      ...overrides,
     });
-  const now = new Date();
   const hints = [
-    (await direct(stranger.guest.sessionId, owner.completedId, now)).error,
-    (await direct(owner.guest.sessionId, activeId, now)).error,
-    (await direct(owner.guest.sessionId, owner.completedId, now)).error,
+    (await direct(expired.guest.sessionId, {})).error,
     (
-      await direct(
-        owner.guest.sessionId,
-        owner.completedId,
-        owner.guest.expiresAt,
-      )
+      await direct(fresh.guest.sessionId, {
+        p_version_id: '00000000-0000-4000-8000-000000000000',
+      })
     ).error,
+    (await direct(fresh.guest.sessionId, { p_question_ids: allIds.slice(1) }))
+      .error,
+    (await direct(fresh.guest.sessionId, { p_mode: 'speed' })).error,
   ].map((error) => error?.hint);
   expect(hints).toEqual([
-    'attempt_not_found',
-    'attempt_not_completed',
-    'version_not_allowed',
     'guest_session_invalid',
+    'version_changed',
+    'assignment_invalid',
+    'start_invalid',
   ]);
+  expect(await readStoredAttempts(expired.guest.sessionId)).toEqual([]);
+  expect(await readStoredAttempts(fresh.guest.sessionId)).toEqual([]);
 
   expect(await readStoredAttempts(owner.guest.sessionId)).toEqual(ownerRows);
   expect(await readStoredAttempts(stranger.guest.sessionId)).toEqual(
@@ -480,6 +545,8 @@ test('restart cannot reset another active guest', async ({ browser }) => {
   await finish(first.token, first.attemptId);
   await first.page.reload();
   await first.page.getByTestId('restart-attempt').click();
+  await first.page.waitForURL(CHOICE_URL);
+  await startFromChoice(first.page);
   await expect(first.page.getByTestId('finish-attempt')).toBeVisible();
   const restartedId = await shellAttemptId(first.page);
   expect(restartedId).not.toBe(first.attemptId);
@@ -509,10 +576,10 @@ test('entry start and finish are recorded', async () => {
   const created = await newGuest(depsNow());
   const { visitorId, sessionId } = created.guest;
   expect(await readVisitorId(sessionId)).toBe(visitorId);
-  const firstId = (await openReady(depsNow(), created.guest)).attemptId;
+  const firstId = (await openReady(depsNow(), created)).attemptId;
   await save(depsNow(), created.token, firstId, 'hoeren-1');
   await finish(created.token, firstId);
-  const secondId = await restart(created.token, firstId);
+  const secondId = await restart(created.token);
   await finish(created.token, secondId);
 
   const events = await readEvents(visitorId);
@@ -536,20 +603,26 @@ test('repeated requests do not duplicate events', async ({ browser }) => {
     expect(await countEvents(visitorId)).toEqual(counts);
   await expectCounts({ entry: 1, start: 1, finish: 0 });
 
-  // Entry again from the same browser keeps its session.
-  await enterAsGuest(page);
+  // Entry again from the same browser keeps its session and continues its
+  // active attempt at the attempt's own address, without a start.
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await page.waitForURL(HOEREN_URL);
+  expect(attemptIdOf(page)).toBe(attemptId);
   expect((await sessionOf(context)).id).toBe(sessionId);
   await page.reload();
-  expect((await openReady(depsNow(), guest)).attemptId).toBe(attemptId);
+  expect((await openReady(depsNow(), { token, guest })).attemptId).toBe(
+    attemptId,
+  );
   await expectCounts({ entry: 1, start: 1, finish: 0 });
 
   await finish(token, attemptId);
   await finish(token, attemptId);
   await expectCounts({ entry: 1, start: 1, finish: 1 });
 
-  const nextId = await restart(token, attemptId);
-  expect(await restart(token, attemptId)).toBe(nextId);
-  expect((await openReady(depsNow(), guest)).attemptId).toBe(nextId);
+  const nextId = await restart(token);
+  expect(await restart(token)).toBe(nextId);
+  expect((await openReady(depsNow(), { token, guest })).attemptId).toBe(nextId);
   await expectCounts({ entry: 1, start: 2, finish: 1 });
 
   await finish(token, nextId);
@@ -588,6 +661,8 @@ test('public client cannot read events or restart', async () => {
   });
   expect(write.error?.code).toBe('42501');
 
+  // The M1 restart is removed; the explicit start that replaces it is
+  // closed to the public key.
   const restarted = await anon.rpc('restart_attempt', {
     p_session_id: guest.guest.sessionId,
     p_attempt_id: guest.completedId,
@@ -595,7 +670,21 @@ test('public client cannot read events or restart', async () => {
     p_now: new Date().toISOString(),
     p_scope: 'full-exam',
   });
-  expect(restarted.error?.code).toBe('42501');
+  expect(restarted.error?.code).toBe('PGRST202');
+  const exam = await latestVersionOf(FULL_EXAM.slug);
+  const started = await anon.rpc('m2_start_attempt', {
+    p_session_id: guest.guest.sessionId,
+    p_exam_id: exam?.examId,
+    p_command_id: crypto.randomUUID(),
+    p_mode: 'training',
+    p_purpose: 'normal',
+    p_selection: 'all',
+    p_source_attempt_id: null,
+    p_version_id: exam?.versionId,
+    p_scope: 'full-exam',
+    p_question_ids: FULL_PILOT.content.questions.map((item) => item.id),
+  });
+  expect(started.error?.code).toBe('42501');
 
   expect(await readEvents(guest.guest.visitorId)).toEqual(events);
   expect(await readStoredAttempts(guest.guest.sessionId)).toEqual(rows);
@@ -609,9 +698,13 @@ test('restart keeps the guest locale', async ({ browser, baseURL }) => {
     { name: GUEST_COOKIE, value: guest.token, url: baseURL },
   ]);
   const page = await context.newPage();
-  await page.goto('/practice');
+  await page.goto(attemptUrl(FULL_EXAM.slug, guest.completedId));
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   await page.getByTestId('restart-attempt').click();
+  await page.waitForURL(CHOICE_URL);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+  await startFromChoice(page);
   await expect(page.getByTestId('finish-attempt')).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   expect(await shellAttemptId(page)).not.toBe(guest.completedId);
