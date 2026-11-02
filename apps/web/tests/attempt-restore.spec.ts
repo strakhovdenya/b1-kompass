@@ -68,9 +68,22 @@ const storeUnsupportedLocale = (sessionId: string, locale: string) =>
       check (locale in ('en', 'ru')) not valid;
     commit;`);
 
-const restoreLocale = (sessionId: string) =>
-  psql(`update public.guest_sessions set locale = 'en' where id = '${sessionId}';
-    alter table public.guest_sessions validate constraint ${LOCALE_CHECK};`);
+// The two locale specs run in parallel workers on one database, so the check
+// is validated again only when no other test still stores an unsupported
+// locale; the table lock keeps that decision and the validation atomic.
+const restoreLocale = (sessionId: string) => {
+  psql(
+    `update public.guest_sessions set locale = 'en' where id = '${sessionId}';`,
+  );
+  psql(`do $$ begin
+    lock table public.guest_sessions in share row exclusive mode;
+    if not exists (
+      select 1 from public.guest_sessions where locale not in ('en', 'ru')
+    ) then
+      alter table public.guest_sessions validate constraint ${LOCALE_CHECK};
+    end if;
+  end $$;`);
+};
 
 interface StoredProgress {
   block?: string;
