@@ -88,3 +88,45 @@ export type AdmissionResult =
   | { ok: true; changed: boolean; state: LifecycleState }
   | { ok: false; reason: AdmissionRefusal; state: LifecycleState }
   | { ok: false; reason: 'invalid-input'; error: LifecycleError };
+
+// Public command DTOs. Each command lists only the business outcomes that
+// apply to it; technical failures travel in a separate channel and never
+// share a variant with a business outcome.
+export type RunTechnicalFailure =
+  | 'invalid-input'
+  | 'session-invalid'
+  | 'not-found'
+  | 'unavailable'
+  | 'not-enabled';
+
+export type CommandResult<Outcome> =
+  { ok: true; result: Outcome } | { ok: false; failure: RunTechnicalFailure };
+
+// The snapshot is the actual state of the attempt, also for a repeated or
+// refused command.
+interface OutcomeOf<Kind extends string> {
+  readonly outcome: Kind;
+  readonly attemptId: string;
+  readonly state: LifecycleState;
+}
+
+export type StartOutcome = OutcomeOf<'accepted' | 'conflict'>;
+
+export type SubmitOutcome =
+  | OutcomeOf<
+      | 'accepted'
+      | 'result-pending'
+      | 'conflict'
+      | 'closed-phase'
+      | 'stale-confirmation'
+    >
+  | { readonly outcome: 'result-ready'; readonly attemptId: string };
+
+export type CancelOutcome = OutcomeOf<
+  'accepted' | 'conflict' | 'closed-phase' | 'stale-confirmation'
+>;
+
+// `changed` is false for the accepted no-op of an already active Lesen.
+export type BeginLesenOutcome =
+  | (OutcomeOf<'accepted'> & { readonly changed: boolean })
+  | OutcomeOf<'phase-not-open' | 'closed-phase'>;

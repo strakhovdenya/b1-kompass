@@ -101,3 +101,26 @@ export type {
   Skill,
 } from './attempts/contracts';
 export { admitOperation, resolveLifecycle } from './attempts/lifecycle';
+export {
+  buildAssignment,
+  buildRepeatAssignment,
+  scoreAssignment,
+  toBeginLesenResult,
+  toPublicContext,
+} from './attempts/assignment';
+export type {
+  AssignmentError,
+  AssignmentResult,
+  AssignmentScoreResult,
+  AttemptAssignment,
+  PublicContextItem,
+  ScoreAssignmentInput,
+} from './attempts/assignment';
+export type {
+  BeginLesenOutcome,
+  CancelOutcome,
+  CommandResult,
+  RunTechnicalFailure,
+  StartOutcome,
+  SubmitOutcome,
+} from './attempts/contracts';

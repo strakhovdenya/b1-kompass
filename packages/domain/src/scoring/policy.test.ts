@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { selectScoringPolicy, toPercent } from '../index';
-import type { ExamQuestion } from '../index';
+import {
+  buildAssignment,
+  scoreAssignment,
+  selectScoringPolicy,
+  toPercent,
+} from '../index';
+import type { ExamContent, ExamQuestion } from '../index';
 
 const question = (id: string, number: number): ExamQuestion => ({
   id,
@@ -116,5 +121,74 @@ describe('short-set scoring policy', () => {
     expect(toPercent(2, 3)).toBe(66.7);
     expect(toPercent(0, 4)).toBe(0);
     expect(toPercent(4, 4)).toBe(100);
+  });
+});
+
+const fullExam = (): ExamContent => ({
+  source: {
+    publisher: 'Test',
+    title: 'Synthetic',
+    url: 'https://example.org/synthetic',
+    page: 1,
+  },
+  questions: [
+    ...Array.from({ length: 20 }, (_, i) => ({
+      ...question(`hoeren-${i + 1}`, i + 1),
+    })),
+    ...Array.from({ length: 25 }, (_, i) => ({
+      ...question(`lesen-${i + 1}`, i + 21),
+      skill: 'lesen' as const,
+    })),
+  ],
+});
+
+describe('assigned full exam', () => {
+  const content = fullExam();
+  const allKeys = Object.fromEntries(content.questions.map((q) => [q.id, 'a']));
+  const assignment = buildAssignment({
+    format: 'DTZ',
+    versionId: 'v1',
+    content,
+    selection: 'all',
+  });
+
+  // The first `hoeren` Hören and `lesen` Lesen questions are answered right.
+  const totalFor = (hoeren: number, lesen: number) => {
+    if (!assignment.ok) throw new Error('assignment expected');
+    const selections = Object.fromEntries(
+      content.questions.map((q, index) => {
+        const number = Number(q.id.split('-')[1]);
+        const limit = index < 20 ? hoeren : lesen;
+        return [q.id, number <= limit ? 'a' : 'b'];
+      }),
+    );
+    const result = scoreAssignment({
+      assignment: assignment.assignment,
+      versionId: 'v1',
+      content,
+      keys: allKeys,
+      selections,
+    });
+    if (!result.ok) throw new Error(`unexpected ${result.error}`);
+    return result.score;
+  };
+
+  it('retains dtz boundary scores', () => {
+    expect(totalFor(0, 19)).toMatchObject({ score: 19, level: 'below-A2' });
+    expect(totalFor(0, 20)).toMatchObject({ score: 20, level: 'A2' });
+    expect(totalFor(7, 25)).toMatchObject({ score: 32, level: 'A2' });
+    expect(totalFor(8, 25)).toMatchObject({ score: 33, level: 'B1' });
+    const control = totalFor(15, 18);
+    expect(control).toMatchObject({
+      scope: 'full-exam',
+      score: 33,
+      maxScore: 45,
+      percent: 73.3,
+      level: 'B1',
+    });
+    expect(control.skills).toEqual({
+      hoeren: { score: 15, maxScore: 20 },
+      lesen: { score: 18, maxScore: 25 },
+    });
   });
 });
