@@ -77,3 +77,27 @@ export type {
   SaveAnswerResult,
   Selections,
 } from './answers/save-result';
+export {
+  ATTEMPT_MODES,
+  ATTEMPT_PURPOSES,
+  ATTEMPT_SELECTIONS,
+  ATTEMPT_STATUSES,
+  SKILLS,
+} from './attempts/contracts';
+export type {
+  AdmissionRefusal,
+  AdmissionResult,
+  AttemptMode,
+  AttemptOperation,
+  AttemptPhase,
+  AttemptPurpose,
+  AttemptSelection,
+  AttemptStatus,
+  LifecycleDurations,
+  LifecycleError,
+  LifecycleInput,
+  LifecycleResult,
+  LifecycleState,
+  Skill,
+} from './attempts/contracts';
+export { admitOperation, resolveLifecycle } from './attempts/lifecycle';

@@ -100,6 +100,13 @@ supabase/migrations/**        схема, неизменяемость, функ
 
 - **Место гостя** (`attempts.progress`, миграция `20261104000000_attempt_progress.sql`, #10): jsonb, не больше 2 КБ, `null` у новой попытки. Схема `attemptProgressSchema` живёт в `packages/domain/src/progress` и общая для сервера и UI. `saveProgress` (`server/attempts/attempts.ts`): строгий ввод `{ attemptId, progress }` → `resolveGuestSession` → `save_attempt_progress`. Функция под блокировкой строки проверяет срок сеанса, владельца и статус `active` (как `save_attempt_answer`), что `hoeren.itemId` и `lesen.itemId` — задание или группа версии, а `lesen.textId` — текст версии (`progress_not_allowed`), и только потом пишет. Права только у `service_role`. `openPractice` читает место вместе с попыткой, сверяет его со схемой и для завершённой попытки не выдаёт. Проверки: `tests/attempt-restore.spec.ts` (чужой и истёкший сеанс, лишнее поле, отрицательная позиция, id вне версии, вызов с publishable-ключом). Правила возврата — `docs/training.md`.
 
+## Жизненный цикл попытки M2 (#37)
+
+- Правила режимов `training` / `timed-block` / `exam`, этапов Hören → переход → Lesen и допуска операций принадлежат `@b1k/domain` (`attempts/contracts.ts`, `attempts/lifecycle.ts`). Это чистые функции: `resolveLifecycle(input, atMs)` считает этап, сроки и остаток, `admitOperation(input, operation, atMs)` решает, допустим ли ответ, сдача, отмена или «Начать Lesen».
+- Модуль не делает I/O и не читает часы: начало, сроки и `at` приходят аргументами как конечные UTC epoch ms, длительности — положительные ms. Он не импортирует web, Supabase SDK, scoring, материал и назначение набора. Перевод TIMESTAMPTZ и единиц профиля — задача серверной границы.
+- Допуск: `at < deadline`, равенство запрещено; у свободной тренировки срока нет. Закрытый этап не открывается более ранним `at` (учитываются `closedSkills` и `lesenStartedAtMs`). «Начать Lesen» в переходе фиксирует начало один раз и даёт полную длительность Lesen; при активном Lesen это принятый no-op (`changed: false`), при Hören — `phase-not-open`, после закрытия — `closed-phase`.
+- Принятое чистой политикой решение не авторизует Guest. Сеанс, владельца, членство задания в назначении, идемпотентность команд и запись в БД по-прежнему проверяют сервер (`resolveGuestSession` и функции БД); журнал событий и `commandId` lifecycle не читает.
+
 ## Новый запуск после результата (#12)
 
 - Кнопка «Пройти заново» (`restart-attempt`) есть только на экране результата завершённой попытки. Повтора во время активной попытки в M1 нет, нового статуса попытки тоже нет.
