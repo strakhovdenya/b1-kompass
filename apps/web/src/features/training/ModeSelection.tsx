@@ -13,7 +13,7 @@ import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { AttemptMode } from '@b1k/domain';
+import type { AttemptMode, AttemptSelection } from '@b1k/domain';
 import { attemptPath, requestStart } from './attempt-client';
 
 interface ModeSelectionProps {
@@ -21,6 +21,8 @@ interface ModeSelectionProps {
   examTitle: string;
   versionId: string;
   questionCount: number;
+  hoerenCount: number;
+  lesenCount: number;
   activeAttemptId: string | null;
 }
 
@@ -41,6 +43,8 @@ const MODE_KEYS: Readonly<Record<AttemptMode, string>> = {
   exam: 'exam',
 };
 
+const SELECTIONS: readonly AttemptSelection[] = ['all', 'hoeren', 'lesen'];
+
 // The choice before a start. Opening it writes nothing; only the start
 // button sends a command. A lost answer is sent again with the same
 // commandId, so it cannot start a second attempt.
@@ -49,13 +53,30 @@ export const ModeSelection = ({
   examTitle,
   versionId,
   questionCount,
+  hoerenCount,
+  lesenCount,
   activeAttemptId,
 }: ModeSelectionProps) => {
   const t = useTranslations('choice');
   const router = useRouter();
   const [status, setStatus] = useState<StartStatus>('idle');
   const [conflictId, setConflictId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<AttemptSelection>('all');
   const commandId = useRef<string | null>(null);
+  const counts: Readonly<Record<AttemptSelection, number>> = {
+    all: questionCount,
+    hoeren: hoerenCount,
+    lesen: lesenCount,
+  };
+
+  // Another choice is another command: a lost answer of the old one is
+  // not resent for it.
+  const select = (value: AttemptSelection) => {
+    commandId.current = null;
+    setConflictId(null);
+    setStatus('idle');
+    setSelection(value);
+  };
 
   const start = async () => {
     commandId.current ??= crypto.randomUUID();
@@ -65,7 +86,7 @@ export const ModeSelection = ({
       examSlug,
       mode: 'training',
       purpose: 'normal',
-      selection: 'all',
+      selection,
       sourceAttemptId: null,
       expectedVersionId: versionId,
     });
@@ -136,12 +157,32 @@ export const ModeSelection = ({
                 <Stack sx={{ py: 0.5 }}>
                   <Typography>{t(`mode.${MODE_KEYS[mode]}`)}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {isEnabled
-                      ? t('trainingDetail', { count: questionCount })
-                      : t('comingSoon')}
+                    {isEnabled ? t('trainingDetail') : t('comingSoon')}
                   </Typography>
                 </Stack>
               }
+            />
+          ))}
+        </RadioGroup>
+      </FormControl>
+      <FormControl>
+        <FormLabel id="selection-label">{t('selectionLabel')}</FormLabel>
+        <RadioGroup
+          aria-labelledby="selection-label"
+          value={selection}
+          onChange={(_event, value) => {
+            const picked = SELECTIONS.find((item) => item === value);
+            if (picked) select(picked);
+          }}
+        >
+          {SELECTIONS.map((item) => (
+            <FormControlLabel
+              key={item}
+              value={item}
+              control={<Radio />}
+              disabled={isStarting || counts[item] === 0}
+              data-testid={`selection-option-${item}`}
+              label={t(`selection.${item}`, { count: counts[item] })}
             />
           ))}
         </RadioGroup>

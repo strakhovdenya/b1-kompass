@@ -110,6 +110,17 @@ describe('AttemptReviewView', () => {
     );
   });
 
+  it('marks a full set as taken without a time limit, in both languages', () => {
+    const html = render({ ...review, scope: 'full-exam', showsLevel: true });
+    expect(html).toContain('data-testid="result-untimed"');
+    expect(html).toContain(messages.results.untimedFull);
+    expect(html).not.toContain('data-testid="result-scope"');
+    expect(render({ ...review, showsLevel: true }, 'ru')).toContain(
+      ruMessages.results.untimedFull,
+    );
+    expect(render(review)).not.toContain('data-testid="result-untimed"');
+  });
+
   const full: AttemptReview = {
     ...review,
     scope: 'full-exam',

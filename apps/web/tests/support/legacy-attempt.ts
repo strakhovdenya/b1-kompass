@@ -196,3 +196,60 @@ export const historicalCompletionSql = (
   }
   return parts.join('\n');
 };
+
+export interface HistoricalActive {
+  id: string;
+  sessionId: string;
+  examId: string;
+  versionId: string;
+  scope: 'short-set' | 'full-exam';
+  createdAt: string;
+  // The stored revision of each answer: the next choice continues above it.
+  answers: Readonly<Record<string, { optionId: string; revision: number }>>;
+  progress: unknown;
+}
+
+// An open M1 attempt in the shape it has after the transfer: exam_id, a free
+// training run over the whole version from the scoped backfill, the answers
+// with their revisions, the stored place and the start event. Written in the
+// transaction of the caller, committed before the browser reads it. Without
+// a run the attempt stays as the transfer found it, for a neighbour check.
+export const historicalActiveSql = (
+  active: HistoricalActive,
+  options: { hasRun: boolean } = { hasRun: true },
+): string => {
+  const id = quote(active.id);
+  const answers = Object.entries(active.answers)
+    .map(
+      ([questionId, answer]) =>
+        `(${id}, ${quote(questionId)}, ${quote(answer.optionId)}, ` +
+        `${answer.revision}, ${quote(active.createdAt)})`,
+    )
+    .join(', ');
+  const progress =
+    active.progress === null
+      ? 'null'
+      : `${quote(JSON.stringify(active.progress))}::jsonb`;
+  const parts = [
+    `insert into public.attempts (
+      id, guest_session_id, exam_id, exam_version_id, scope, status,
+      progress, created_at, updated_at
+    ) values (
+      ${id}, ${quote(active.sessionId)}, ${quote(active.examId)},
+      ${quote(active.versionId)}, ${quote(active.scope)}, 'active',
+      ${progress}, ${quote(active.createdAt)}, ${quote(active.createdAt)}
+    );`,
+    ...(options.hasRun
+      ? [`select * from m2_private.backfill_m1_attempts(${id});`]
+      : []),
+    `insert into public.guest_events (kind, visitor_id, attempt_id, occurred_at)
+      select 'start', s.visitor_id, ${id}, ${quote(active.createdAt)}
+      from public.guest_sessions s where s.id = ${quote(active.sessionId)};`,
+  ];
+  if (answers) {
+    parts.push(`insert into public.attempt_answers (
+      attempt_id, question_id, option_id, revision, updated_at
+    ) values ${answers};`);
+  }
+  return parts.join(' ');
+};

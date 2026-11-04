@@ -34,6 +34,25 @@ export const startFromChoice = async (page: Page) => {
   await page.waitForURL(HOEREN_URL);
 };
 
+// A new guest enters through the home page and stops at the choice.
+export const enterAtChoice = async (page: Page) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await page.waitForURL(CHOICE_URL);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+};
+
+export type FreeSelection = 'all' | 'hoeren' | 'lesen';
+
+// The explicit start of one free block from the choice screen. A Lesen-only
+// attempt opens at the Lesen address, the others at the Hören one.
+export const startSelection = async (page: Page, selection: FreeSelection) => {
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await page.getByTestId(`selection-option-${selection}`).click();
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(selection === 'lesen' ? LESEN_URL : HOEREN_URL);
+};
+
 // A new guest enters through the home page and starts the training.
 export const enterAndStart = async (page: Page) => {
   await page.goto('/');

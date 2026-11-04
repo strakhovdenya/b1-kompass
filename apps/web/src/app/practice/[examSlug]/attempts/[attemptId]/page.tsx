@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { HoerenSingleScreen } from '../../../../../features/hoeren/HoerenSingleScreen';
+import { attemptLesenPath } from '../../../../../features/training/attempt-client';
 import { getOpenedAttempt } from '../../../../../server/attempts/opened';
 import {
   getCurrentGuest,
@@ -29,6 +30,12 @@ const HoerenPage = async ({ params }: HoerenPageProps) => {
   if (opened.status !== 'ready') return null;
 
   const { practice } = opened;
+  // A Lesen-only attempt has no Hören block: its work is at the Lesen address.
+  const hasHoeren = practice.questions.some((item) => item.skill === 'hoeren');
+  const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
+  if (!hasHoeren && hasLesen && !practice.review) {
+    redirect(attemptLesenPath(practice.examSlug, practice.attemptId));
+  }
   // A completed attempt shows its review from the shell; the block is not
   // rendered, so the key-free material is not sent a second time.
   if (practice.review) return null;
