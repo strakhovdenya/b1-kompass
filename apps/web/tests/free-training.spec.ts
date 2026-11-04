@@ -375,7 +375,9 @@ test('enabled skill start still rejects forged selection and assignment', async 
 
 // Privacy ---------------------------------------------------------------------
 
-test('unassigned skill and early or foreign review stay private', async () => {
+test('unassigned skill and early or foreign review stay private', async ({
+  request,
+}) => {
   for (const { selection } of SELECTIONS.filter(
     (item) => item.selection !== 'all',
   )) {
@@ -399,6 +401,21 @@ test('unassigned skill and early or foreign review stay private', async () => {
     });
     expect(forged.ok).toBe(false);
     expect(await readAnswers(attemptId)).toEqual({ [ownId]: fullKeyOf(ownId) });
+    // The SQL refuses it too, whoever calls it.
+    const refuseDirect = async () => {
+      const direct = await serviceDb.rpc('m2_save_answer', {
+        p_session_id: owner.guest.sessionId,
+        p_attempt_id: attemptId,
+        p_question_id: foreignId,
+        p_option_id: fullKeyOf(foreignId),
+        p_revision: 1,
+      });
+      expect(direct.error).not.toBeNull();
+      expect(await readAnswers(attemptId)).toEqual({
+        [ownId]: fullKeyOf(ownId),
+      });
+    };
+    await refuseDirect();
 
     // Before completion nobody gets a key: not the owner, not another guest.
     expect(
@@ -415,6 +432,18 @@ test('unassigned skill and early or foreign review stay private', async () => {
     if (!submitted.ok) throw new Error(`submit: ${submitted.error}`);
     expect(submitted.review.items.map((item) => item.questionId)).toEqual(own);
     expect(JSON.stringify(submitted.review)).not.toContain(`"${foreignId}"`);
+
+    // The completed page carries no task or key of the other skill, and a
+    // later save for it is refused as well.
+    const foreignQuestion = questions.find((item) => item.id === foreignId);
+    const own_ = await request.get(`${ORIGIN}${attemptUrl(SLUG, attemptId)}`, {
+      headers: { cookie: `${GUEST_COOKIE}=${owner.token}` },
+    });
+    const body = await own_.text();
+    expect(own_.status()).toBe(200);
+    expect(body).not.toContain(foreignId);
+    expect(body).not.toContain(foreignQuestion?.prompt.slice(0, 20) ?? '?');
+    await refuseDirect();
 
     const results = await readResults(attemptId);
     expect(results).toHaveLength(1);
