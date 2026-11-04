@@ -1570,8 +1570,10 @@ test('mutation grants deny public roles and preserve migration owner boundary', 
 
 test('save and submit enforce real guest expiry after row lock', async () => {
   const token = randomBytes(32).toString('base64url');
+  // The wait on the row lock must stay below the 8 s statement_timeout of the
+  // API role, so the term is short but long enough for the setup below.
   const sessionId = psql(
-    `select m2_test.insert_guest_ending_in(${quote(hashGuestToken(token))}, 8)`,
+    `select m2_test.insert_guest_ending_in(${quote(hashGuestToken(token))}, 6)`,
   );
   const expiresAt = new Date(
     psql(`select expires_at from public.guest_sessions
