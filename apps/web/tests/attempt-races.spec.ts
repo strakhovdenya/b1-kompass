@@ -10,7 +10,7 @@ import type {
   Route,
 } from '@playwright/test';
 import { selectScoringPolicy } from '@b1k/domain';
-import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
+import { saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
 import {
@@ -21,9 +21,12 @@ import {
   readAttempts,
   readResults,
   readSessionByToken,
+  readSubmission,
   serviceDb,
+  submitStored,
 } from './support/db';
 import {
+  ANSWER_URL,
   HOEREN_URL,
   LESEN_URL,
   attemptIdOf,
@@ -110,7 +113,7 @@ const statusOf = (cardLocator: Locator): Locator =>
 const expectStatus = (cardLocator: Locator, status: string) =>
   expect(statusOf(cardLocator)).toHaveAttribute('data-status', status);
 
-// The save of one question: the server action call carries its input.
+// The save of one question: its own POST carries the input.
 const isSaveOf = (request: Request, questionId: string): boolean =>
   request.method() === 'POST' &&
   (request.postData() ?? '').includes(`"questionId":"${questionId}"`);
@@ -129,7 +132,7 @@ interface CapturedRequest {
   body: string;
 }
 
-// A copy of a server action request, to send it again later: a delayed
+// A copy of a save request, to send it again later: a delayed
 // duplicate of the same request reaching the server.
 const capture = async (request: Request): Promise<CapturedRequest> => {
   const all = await request.allHeaders();
@@ -192,7 +195,7 @@ const serverGuest = async () => {
       optionId,
       revision,
     });
-  const finish = () => finishAttempt(depsNow(), created.token, { attemptId });
+  const finish = () => submitStored(depsNow(), created.token, { attemptId });
   return { ...created, attemptId, save, finish };
 };
 
@@ -271,7 +274,7 @@ test('out of order saves keep newest accepted choice', async ({ browser }) => {
   const releases = [signal(), signal()];
   const delivered = [signal(), signal()];
   let saves = 0;
-  await context.route(HOEREN_URL, async (route: Route) => {
+  await context.route(ANSWER_URL, async (route: Route) => {
     const request = route.request();
     if (!isSaveOf(request, TARGET)) return route.continue();
     const index = saves++;
@@ -377,7 +380,7 @@ test('delayed retry of old choice cannot roll back newer', async ({
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
   const held: { request: CapturedRequest | null } = { request: null };
-  await context.route(HOEREN_URL, async (route: Route) => {
+  await context.route(ANSWER_URL, async (route: Route) => {
     const request = route.request();
     if (isSaveOf(request, TARGET) && !held.request) {
       held.request = await capture(request);
@@ -386,7 +389,7 @@ test('delayed retry of old choice cannot roll back newer', async ({
   });
   await optionIn(target, 'a').check();
   await expectStatus(target, 'saved');
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   expect(await readStoredAnswers(attemptId, TARGET)).toEqual([
     { option_id: 'a', revision: 1 },
   ]);
@@ -413,7 +416,7 @@ test('lost save response retry is idempotent', async ({ browser }) => {
   const { context, page, token, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
   const held: { request: CapturedRequest | null } = { request: null };
-  await context.route(HOEREN_URL, async (route: Route) => {
+  await context.route(ANSWER_URL, async (route: Route) => {
     const request = route.request();
     if (!isSaveOf(request, TARGET) || held.request) return route.continue();
     // The server executes the save; its response is lost on the way back.
@@ -532,9 +535,9 @@ test('concurrent finish and late save remain immutable', async () => {
     await expect.poll(() => isLockHeld(tag)).toBe(true);
     // Both completions queue on the attempt row first, the save after them.
     const finishes = [guest.finish(), guest.finish()];
-    await expect.poll(() => waitersOn(tag, 'finish_attempt')).toBe(2);
+    await expect.poll(() => waitersOn(tag, 'm2_accept_submission')).toBe(2);
     const late = guest.save('hoeren-2', 'b', 1);
-    await expect.poll(() => waitersOn(tag, 'save_attempt_answer')).toBe(1);
+    await expect.poll(() => waitersOn(tag, 'm2_save_answer')).toBe(1);
     await releaseLock(tag, locker);
 
     const [first, second] = await Promise.all(finishes);
@@ -562,7 +565,7 @@ test('network retry preserves and eventually confirms selection', async ({
 }) => {
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
-  await context.route(HOEREN_URL, (route: Route) =>
+  await context.route(ANSWER_URL, (route: Route) =>
     isSaveOf(route.request(), TARGET) ? route.abort() : route.continue(),
   );
   await optionIn(target, 'c').check();
@@ -576,7 +579,7 @@ test('network retry preserves and eventually confirms selection', async ({
   await expect(optionIn(target, 'c')).toBeChecked();
   await expectStatus(target, 'error');
 
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   await statusOf(target).getByRole('button').click();
   await expectStatus(target, 'saved');
   await expect(optionIn(target, 'c')).toBeChecked();
@@ -595,7 +598,7 @@ test('retry failure retains latest choice without false saved', async ({
   await expectStatus(target, 'saved');
 
   let refused = 0;
-  await context.route(HOEREN_URL, (route: Route) => {
+  await context.route(ANSWER_URL, (route: Route) => {
     if (!isSaveOf(route.request(), TARGET)) return route.continue();
     refused++;
     return route.abort();
@@ -617,7 +620,7 @@ test('retry failure retains latest choice without false saved', async ({
   ]);
 
   // Once the network is back, the latest choice is the one confirmed.
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   await statusOf(target).getByRole('button').click();
   await expectStatus(target, 'saved');
   await expect(optionIn(target, 'c')).toBeChecked();
@@ -628,12 +631,12 @@ test('retry failure retains latest choice without false saved', async ({
 test('unsaved hoeren answer blocks finish from lesen', async ({ browser }) => {
   const { context, page, attemptId } = await startGuest(browser);
   const target = card(page, TARGET);
-  await context.route(HOEREN_URL, (route: Route) =>
+  await context.route(ANSWER_URL, (route: Route) =>
     isSaveOf(route.request(), TARGET) ? route.abort() : route.continue(),
   );
   await optionIn(target, 'a').check();
   await expectStatus(target, 'error');
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   expect(await readAnswers(attemptId)).toEqual({});
 
   await goToLesen(page);
@@ -641,34 +644,43 @@ test('unsaved hoeren answer blocks finish from lesen', async ({ browser }) => {
   await optionIn(reading, keyOf('lesen-1')).check();
   await expectStatus(reading, 'saved');
 
-  await page.getByTestId('finish-attempt').click();
-  const notice = page.getByTestId('finish-unsaved');
-  await expect(notice).toBeVisible();
-  await expect(notice).toHaveAttribute('data-unsaved-hoeren', '1');
-  await expect(notice).toHaveAttribute('data-unsaved-lesen', '0');
-  await expect(page.getByTestId('attempt-review')).toHaveCount(0);
-  await expect(page.getByTestId('finish-confirmation')).toHaveCount(0);
-  expect(await readResults(attemptId)).toEqual([]);
-  expect(await readStatus(attemptId)).toBe('active');
-  expect(await readAnswers(attemptId)).toEqual({
-    'lesen-1': keyOf('lesen-1'),
-  });
-
   // Back in Hören the unconfirmed choice is still there with its retry.
   await goToHoeren(page);
   await expect(optionIn(target, 'a')).toBeChecked();
   await expectStatus(target, 'error');
-  await statusOf(target).getByRole('button').click();
-  await expectStatus(target, 'saved');
-  await expect(notice).toHaveCount(0);
-
-  await page.getByTestId('finish-attempt').click();
-  await page.getByTestId('finish-confirm').click();
-  await expect(page.getByTestId('attempt-review')).toBeVisible();
-  expect(await readResults(attemptId)).toHaveLength(1);
+  await expect(statusOf(target).getByRole('button')).toBeVisible();
   expect(await readAnswers(attemptId)).toEqual({
-    [TARGET]: 'a',
     'lesen-1': keyOf('lesen-1'),
   });
+  await goToLesen(page);
+
+  // The submission does not wait for the failed save: the unconfirmed
+  // Hören choice belongs to the final answers and is not counted as
+  // unanswered.
+  await page.getByTestId('finish-attempt').click();
+  const confirmation = page.getByTestId('finish-confirmation');
+  await expect(confirmation).toHaveAttribute('data-unanswered-hoeren', '19');
+  await expect(confirmation).toHaveAttribute('data-unanswered-lesen', '24');
+  await page.getByTestId('finish-confirm').click();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+
+  // The accepted choice is frozen with the result and a late save of the
+  // same task is refused without a change.
+  expect(await readResults(attemptId)).toHaveLength(1);
+  expect(await readStatus(attemptId)).toBe('completed');
+  const accepted = { [TARGET]: 'a', 'lesen-1': keyOf('lesen-1') };
+  expect(await readAnswers(attemptId)).toEqual(accepted);
+  const run = await readSubmission(attemptId);
+  expect(run.frozen_answers?.[TARGET]?.optionId).toBe('a');
+  expect(run.frozen_answers?.['lesen-1']?.optionId).toBe(keyOf('lesen-1'));
+  const late = await saveAnswer(depsNow(), await tokenOf(context), {
+    attemptId,
+    questionId: TARGET,
+    optionId: 'c',
+    revision: 9,
+  });
+  expect(late).toEqual({ ok: false, error: 'attempt-not-found' });
+  expect(await readAnswers(attemptId)).toEqual(accepted);
+  expect(await readResults(attemptId)).toHaveLength(1);
   await context.close();
 });

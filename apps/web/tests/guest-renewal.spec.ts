@@ -1,10 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
-import {
-  finishAttempt,
-  saveAnswer,
-  saveProgress,
-} from '../src/server/attempts/attempts';
+import { saveAnswer, saveProgress } from '../src/server/attempts/attempts';
 import type { ServerDeps } from '../src/server/db';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
@@ -30,6 +26,7 @@ import {
   serviceDb,
   startBody,
   startFor,
+  submitStored,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
 import {
@@ -152,7 +149,7 @@ const save = async (
 };
 
 const finish = async (token: string, attemptId: string) => {
-  const result = await finishAttempt(depsNow(), token, { attemptId });
+  const result = await submitStored(depsNow(), token, { attemptId });
   if (!result.ok) throw new Error(`finish: ${result.error}`);
   return result.review;
 };

@@ -9,8 +9,8 @@ import {
   readSessionByToken,
 } from './support/db';
 import {
+  ANSWER_URL,
   CHOICE_URL,
-  HOEREN_URL,
   startFromChoice,
 } from './support/guest-browser';
 
@@ -320,7 +320,7 @@ test('network failure preserves navigation and selection', async ({
   const attempt = await attemptOf(context);
   await goTo(page, 18);
 
-  await context.route(HOEREN_URL, (route) =>
+  await context.route(ANSWER_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   const target = card(page, 'hoeren-18');
@@ -336,7 +336,7 @@ test('network failure preserves navigation and selection', async ({
   await expect(optionIn(target, 'd')).toBeChecked();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'error');
 
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   await target.getByRole('button').click();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({ 'hoeren-18': 'd' });

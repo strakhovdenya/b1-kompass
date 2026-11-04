@@ -8,7 +8,6 @@ import {
 } from '../../../scripts/seed-pilot-question';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
-  finishAttempt,
   readAttemptPage,
   readAttemptRun,
   saveAnswer,
@@ -36,6 +35,7 @@ import {
   serviceDb,
   startBody,
   startFor,
+  submitStored,
 } from './support/db';
 import {
   attemptLesenUrl,
@@ -113,7 +113,7 @@ const countsOf = (sessionId: string): Counts =>
       join public.attempts a on a.id = r.attempt_id
       where a.guest_session_id = ${quote(sessionId)}),
     'commands', (select count(*) from public.attempt_commands
-      where guest_session_id = ${quote(sessionId)}),
+      where guest_session_id = ${quote(sessionId)} and kind = 'start'),
     'starts', (select count(*) from public.guest_events e
       join public.guest_sessions s on s.visitor_id = e.visitor_id
       where s.id = ${quote(sessionId)} and e.kind = 'start'))`);
@@ -265,7 +265,7 @@ test('command replay and cross version starts use one active slot', async () => 
   // A completed start: its command returns the same attempt.
   const completedCommand = randomUUID();
   const completedId = await accepted(owner, exam.slug, completedCommand);
-  const finished = await finishAttempt(depsNow(), owner.token, {
+  const finished = await submitStored(depsNow(), owner.token, {
     attemptId: completedId,
   });
   expect(finished.ok).toBe(true);
@@ -472,11 +472,10 @@ test('runtime creates one run while legacy owner fixture permits scoped backfill
     questionIds: string[];
   }>(`begin;
     insert into public.attempts (id, guest_session_id, exam_id,
-      exam_version_id, scope)
+      exam_version_id, scope, status)
     values
       (${quote(first)}, ${quote(sessionOf(other))}, ${quote(latest.examId)},
-        ${quote(latest.versionId)}, 'short-set');
-    update public.attempts set status = 'completed' where id = ${quote(first)};
+        ${quote(latest.versionId)}, 'short-set', 'completed');
     insert into public.attempts (id, guest_session_id, exam_id,
       exam_version_id, scope)
     values
@@ -958,12 +957,26 @@ test('legacy finish cannot complete a cancelled migration duplicate', async () =
   expect(saved.ok).toBe(true);
   cancelAsOwner(attemptId, 'duplicate-m1');
 
-  const finished = await serviceDb.rpc('finish_attempt', {
+  // The old finish is gone; neither the submission nor the finalize that
+  // replace it closes a cancelled duplicate.
+  const submitted = await serviceDb
+    .rpc('m2_accept_submission', {
+      p_session_id: sessionOf(created),
+      p_attempt_id: attemptId,
+      p_command_id: randomUUID(),
+      p_answers: [{ questionId: 'hoeren-2', optionId: 'b', revision: 2 }],
+      p_expected_phase_revision: 0,
+      p_expected_skipped: 44,
+    })
+    .single<{ outcome: string; attempt_status: string }>();
+  expect(submitted.data).toMatchObject({
+    outcome: 'conflict',
+    attempt_status: 'cancelled',
+  });
+  const finished = await serviceDb.rpc('m2_finalize_attempt', {
     p_session_id: sessionOf(created),
     p_attempt_id: attemptId,
-    p_now: new Date().toISOString(),
     p_scope: 'full-exam',
-    p_scored_answers: { 'hoeren-2': 'a' },
     p_score: 0,
     p_max_score: 45,
     p_correct: 0,
@@ -976,8 +989,8 @@ test('legacy finish cannot complete a cancelled migration duplicate', async () =
     p_lesen_max: 25,
     p_level: 'below-A2',
   });
-  expect(finished.error?.hint).toBe('attempt_cancelled');
-  const viaServer = await finishAttempt(depsNow(), created.token, {
+  expect(finished.error?.hint).toBe('attempt_not_submitted');
+  const viaServer = await submitStored(depsNow(), created.token, {
     attemptId,
   });
   expect(viaServer.ok).toBe(false);
@@ -1006,7 +1019,7 @@ test('version changing entry fixtures remain isolated by exam slug', async () =>
     optionId: 'c',
     revision: 1,
   });
-  const finished = await finishAttempt(depsNow(), created.token, {
+  const finished = await submitStored(depsNow(), created.token, {
     attemptId: steadyId,
   });
   expect(finished.ok).toBe(true);

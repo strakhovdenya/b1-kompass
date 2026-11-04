@@ -1,17 +1,12 @@
-import { selectScoringPolicy, toPercent } from '@b1k/domain';
+import { z } from 'zod';
+import type { AttemptProgress, CommandResult, Selections } from '@b1k/domain';
 import type {
-  AnswerKeys,
-  AttemptProgress,
-  AttemptReview,
-  AttemptScope,
-  DtzLevel,
-  ExamContent,
-  ScoringPolicy,
-  Selections,
-  SkillTotals,
-} from '@b1k/domain';
+  AttemptStatusOutcome,
+  AttemptStatusView,
+} from '../../features/training/attempt-client';
 import { listVersionTrackIds } from '../audio/audio';
 import type { ServerDeps } from '../db';
+import { resolveGuestSession } from '../guest-session/session';
 import type { GuestContext } from '../guest-session/session';
 import {
   findActiveAttempt,
@@ -27,12 +22,17 @@ import type { AttemptRow, RunRow } from './repository';
 import {
   parseAssignment,
   parseStoredProgress,
+  toLifecycleState,
   toPracticeState,
 } from './projection';
 import type { AttemptRunView, PracticeState } from './projection';
+import { finalizeSubmitted, parseFrozen } from './reconcile';
+import { buildReview, reviewedSelections } from './review';
 
 // Reading never creates an attempt or a start. Every read is bound to the
-// guest's own attempt or to its own slot of one exam.
+// guest's own attempt or to its own slot of one exam. Reading a submitted
+// attempt tries to complete it from its frozen snapshot; a failure leaves it
+// submitted and is reported, never shown as a result.
 
 export type RunReadResult =
   | { status: 'ready'; view: AttemptRunView }
@@ -61,12 +61,11 @@ const toView = (
   acceptedAt: run.acceptedAt,
 });
 
-const readRunOf = async (
-  deps: ServerDeps,
+const viewOf = (
   attempt: AttemptRow,
   examSlug: string,
-): Promise<RunReadResult> => {
-  const run = await readRun(deps, attempt.id);
+  run: RunRow | null,
+): RunReadResult => {
   if (!run) return { status: 'incompatible' };
   const questionIds = parseAssignment(run.assignment, attempt.examVersionId);
   if (!questionIds) return { status: 'incompatible' };
@@ -82,179 +81,200 @@ export const readAttemptRun = async (
 ): Promise<RunReadResult> => {
   const attempt = await readOwnedAttempt(deps, guest.sessionId, attemptId);
   if (!attempt) return { status: 'not-found' };
-  const exam = await findExamById(deps, attempt.examId);
-  if (!exam) return { status: 'not-found' };
-  return readRunOf(deps, attempt, exam.slug);
-};
-
-interface ResultRow {
-  scope: AttemptScope;
-  score: number;
-  max_score: number;
-  correct_count: number;
-  incorrect_count: number;
-  skipped_count: number;
-  computed_at: string;
-  percent: number | string | null;
-  hoeren_score: number | null;
-  hoeren_max: number | null;
-  lesen_score: number | null;
-  lesen_max: number | null;
-  level: DtzLevel | null;
-}
-
-const RESULT_COLUMNS = [
-  'scope, score, max_score, correct_count, incorrect_count, skipped_count',
-  'computed_at, percent, hoeren_score, hoeren_max, lesen_score, lesen_max',
-  'level',
-].join(', ');
-
-export interface VersionMaterial {
-  format: string;
-  content: ExamContent;
-}
-
-// The closed key of one version. It is read only to score or to review a
-// completed attempt and never goes into the practice state.
-export const readAnswerKeys = async (
-  deps: ServerDeps,
-  versionId: string,
-): Promise<AnswerKeys> => {
-  const { data, error } = await deps.db
-    .from('answer_keys')
-    .select('question_id, correct_option_id')
-    .eq('exam_version_id', versionId)
-    .returns<{ question_id: string; correct_option_id: string }[]>();
-  if (error) throw new Error('Key lookup failed', { cause: error });
-  const keys: Record<string, string> = {};
-  for (const row of data) keys[row.question_id] = row.correct_option_id;
-  return keys;
-};
-
-export const policyFor = (
-  material: VersionMaterial,
-  scope: AttemptScope,
-): ScoringPolicy => {
-  const policy = selectScoringPolicy(material.format, scope);
-  if (!policy) {
-    throw new Error(`No scoring policy for ${material.format} ${scope}`);
-  }
-  return policy;
-};
-
-const storedSkills = (row: ResultRow): SkillTotals | null => {
-  const { hoeren_score, hoeren_max, lesen_score, lesen_max } = row;
-  if (hoeren_score === null || hoeren_max === null) return null;
-  if (lesen_score === null || lesen_max === null) return null;
-  return {
-    hoeren: { score: hoeren_score, maxScore: hoeren_max },
-    lesen: { score: lesen_score, maxScore: lesen_max },
-  };
-};
-
-// Results stored before the percentage column have none; the same rounding
-// gives their value.
-const storedPercent = (row: ResultRow): number =>
-  row.percent === null
-    ? toPercent(row.score, row.max_score)
-    : Number(row.percent);
-
-// The review of a completed attempt: stored totals plus the per-task view of
-// its frozen answers against the key of its own version.
-export const buildReview = async (
-  deps: ServerDeps,
-  attempt: { id: string; versionId: string },
-  material: VersionMaterial,
-  selections: Selections,
-): Promise<AttemptReview> => {
-  const [result, keys] = await Promise.all([
-    deps.db
-      .from('attempt_results')
-      .select(RESULT_COLUMNS)
-      .eq('attempt_id', attempt.id)
-      .single<ResultRow>(),
-    readAnswerKeys(deps, attempt.versionId),
+  const [exam, run] = await Promise.all([
+    findExamById(deps, attempt.examId),
+    readRun(deps, attempt.id),
   ]);
-  if (result.error) {
-    throw new Error('Result lookup failed', { cause: result.error });
+  if (!exam) return { status: 'not-found' };
+  return viewOf(attempt, exam.slug, run);
+};
+
+// The guest's own attempt after reconciliation: a submitted attempt is
+// completed when its result can be computed.
+const reconciled = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attempt: AttemptRow,
+  run: RunRow | null,
+): Promise<AttemptRow | null> => {
+  if (attempt.status !== 'submitted' || !run) return attempt;
+  const outcome = await finalizeSubmitted(deps, guest.sessionId, attempt, run);
+  if (outcome !== 'completed') return attempt;
+  return readOwnedAttempt(deps, guest.sessionId, attempt.id);
+};
+
+// The answers that count for a closed attempt: its frozen snapshot, or the
+// stored answers of a legacy completion; for an open one the stored answers.
+const countedSelections = (
+  attempt: AttemptRow,
+  run: RunRow,
+  stored: Selections,
+): Selections | null => {
+  if (attempt.status === 'active' || attempt.status === 'cancelled') {
+    return stored;
   }
-  const { data } = result;
-  const policy = policyFor(material, data.scope);
-  const scored = policy.score({
-    questions: material.content.questions,
-    keys,
-    selections,
-  });
-  return {
-    attemptId: attempt.id,
-    scope: data.scope,
-    showsLevel: policy.showsLevel,
-    score: data.score,
-    maxScore: data.max_score,
-    percent: storedPercent(data),
-    correct: data.correct_count,
-    incorrect: data.incorrect_count,
-    skipped: data.skipped_count,
-    skills: storedSkills(data),
-    level: data.level,
-    completedAt: data.computed_at,
-    items: scored.items,
-  };
+  if (attempt.status === 'submitted') return parseFrozen(run.frozenAnswers);
+  return reviewedSelections(run, stored);
 };
 
 export type AttemptPageResult =
-  | { status: 'ready'; practice: PracticeState }
+  | {
+      status: 'ready';
+      practice: PracticeState;
+      // The submission is accepted, its result is not stored yet.
+      resultPending: boolean;
+      phaseRevision: number;
+    }
   | { status: 'not-found' }
   | { status: 'incompatible' };
 
 // The page of one attempt at /practice/[examSlug]/attempts/[attemptId]: the
 // guest's own attempt of that exam on its pinned version. A cancelled
-// attempt is not opened; a completed one comes with its review.
+// attempt is not opened; a completed one comes with its review, a submitted
+// one with its frozen answers.
 export const readAttemptPage = async (
   deps: ServerDeps,
   guest: GuestContext,
   examSlug: string,
   attemptId: string,
 ): Promise<AttemptPageResult> => {
-  const [exam, attempt] = await Promise.all([
+  // The run is read with the attempt; it is used only once the attempt is
+  // known to be the guest's own.
+  const [exam, owned, ownRun] = await Promise.all([
     findExamBySlug(deps, examSlug),
     readOwnedAttempt(deps, guest.sessionId, attemptId),
+    readRun(deps, attemptId),
   ]);
-  if (!exam || !attempt || attempt.examId !== exam.id) {
+  if (!exam || !owned || owned.examId !== exam.id) {
     return { status: 'not-found' };
   }
-  if (attempt.status === 'cancelled') return { status: 'not-found' };
-  const [run, version, { selections, revisions }, trackIds] = await Promise.all(
-    [
-      readRunOf(deps, attempt, exam.slug),
-      readVersionOfExam(deps, exam.id, attempt.examVersionId),
-      readStoredAnswers(deps, attempt.id),
-      listVersionTrackIds(deps, attempt.examVersionId),
-    ],
-  );
-  if (run.status !== 'ready') return run;
-  if (!version) return { status: 'incompatible' };
+  if (owned.status === 'cancelled') return { status: 'not-found' };
+  const run = ownRun;
+  const attempt = await reconciled(deps, guest, owned, run);
+  if (!attempt) return { status: 'not-found' };
+  const read = viewOf(attempt, exam.slug, run);
+  if (read.status !== 'ready' || !run) return { status: 'incompatible' };
+  const [version, stored, trackIds] = await Promise.all([
+    readVersionOfExam(deps, exam.id, attempt.examVersionId),
+    readStoredAnswers(deps, attempt.id),
+    listVersionTrackIds(deps, attempt.examVersionId),
+  ]);
+  const selections = countedSelections(attempt, run, stored.selections);
+  const state = toLifecycleState(read.view, deps.clock.now().getTime());
+  if (!version || !selections || !state) return { status: 'incompatible' };
   const material = { format: exam.format, content: version.content };
+  const target = {
+    id: attempt.id,
+    versionId: version.id,
+    questionIds: read.view.questionIds,
+  };
   const review =
     attempt.status === 'completed'
-      ? await buildReview(
-          deps,
-          { id: attempt.id, versionId: version.id },
-          material,
-          selections,
-        )
+      ? await buildReview(deps, target, material, selections)
       : null;
   const practice = toPracticeState({
-    view: run.view,
+    view: read.view,
     examTitle: exam.title,
     content: version.content,
     selections,
-    revisions,
+    revisions: stored.revisions,
     trackIds,
     review,
     progress: attempt.progress,
   });
-  return { status: 'ready', practice };
+  return {
+    status: 'ready',
+    practice,
+    resultPending: attempt.status === 'submitted',
+    phaseRevision: state.phaseRevision,
+  };
+};
+
+const STATUS_OUTCOMES: Readonly<Record<string, AttemptStatusOutcome>> = {
+  active: 'active',
+  submitted: 'result-pending',
+  completed: 'result-ready',
+  cancelled: 'cancelled',
+};
+
+const statusInput = z.strictObject({ attemptId: z.uuid() });
+
+const countSkipped = (
+  questionIds: readonly string[],
+  answers: Selections,
+): number => questionIds.filter((id) => !Object.hasOwn(answers, id)).length;
+
+const onlyAssigned = (
+  questionIds: readonly string[],
+  answers: Selections,
+): Selections => {
+  const assigned: Record<string, string> = {};
+  for (const id of questionIds) {
+    const optionId = Object.hasOwn(answers, id) ? answers[id] : undefined;
+    if (optionId !== undefined) assigned[id] = optionId;
+  }
+  return assigned;
+};
+
+const runStatus = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attemptId: string,
+): Promise<CommandResult<AttemptStatusView>> => {
+  const owned = await readOwnedAttempt(deps, guest.sessionId, attemptId);
+  if (!owned) return { ok: false, failure: 'not-found' };
+  const [exam, run] = await Promise.all([
+    findExamById(deps, owned.examId),
+    readRun(deps, owned.id),
+  ]);
+  if (!exam) return { ok: false, failure: 'not-found' };
+  const attempt = await reconciled(deps, guest, owned, run);
+  if (!attempt) return { ok: false, failure: 'not-found' };
+  const read = viewOf(attempt, exam.slug, run);
+  if (read.status !== 'ready' || !run) {
+    return { ok: false, failure: 'unavailable' };
+  }
+  const stored = await readStoredAnswers(deps, attempt.id);
+  const counted = countedSelections(attempt, run, stored.selections);
+  const state = toLifecycleState(read.view, deps.clock.now().getTime());
+  const outcome = STATUS_OUTCOMES[attempt.status];
+  if (!counted || !state || !outcome) {
+    return { ok: false, failure: 'unavailable' };
+  }
+  const { questionIds } = read.view;
+  const answers = onlyAssigned(questionIds, counted);
+  return {
+    ok: true,
+    result: {
+      outcome,
+      attemptId: attempt.id,
+      state,
+      answers,
+      skipped: countSkipped(questionIds, answers),
+      submittedAt: run.submissionAcceptedAt,
+    },
+  };
+};
+
+// The status of the guest's own attempt: its lifecycle state, the answers
+// that count and the number of skipped tasks, as the confirmation of a
+// submit or a cancel needs them. A submitted attempt is completed when its
+// result can be computed; reading never starts or reopens anything.
+export const readAttemptStatus = async (
+  deps: ServerDeps,
+  token: string | null | undefined,
+  input: unknown,
+): Promise<CommandResult<AttemptStatusView>> => {
+  const parsed = statusInput.safeParse(input);
+  if (!parsed.success) return { ok: false, failure: 'invalid-input' };
+  try {
+    const guest = await resolveGuestSession(deps, token);
+    if (!guest) return { ok: false, failure: 'session-invalid' };
+    return await runStatus(deps, guest, parsed.data.attemptId);
+  } catch (error) {
+    console.error({ error });
+    return { ok: false, failure: 'unavailable' };
+  }
 };
 
 export interface OwnedActive {

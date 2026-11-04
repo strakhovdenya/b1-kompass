@@ -10,7 +10,6 @@ import {
   publishPilotShortSet,
 } from '../../../scripts/seed-pilot-question';
 import {
-  finishAttempt,
   getAttemptReview,
   saveAnswer,
 } from '../src/server/attempts/attempts';
@@ -24,11 +23,12 @@ import {
   newGuest,
   openStarted,
   readAnswers,
-  readOpened,
   readAttempts,
+  readOpened,
   readResults,
   readSessionByToken,
   serviceDb,
+  submitStored,
 } from './support/db';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
 import { enterAndStart } from './support/guest-browser';
@@ -116,7 +116,7 @@ const guestWith = async (answers: Record<string, string>) => {
 };
 
 const finishedReview = async (token: string, attemptId: string) => {
-  const finished = await finishAttempt(depsNow(), token, { attemptId });
+  const finished = await submitStored(depsNow(), token, { attemptId });
   if (!finished.ok) throw new Error(`finish: ${finished.error}`);
   return finished.review;
 };
@@ -364,7 +364,7 @@ test('short attempt gets scoped server result', async ({ page }) => {
 test('duplicate finish and late save cannot change result', async () => {
   const guest = await guestWith({ 'hoeren-1': 'c', 'hoeren-2': 'b' });
   const finish = () =>
-    finishAttempt(depsNow(), guest.token, { attemptId: guest.attemptId });
+    submitStored(depsNow(), guest.token, { attemptId: guest.attemptId });
 
   // Two overlapping completions race with a save; the database serialises
   // them on the attempt row.
@@ -517,7 +517,7 @@ test('denies early foreign review and client score', async () => {
       }),
     ).toEqual({ ok: false, error: 'attempt-not-found' });
     expect(
-      await finishAttempt(depsNow(), owner.token, {
+      await submitStored(depsNow(), owner.token, {
         attemptId: stranger.attemptId,
       }),
     ).toEqual({ ok: false, error: 'attempt-not-found' });
@@ -540,26 +540,30 @@ test('denies early foreign review and client score', async () => {
       { attemptId: owner.attemptId, score: 4, maxScore: 4, status: 'completed' },
       { attemptId: owner.attemptId, guestSessionId: stranger.guest.sessionId },
     ]) {
-      expect(await finishAttempt(depsNow(), owner.token, forged)).toEqual({
+      expect(await submitStored(depsNow(), owner.token, forged)).toEqual({
         ok: false,
         error: 'invalid-input',
       });
     }
     await ownerUntouched();
 
-    const direct = await anon.rpc('finish_attempt', {
+    const direct = await anon.rpc('m2_finalize_attempt', {
       p_session_id: owner.guest.sessionId,
       p_attempt_id: owner.attemptId,
-      p_now: new Date().toISOString(),
       p_scope: 'short-set',
-      p_scored_answers: { 'hoeren-1': 'a' },
       p_score: 4,
       p_max_score: 4,
       p_correct: 4,
       p_incorrect: 0,
       p_skipped: 0,
+      p_percent: 100,
+      p_hoeren_score: null,
+      p_hoeren_max: null,
+      p_lesen_score: null,
+      p_lesen_max: null,
+      p_level: null,
     });
-    expect(direct.error).not.toBeNull();
+    expect(direct.error?.code).toBe('42501');
     for (const table of ['exam_version_audio', 'attempt_results', 'answer_keys']) {
       const { data, error } = await anon.from(table).select('*');
       expect(error, table).not.toBeNull();

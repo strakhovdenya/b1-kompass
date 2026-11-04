@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { AttemptReview } from '@b1k/domain';
 import {
+  getAttemptReview,
   readAttemptPage,
+  readAttemptStatus,
   startAttempt,
+  submitAttempt,
 } from '../../src/server/attempts/attempts';
 import type {
   PracticeState,
@@ -351,4 +355,116 @@ export const readEventKinds = async (attemptId: string): Promise<string[]> => {
     .returns<{ kind: string }[]>();
   if (error) throw error;
   return data.map((row) => row.kind);
+};
+
+export type StoredSubmission =
+  | { ok: true; review: AttemptReview }
+  | {
+      ok: false;
+      error:
+        | 'invalid-input'
+        | 'session-invalid'
+        | 'attempt-not-found'
+        | 'unavailable';
+    };
+
+const SUBMISSION_ERRORS = {
+  'invalid-input': 'invalid-input',
+  'session-invalid': 'session-invalid',
+  'not-found': 'attempt-not-found',
+  unavailable: 'unavailable',
+  'not-enabled': 'unavailable',
+} as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+// The free submission of the stored answers, as the browser sends it when
+// nothing is pending: the real status gives the confirmation, the real
+// submit accepts and finalizes, the real review is read back. Fields other
+// than attemptId (a forged score, owner or time) go into the submit body
+// unchanged, so the strict input of the scenario judges them. A completed
+// attempt returns its stored review; a cancelled one is not found.
+export const submitStored = async (
+  deps: ServerDeps,
+  token: string | null,
+  input: unknown,
+): Promise<StoredSubmission> => {
+  if (!isRecord(input)) return { ok: false, error: 'invalid-input' };
+  const { attemptId, ...extra } = input;
+  const status = await readAttemptStatus(deps, token, { attemptId });
+  if (!status.ok) {
+    return { ok: false, error: SUBMISSION_ERRORS[status.failure] };
+  }
+  const view = status.result;
+  if (view.outcome === 'cancelled') {
+    return { ok: false, error: 'attempt-not-found' };
+  }
+  if (view.outcome === 'active') {
+    const submitted = await submitAttempt(deps, token, {
+      attemptId,
+      commandId: randomUUID(),
+      answers: [],
+      confirmation: {
+        phaseRevision: view.state.phaseRevision,
+        skipped: view.skipped,
+      },
+      ...extra,
+    });
+    if (!submitted.ok) {
+      return { ok: false, error: SUBMISSION_ERRORS[submitted.failure] };
+    }
+    if (submitted.result.outcome === 'conflict') {
+      const again = await readAttemptStatus(deps, token, { attemptId });
+      if (again.ok && again.result.outcome === 'cancelled') {
+        return { ok: false, error: 'attempt-not-found' };
+      }
+    }
+  }
+  const review = await getAttemptReview(deps, token, { attemptId });
+  if (review.ok) return review;
+  return {
+    ok: false,
+    error: review.error === 'not-completed' ? 'unavailable' : review.error,
+  };
+};
+
+export interface StoredRunSubmission {
+  frozen_answers: Record<string, { optionId: string; revision: number }> | null;
+  submission_accepted_at: string | null;
+  submit_command_id: string | null;
+  legacy_completed: boolean;
+}
+
+export const readSubmission = async (
+  attemptId: string,
+): Promise<StoredRunSubmission> => {
+  const { data, error } = await serviceDb
+    .from('attempt_runs')
+    .select(
+      'frozen_answers, submission_accepted_at, submit_command_id, legacy_completed',
+    )
+    .eq('attempt_id', attemptId)
+    .single<StoredRunSubmission>();
+  if (error) throw error;
+  return data;
+};
+
+export interface StoredAnswerRow {
+  question_id: string;
+  option_id: string;
+  revision: number;
+}
+
+export const readAnswerRows = async (
+  attemptId: string,
+): Promise<StoredAnswerRow[]> => {
+  const { data, error } = await serviceDb
+    .from('attempt_answers')
+    .select('question_id, option_id, revision')
+    .eq('attempt_id', attemptId)
+    .order('question_id')
+    .returns<StoredAnswerRow[]>();
+  if (error) throw error;
+  return data;
 };

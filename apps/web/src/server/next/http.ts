@@ -118,3 +118,34 @@ export const commandResponse = (
   if (result.ok) return privateJson(result);
   return privateJson(result, FAILURE_STATUS[result.failure] ?? 500);
 };
+
+// The HTTP status of a save result: a stale or conflicting save is a
+// business answer with the stored value; the others keep their own status.
+const SAVE_ERROR_STATUS: Readonly<Record<string, number>> = {
+  stale: 200,
+  conflict: 200,
+  'invalid-input': 400,
+  'session-invalid': 401,
+  'attempt-not-found': 404,
+  'option-not-allowed': 422,
+  'progress-not-allowed': 422,
+  unavailable: 503,
+};
+
+export const saveResponse = (
+  result: { ok: true } | { ok: false; error: string },
+): Response => {
+  if (result.ok) return privateJson(result);
+  return privateJson(result, SAVE_ERROR_STATUS[result.error] ?? 500);
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+// The input of a command on one attempt: the JSON body plus the attempt id
+// of the address. A body that is not an object, or that names an attempt
+// itself, gives no input and is refused by the strict schema.
+export const withAttemptId = (body: unknown, attemptId: string): unknown =>
+  isPlainObject(body) && !Object.hasOwn(body, 'attemptId')
+    ? { ...body, attemptId }
+    : null;

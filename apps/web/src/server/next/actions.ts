@@ -3,12 +3,6 @@
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { isLocale } from '@b1k/domain';
-import type {
-  FinishAttemptResult,
-  SaveAnswerResult,
-  SaveProgressResult,
-} from '@b1k/domain';
-import { finishAttempt, saveAnswer, saveProgress } from '../attempts/attempts';
 import { resolveAttemptAudio } from '../audio/audio';
 import type { AudioAccessResult } from '../audio/audio';
 import {
@@ -38,20 +32,9 @@ export const continueAsGuest = async (): Promise<void> => {
   redirect(await resolveExamEntry(deps, current, readDefaultExamSlug()));
 };
 
-export const saveAnswerAction = async (
-  input: unknown,
-): Promise<SaveAnswerResult> =>
-  saveAnswer(getServerDeps(), await readGuestToken(), input);
-
-export const saveProgressAction = async (
-  input: unknown,
-): Promise<SaveProgressResult> =>
-  saveProgress(getServerDeps(), await readGuestToken(), input);
-
-export const finishAttemptAction = async (
-  input: unknown,
-): Promise<FinishAttemptResult> =>
-  finishAttempt(getServerDeps(), await readGuestToken(), input);
+// Saves, the submission, the cancel and the status are independent HTTP
+// commands under app/api/attempts: none of them waits in the queue of server
+// actions.
 
 export const resolveAudioAction = async (
   input: unknown,

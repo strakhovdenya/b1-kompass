@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
-import { finishAttempt } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   depsNow,
@@ -9,10 +8,11 @@ import {
   readResults,
   readSession,
   readSessionByToken,
+  submitStored,
 } from './support/db';
 import {
+  ANSWER_URL,
   CHOICE_URL,
-  HOEREN_URL,
   startFromChoice,
 } from './support/guest-browser';
 import { PAIR_PROMPTS } from './support/pair-exam';
@@ -133,7 +133,7 @@ const switchLanguage = async (page: Page, name: string, lang: string) => {
 // option that question does not have, so the server itself refuses it
 // (option-not-allowed). Saves of other questions and other actions pass.
 const refuseSavesOf = (context: BrowserContext, questionId: string) =>
-  context.route(HOEREN_URL, (route) => {
+  context.route(ANSWER_URL, (route) => {
     const request = route.request();
     const body = request.postData() ?? '';
     const isSave = request.method() === 'POST' && body.includes(questionId);
@@ -215,7 +215,7 @@ test('unanswered pair member remains skipped', async ({ browser }) => {
     const text = answer[0] === FIRST ? RICHTIG : TERMIN_NEU;
     await choose(card, text);
 
-    const finished = await finishAttempt(depsNow(), token, {
+    const finished = await submitStored(depsNow(), token, {
       attemptId: attempt.id,
     });
     if (!finished.ok) throw new Error(`finish: ${finished.error}`);
@@ -330,7 +330,7 @@ test('changing second answer preserves first selection', async ({
   await page.keyboard.press('Tab');
   const retry = second.getByRole('button');
   await expect(retry).toBeFocused();
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   await page.keyboard.press('Enter');
   await expect(statusOf(second)).toHaveAttribute('data-status', 'saved');
   await expect(optionIn(first, RICHTIG)).toBeChecked();

@@ -2,11 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
-import {
-  finishAttempt,
-  saveAnswer,
-  saveProgress,
-} from '../src/server/attempts/attempts';
+import { saveAnswer, saveProgress } from '../src/server/attempts/attempts';
 import { resolveGuestSession } from '../src/server/guest-session/session';
 import {
   createPublicClient,
@@ -22,11 +18,13 @@ import {
   readSession,
   readSessionByToken,
   serviceDb,
+  submitStored,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
 import {
   HOEREN_URL,
   LESEN_URL,
+  PROGRESS_URL,
   attemptIdOf,
   attemptLesenUrl,
   attemptUrl,
@@ -367,7 +365,7 @@ test('restore shows completed result without new attempt', async ({
     await startGuest(browser);
   await seedAnswers(token, attemptId);
   await saveProgress(depsNow(), token, { attemptId, progress: validProgress });
-  const finished = await finishAttempt(depsNow(), token, { attemptId });
+  const finished = await submitStored(depsNow(), token, { attemptId });
   expect(finished.ok).toBe(true);
   const results = await readResults(attemptId);
   const events = await readEventKinds(attemptId);
@@ -638,7 +636,7 @@ test('progress failure does not block answers', async ({ browser }) => {
   let refusedSaves = 0;
   const { context, page, attemptId } = await startGuest(browser, {
     beforeLoad: (target) =>
-      target.route(/\/practice\/[^/]+\/attempts\/[^/]+(\/lesen)?$/, (route) => {
+      target.route(PROGRESS_URL, (route) => {
         const request = route.request();
         const body = request.postData() ?? '';
         if (request.method() === 'POST' && body.includes('"progress"')) {
@@ -668,7 +666,7 @@ test('public client cannot write progress', async () => {
   const owner = await guestWithProgress();
   const before = await readStoredAttempt(owner.attemptId);
 
-  const { error } = await createPublicClient().rpc('save_attempt_progress', {
+  const { error } = await createPublicClient().rpc('m2_save_progress', {
     p_session_id: owner.sessionId,
     p_attempt_id: owner.attemptId,
     p_progress: {
@@ -676,9 +674,8 @@ test('public client cannot write progress', async () => {
       hoeren: { itemId: 'hoeren-4' },
       positionSeconds: 5,
     },
-    p_now: new Date().toISOString(),
   });
-  expect(error).not.toBeNull();
+  expect(error?.code).toBe('42501');
 
   const direct = await createPublicClient()
     .from('attempts')

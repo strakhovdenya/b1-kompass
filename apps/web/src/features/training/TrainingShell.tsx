@@ -1,49 +1,40 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
-import Typography from '@mui/material/Typography';
 import type {
   AttemptProgress,
   AttemptReview,
   ExamQuestion,
-  FinishAttemptResult,
-  SaveAnswerResult,
-  SaveProgressResult,
   Selections,
 } from '@b1k/domain';
 import { AudioPlayer } from '../audio/AudioPlayer';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
 import type { ReviewBlock } from '../results/AttemptReviewView';
-import { attemptLesenPath, attemptPath, choicePath } from './attempt-client';
-import { hasSaving, hasUnsaved, isUnsaved, useAnswerStore } from './answers';
-import type { PendingAnswers, SaveAnswerInput } from './answers';
+import { AttemptSubmissionControls } from './AttemptSubmissionControls';
+import {
+  attemptLesenPath,
+  attemptPath,
+  choicePath,
+  requestSaveAnswer,
+  requestSaveProgress,
+} from './attempt-client';
+import { useAnswerStore } from './answers';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
+import { useAttemptSubmission } from './useAttemptSubmission';
 
 export interface ResolveAudioInput {
   attemptId: string;
   trackId: string;
 }
-
-export interface FinishAttemptInput {
-  attemptId: string;
-}
-
-export interface SaveProgressInput {
-  attemptId: string;
-  progress: AttemptProgress;
-}
-
-type FinishStatus = 'idle' | 'confirming' | 'finishing' | 'unsaved' | 'error';
 
 // While the recording plays the position is saved at most this often.
 const PROGRESS_INTERVAL_MS = 10_000;
@@ -65,41 +56,19 @@ interface TrainingShellProps {
   initialRevisions: Readonly<Record<string, number>>;
   initialReview: AttemptReview | null;
   initialProgress: AttemptProgress | null;
+  // The submission is accepted and its result is not stored yet.
+  isResultPending: boolean;
+  phaseRevision: number;
   resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
-  saveAnswer: (input: SaveAnswerInput) => Promise<SaveAnswerResult>;
-  finishAttempt: (input: FinishAttemptInput) => Promise<FinishAttemptResult>;
-  saveProgress: (input: SaveProgressInput) => Promise<SaveProgressResult>;
   children: ReactNode;
 }
-
-const countUnanswered = (
-  questions: readonly ExamQuestion[],
-  selections: Selections,
-  block: ReviewBlock,
-): number =>
-  questions.filter(
-    (question) =>
-      question.skill === block && !Object.hasOwn(selections, question.id),
-  ).length;
-
-const countUnsaved = (
-  questions: readonly ExamQuestion[],
-  pending: PendingAnswers,
-  block: ReviewBlock,
-): number =>
-  questions.filter((question) => {
-    const entry = Object.hasOwn(pending, question.id)
-      ? pending[question.id]
-      : undefined;
-    return question.skill === block && entry !== undefined && isUnsaved(entry);
-  }).length;
 
 // The frame of one attempt around the Hören and Lesen pages. It stays mounted
 // when the guest moves between the blocks, so the recording keeps playing and
 // the answers stay known: the confirmed ones and the choices the server has
-// not confirmed yet, whichever block they belong to. It owns the single
-// finish point: while a choice is unconfirmed nothing is finished, and the
-// server computes the result, the shell only shows what it returns.
+// not confirmed yet, whichever block they belong to. It connects the one
+// answer store with the submission: the final answers include the choices
+// still in flight, the server computes the result, the shell only shows it.
 export const TrainingShell = ({
   examSlug,
   attemptId,
@@ -109,10 +78,9 @@ export const TrainingShell = ({
   initialRevisions,
   initialReview,
   initialProgress,
+  isResultPending,
+  phaseRevision,
   resolveAudio,
-  saveAnswer,
-  finishAttempt,
-  saveProgress,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
@@ -121,27 +89,26 @@ export const TrainingShell = ({
   const {
     selections,
     pending,
-    readPending,
+    choose,
     retry,
-    choose: chooseAnswer,
+    lock,
+    unlock,
+    readFinalAnswers,
+    readPending,
+    settle,
   } = useAnswerStore({
     attemptId,
     initialSelections,
     initialRevisions,
-    saveAnswer,
+    saveAnswer: requestSaveAnswer,
+    isSettled: initialReview !== null || isResultPending,
   });
-  const [review, setReview] = useState(initialReview);
-  const [finishStatus, setFinishStatus] = useState<FinishStatus>('idle');
-  const isSaving = hasSaving(pending);
-  // Once the finish request is sent no answer is changed: the server scores
-  // the answers it holds at that moment.
-  const isFinishing = useRef(false);
-  const choose = useCallback(
-    (questionId: string, optionId: string) => {
-      if (!isFinishing.current) chooseAnswer(questionId, optionId);
-    },
-    [chooseAnswer],
+  const store = useMemo(
+    () => ({ lock, unlock, readFinalAnswers, readPending, settle }),
+    [lock, unlock, readFinalAnswers, readPending, settle],
   );
+  // The review arrives with the page once the result is stored.
+  const review = initialReview;
 
   const lesenPath = attemptLesenPath(examSlug, attemptId);
   const current: ReviewBlock = pathname.startsWith(lesenPath)
@@ -152,7 +119,7 @@ export const TrainingShell = ({
   const lastSavedAt = useRef(0);
   const timer = useRef<number | undefined>(undefined);
   const queue = useRef<Promise<void>>(Promise.resolve());
-  const isDone = useRef(initialReview !== null);
+  const isDone = useRef(initialReview !== null || isResultPending);
   const isDirty = useRef(false);
 
   useEffect(() => {
@@ -160,7 +127,7 @@ export const TrainingShell = ({
   }, [current]);
 
   // Saves are sent one after another, so the last place wins. A failure is
-  // logged only: it never blocks choosing or saving an answer.
+  // logged only: it never blocks choosing, saving or submitting.
   const flushProgress = useCallback(() => {
     window.clearTimeout(timer.current);
     timer.current = undefined;
@@ -170,7 +137,7 @@ export const TrainingShell = ({
     lastSavedAt.current = Date.now();
     queue.current = queue.current.then(async () => {
       try {
-        const result = await saveProgress({ attemptId, progress });
+        const result = await requestSaveProgress({ attemptId, progress });
         if (!result.ok) {
           isDirty.current = true;
           console.error({ progressError: result.error });
@@ -180,7 +147,7 @@ export const TrainingShell = ({
         console.error({ error });
       }
     });
-  }, [attemptId, saveProgress]);
+  }, [attemptId]);
 
   const reportProgress = useCallback(
     (patch: Partial<AttemptProgress>, isUrgent = true) => {
@@ -212,6 +179,14 @@ export const TrainingShell = ({
 
   const readProgress = useCallback(() => progressRef.current, []);
 
+  // A closed attempt saves no place: a pending timer is dropped, a request
+  // already in flight is refused by the server.
+  const stopProgress = useCallback(() => {
+    isDone.current = true;
+    window.clearTimeout(timer.current);
+    timer.current = undefined;
+  }, []);
+
   useEffect(() => {
     const handleHidden = () => {
       if (document.visibilityState === 'hidden') flushProgress();
@@ -224,6 +199,16 @@ export const TrainingShell = ({
       window.clearTimeout(timer.current);
     };
   }, [flushProgress]);
+
+  const submission = useAttemptSubmission({
+    attemptId,
+    examSlug,
+    questions,
+    phaseRevision,
+    isResultPending,
+    store,
+    onClosed: stopProgress,
+  });
 
   const state: TrainingState = useMemo(
     () => ({
@@ -241,54 +226,10 @@ export const TrainingShell = ({
   const blocks = BLOCK_PATHS.filter(({ block }) =>
     questions.some((question) => question.skill === block),
   ).map(({ block, pathOf }) => ({ block, href: pathOf(examSlug, attemptId) }));
-  const unanswered = {
-    hoeren: countUnanswered(questions, selections, 'hoeren'),
-    lesen: countUnanswered(questions, selections, 'lesen'),
-  };
-  const hasUnanswered = unanswered.hoeren + unanswered.lesen > 0;
-  const unsaved = {
-    hoeren: countUnsaved(questions, pending, 'hoeren'),
-    lesen: countUnsaved(questions, pending, 'lesen'),
-  };
-  const isUnsavedLeft = hasUnsaved(pending);
-
-  // An unconfirmed choice would be missing from the stored answers the
-  // server scores, so the attempt is not finished until it is saved.
-  const finish = async () => {
-    if (hasUnsaved(readPending())) {
-      setFinishStatus('unsaved');
-      return;
-    }
-    isFinishing.current = true;
-    setFinishStatus('finishing');
-    let result: FinishAttemptResult;
-    try {
-      // The last place is stored before the attempt is closed.
-      flushProgress();
-      await queue.current;
-      result = await finishAttempt({ attemptId });
-    } catch (error) {
-      console.error({ error });
-      result = { ok: false, error: 'unavailable' };
-    }
-    if (result.ok) {
-      isDone.current = true;
-      setReview(result.review);
-      return;
-    }
-    isFinishing.current = false;
-    setFinishStatus('error');
-  };
 
   // Starting again only opens the choice of the exam: a new attempt is
   // created there by an explicit start, never by this button.
   const restart = () => router.push(choicePath(examSlug));
-
-  const requestFinish = () => {
-    if (isUnsavedLeft) setFinishStatus('unsaved');
-    else if (hasUnanswered) setFinishStatus('confirming');
-    else void finish();
-  };
 
   const nav =
     blocks.length > 1 ? (
@@ -330,7 +271,6 @@ export const TrainingShell = ({
     );
   }
 
-  const isBusy = isSaving || finishStatus === 'finishing';
   const answered = questions.filter((question) =>
     Object.hasOwn(selections, question.id),
   ).length;
@@ -341,6 +281,7 @@ export const TrainingShell = ({
         spacing={3}
         data-testid="training-shell"
         data-attempt-id={attemptId}
+        data-submission={submission.phase}
       >
         {nav}
         {trackIds.map((trackId, trackIndex) => (
@@ -360,73 +301,23 @@ export const TrainingShell = ({
         ))}
         {children}
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
-          <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
-            <Typography data-testid="training-answered">
-              {t('answered', { answered, total: questions.length })}
-            </Typography>
-            {finishStatus === 'confirming' ? (
-              <Stack
-                spacing={1.5}
-                role="group"
-                aria-labelledby="finish-confirm-title"
-                data-testid="finish-confirmation"
-                data-unanswered-hoeren={unanswered.hoeren}
-                data-unanswered-lesen={unanswered.lesen}
-              >
-                <Typography id="finish-confirm-title" fontWeight={600}>
-                  {t('confirmTitle')}
-                </Typography>
-                <Typography>
-                  {t('confirmBody', {
-                    hoeren: unanswered.hoeren,
-                    lesen: unanswered.lesen,
-                  })}
-                </Typography>
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    variant="contained"
-                    data-testid="finish-confirm"
-                    disabled={isBusy}
-                    onClick={() => void finish()}
-                  >
-                    {t('confirm')}
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    data-testid="finish-cancel"
-                    onClick={() => setFinishStatus('idle')}
-                  >
-                    {t('cancel')}
-                  </Button>
-                </Stack>
-              </Stack>
-            ) : (
-              <Button
-                variant="contained"
-                data-testid="finish-attempt"
-                disabled={isBusy}
-                onClick={requestFinish}
-              >
-                {finishStatus === 'finishing' ? t('finishing') : t('finish')}
-              </Button>
-            )}
-            {finishStatus === 'unsaved' && isUnsavedLeft ? (
-              <Alert
-                severity="warning"
-                role="alert"
-                data-testid="finish-unsaved"
-                data-unsaved-hoeren={unsaved.hoeren}
-                data-unsaved-lesen={unsaved.lesen}
-              >
-                {t('unsaved', unsaved)}
-              </Alert>
-            ) : null}
-            {finishStatus === 'error' ? (
-              <Alert severity="error" role="alert" data-testid="finish-status">
-                {t('finishError')}
-              </Alert>
-            ) : null}
-          </Stack>
+          <AttemptSubmissionControls
+            phase={submission.phase}
+            confirmation={submission.confirmation}
+            isRenewed={submission.isRenewed}
+            cancelSummary={submission.cancelSummary}
+            resultCheck={submission.resultCheck}
+            answered={answered}
+            total={questions.length}
+            onSubmit={submission.submit}
+            onConfirmSubmit={submission.confirmSubmit}
+            onResendSubmit={submission.resendSubmit}
+            onCheckResult={submission.checkResult}
+            onCancel={submission.cancel}
+            onConfirmCancel={submission.confirmCancel}
+            onResendCancel={submission.resendCancel}
+            onDismiss={submission.dismiss}
+          />
         </Paper>
       </Stack>
     </TrainingContext.Provider>

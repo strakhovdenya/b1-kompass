@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { PILOT_EXAM_SLUG } from '../src/server/material/published';
 import { latestVersionOf, serviceDb } from './support/db';
@@ -6,10 +8,14 @@ import { FULL_EXAM } from './support/full-exam';
 import {
   LIFT_M2_CONSTRAINTS,
   RESTORE_M2_CONSTRAINTS,
+  historicalCompletionSql,
   legacyAttemptSql,
   snapshotSql,
 } from './support/legacy-attempt';
-import type { LegacyAttempt } from './support/legacy-attempt';
+import type {
+  HistoricalCompletion,
+  LegacyAttempt,
+} from './support/legacy-attempt';
 import { psqlJson, quote } from './support/sql';
 
 // The transfer of M1 attempts by the same owner-only functions the migration
@@ -518,4 +524,129 @@ test('scoped legacy backfill of unknown attempt is empty without side effects', 
 
   expect(summary.repeated).toEqual({ filled_exams: 0, created_runs: 0 });
   expect(summary.afterRepeated).toEqual(summary.afterScoped);
+});
+
+// The classification of the submission migration -----------------------------------
+
+const MIGRATIONS = path.join(
+  import.meta.dirname,
+  '..',
+  '..',
+  '..',
+  'supabase',
+  'migrations',
+);
+
+// The executable statement of the migration itself, not a copy: a comment
+// or a missing call fails here.
+const classificationOfMigration = (): string => {
+  const [file, ...others] = readdirSync(MIGRATIONS).filter((name) =>
+    name.endsWith('_m2_submission.sql'),
+  );
+  expect(file).toBeDefined();
+  expect(others).toEqual([]);
+  const text = readFileSync(path.join(MIGRATIONS, file ?? ''), 'utf8');
+  const statements =
+    text.match(/^select m2_private\.mark_legacy_completed\(\);$/gm) ?? [];
+  expect(statements).toHaveLength(1);
+  return statements[0] ?? '';
+};
+
+interface MarkedSnapshot extends Snapshot {
+  run: Snapshot['run'] & { legacy_completed: boolean; frozen_answers: unknown };
+}
+
+test('submission migration classifies historical completed rows idempotently', async () => {
+  const classification = classificationOfMigration();
+  const guestId = randomUUID();
+  const otherGuest = randomUUID();
+  const base = new Date(Date.now() - 7_200_000);
+  // M1: no exam_id and no run until the transfer.
+  const m1 = legacy({
+    id: randomUUID(),
+    sessionId: guestId,
+    versionId: full.versionId,
+    createdAt: at(base, 0),
+    status: 'completed',
+    answers: { 'hoeren-1': 'b', 'lesen-1': 'a' },
+    result: { score: 1, maxScore: 45, correct: 1, incorrect: 1, skipped: 43 },
+  });
+  // The old finish of #39: started with exam_id and a run, completed with a
+  // result before the snapshot existed.
+  const oldFinish: HistoricalCompletion = {
+    id: randomUUID(),
+    sessionId: otherGuest,
+    examId: pilot.examId,
+    versionId: pilot.versionId,
+    scope: 'short-set',
+    createdAt: at(base, 10),
+    completedAt: at(base, 600),
+    answers: { 'hoeren-1': 'a' },
+    result: {
+      score: 0,
+      maxScore: pilot.questionIds.length,
+      correct: 0,
+      incorrect: 1,
+      skipped: pilot.questionIds.length - 1,
+    },
+  };
+  const active = legacy({
+    id: randomUUID(),
+    sessionId: guestId,
+    versionId: pilot.versionId,
+    createdAt: at(base, 20),
+    answers: { 'hoeren-1': 'c' },
+  });
+  const cancelled = legacy({
+    id: randomUUID(),
+    sessionId: otherGuest,
+    versionId: full.versionId,
+    createdAt: at(base, 30),
+  });
+  const ids = [m1.id, oldFinish.id, active.id, cancelled.id];
+
+  const summary = runScenario<{
+    before: Record<string, MarkedSnapshot>;
+    first: Record<string, MarkedSnapshot>;
+    second: Record<string, MarkedSnapshot>;
+  }>([
+    guestSql(guestId),
+    guestSql(otherGuest),
+    legacyAttemptSql(m1),
+    legacyAttemptSql(active),
+    legacyAttemptSql(cancelled),
+    'select * from m2_private.backfill_m1_attempts();',
+    `update public.attempts set status = 'cancelled'
+      where id = ${quote(cancelled.id)};`,
+    RESTORE_M2_CONSTRAINTS,
+    historicalCompletionSql(oldFinish),
+    keep('before', snapshotOf(ids)),
+    classification,
+    keep('first', snapshotOf(ids)),
+    classification,
+    keep('second', snapshotOf(ids)),
+  ]);
+
+  const classified = [m1.id, oldFinish.id];
+  for (const id of ids) {
+    const before = summary.before[id];
+    const first = summary.first[id];
+    if (!before?.run || !first?.run) throw new Error(`no run of ${id}`);
+    expect(before.run.legacy_completed, id).toBe(false);
+    expect(before.run.frozen_answers, id).toBeNull();
+    expect(first.run.legacy_completed, id).toBe(classified.includes(id));
+    // Only the mark changes: attempt, answers, result, its timestamps and
+    // the events stay as they were.
+    expect({
+      ...first,
+      run: { ...first.run, legacy_completed: before.run.legacy_completed },
+    }).toEqual(before);
+  }
+  expect(pick(summary.before, m1.id).result).not.toBeNull();
+  expect(pick(summary.before, oldFinish.id).events).toEqual([
+    'start',
+    'finish',
+  ]);
+  // Repeating the operation changes nothing.
+  expect(summary.second).toEqual(summary.first);
 });

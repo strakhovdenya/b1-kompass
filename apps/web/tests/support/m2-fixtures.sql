@@ -60,5 +60,107 @@ begin
 end;
 $$;
 
+-- The saves, the submission and the cancel at an explicit moment: the same
+-- row lock of the attempt, then the same private kernel as production.
+create or replace function m2_test.save_answer_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_question_id text,
+  p_option_id text,
+  p_revision integer,
+  p_at timestamptz
+)
+returns public.attempt_answers
+language plpgsql
+set search_path = ''
+as $$
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return m2_private.save_answer(
+    p_session_id, p_attempt_id, p_question_id, p_option_id, p_revision, p_at
+  );
+end;
+$$;
+
+create or replace function m2_test.save_progress_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_progress jsonb,
+  p_at timestamptz
+)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return m2_private.save_progress(p_session_id, p_attempt_id, p_progress, p_at);
+end;
+$$;
+
+create or replace function m2_test.accept_submission_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_command_id uuid,
+  p_answers jsonb,
+  p_expected_phase_revision integer,
+  p_expected_skipped integer,
+  p_at timestamptz
+)
+returns table (
+  outcome text,
+  attempt_status text,
+  accepted_at timestamptz,
+  skipped integer,
+  frozen jsonb
+)
+language plpgsql
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return query select * from m2_private.accept_submission(
+    p_session_id, p_attempt_id, p_command_id, p_answers,
+    p_expected_phase_revision, p_expected_skipped, p_at
+  );
+end;
+$$;
+
+create or replace function m2_test.cancel_attempt_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_command_id uuid,
+  p_expected_phase_revision integer,
+  p_expected_skipped integer,
+  p_at timestamptz
+)
+returns table (
+  outcome text,
+  attempt_status text,
+  accepted_at timestamptz,
+  skipped integer
+)
+language plpgsql
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return query select * from m2_private.cancel_attempt(
+    p_session_id, p_attempt_id, p_command_id, p_expected_phase_revision,
+    p_expected_skipped, p_at
+  );
+end;
+$$;
+
 revoke all on all functions in schema m2_test
   from public, anon, authenticated, service_role;

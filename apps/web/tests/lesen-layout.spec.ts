@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { readAnswers, readAttempts, readSessionByToken } from './support/db';
-import { LESEN_URL, enterAndStart } from './support/guest-browser';
+import { ANSWER_URL, LESEN_URL, enterAndStart } from './support/guest-browser';
 
 // The synthetic full set: lesen-1..5 Teil 1, 6..10 Teil 2 (nine options),
 // 11..16 Teil 3 (the long text), 17..19 Teil 4, 20..25 Teil 5 (gap marks).
@@ -172,7 +172,7 @@ test('responsive transition preserves unrelated answers', async ({
 
 test('failed save survives layout switch', async ({ browser }) => {
   const { context, page } = await openGuest(browser);
-  await context.route(LESEN_URL, (route) =>
+  await context.route(ANSWER_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   const target = card(page, 'lesen-1');
@@ -192,7 +192,7 @@ test('failed save survives layout switch', async ({ browser }) => {
   await expect(optionIn(target, 'b')).toBeChecked();
   await expect(statusOf(target).getByRole('button')).toBeVisible();
 
-  await context.unroute(LESEN_URL);
+  await context.unroute(ANSWER_URL);
   await statusOf(target).getByRole('button').click();
   await expect(statusOf(target)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({ 'lesen-1': 'b' });

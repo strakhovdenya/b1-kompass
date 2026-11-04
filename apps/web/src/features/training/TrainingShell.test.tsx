@@ -10,7 +10,7 @@ const ATTEMPT_ID = '00000000-0000-4000-8000-000000000000';
 vi.mock('next/navigation', () => ({
   usePathname: () =>
     '/practice/test-exam/attempts/00000000-0000-4000-8000-000000000000/lesen',
-  useRouter: () => ({ push: () => undefined }),
+  useRouter: () => ({ push: () => undefined, refresh: () => undefined }),
 }));
 
 const question = (
@@ -54,7 +54,7 @@ const review: AttemptReview = {
   })),
 };
 
-const render = (initialReview: AttemptReview | null) =>
+const render = (initialReview: AttemptReview | null, isResultPending = false) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <TrainingShell
@@ -66,10 +66,9 @@ const render = (initialReview: AttemptReview | null) =>
         initialRevisions={{ 'hoeren-1': 1 }}
         initialReview={initialReview}
         initialProgress={null}
+        isResultPending={isResultPending}
+        phaseRevision={0}
         resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
-        saveAnswer={async () => ({ ok: false, error: 'unavailable' })}
-        finishAttempt={async () => ({ ok: false, error: 'unavailable' })}
-        saveProgress={async () => ({ ok: false, error: 'unavailable' })}
       >
         <p>block page</p>
       </TrainingShell>
@@ -88,9 +87,19 @@ describe('TrainingShell', () => {
       `href="/practice/test-exam/attempts/${ATTEMPT_ID}/lesen"`,
     );
     expect(html).toContain('data-testid="finish-attempt"');
+    expect(html).toContain('data-testid="cancel-attempt"');
     expect(html).toContain('Answered in total: 1 of 3.');
     expect(html).not.toContain('data-testid="finish-confirmation"');
     expect(html).not.toContain('data-testid="restart-attempt"');
+  });
+
+  it('shows the accepted submission instead of the finish point', () => {
+    const html = render(null, true);
+    expect(html).toContain('block page');
+    expect(html).toContain('data-testid="submission-accepted"');
+    expect(html).toContain('data-testid="result-check"');
+    expect(html).not.toContain('data-testid="finish-attempt"');
+    expect(html).not.toContain('data-testid="cancel-attempt"');
   });
 
   it('shows only the review of the open block once completed', () => {
