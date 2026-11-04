@@ -16,6 +16,7 @@ import {
   serviceDb,
 } from './support/db';
 import {
+  ANSWER_URL,
   CHOICE_URL,
   HOEREN_URL,
   card,
@@ -666,7 +667,7 @@ test('one delayed listener does not block others', async ({ browser }) => {
   const release = signal();
   const arrived = signal();
   cleanups.push(release.resolve);
-  await delayed.context.route(HOEREN_URL, async (route: Route) => {
+  await delayed.context.route(ANSWER_URL, async (route: Route) => {
     const request = route.request();
     const body = request.postData() ?? '';
     const isSave = body.includes('"questionId":"hoeren-1"');

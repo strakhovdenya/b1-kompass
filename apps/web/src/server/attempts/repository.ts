@@ -1,5 +1,12 @@
 import { examContentSchema } from '@b1k/domain';
-import type { AttemptScope, ExamContent, Selections } from '@b1k/domain';
+import type {
+  AnswerKeys,
+  AttemptScope,
+  AttemptScore,
+  DtzLevel,
+  ExamContent,
+  Selections,
+} from '@b1k/domain';
 import type { ServerDeps } from '../db';
 
 // Data access of attempts: plain rows of the trusted database, no decisions.
@@ -29,8 +36,8 @@ export interface AttemptRow {
   createdAt: string;
 }
 
-// The stored run, as written at the start. The assignment is the snapshot
-// JSON; the reader validates it.
+// The stored run, as written at the start. The assignment and the frozen
+// answers are snapshot JSON; the reader validates them.
 export interface RunRow {
   mode: string;
   purpose: string;
@@ -39,6 +46,9 @@ export interface RunRow {
   assignment: unknown;
   acceptedAt: string;
   cancelReason: string | null;
+  frozenAnswers: unknown;
+  submissionAcceptedAt: string | null;
+  legacyCompleted: boolean;
 }
 
 export interface StoredAnswers {
@@ -64,13 +74,16 @@ interface RunRecord {
   assignment: unknown;
   accepted_at: string;
   cancel_reason: string | null;
+  frozen_answers: unknown;
+  submission_accepted_at: string | null;
+  legacy_completed: boolean;
 }
 
 const ATTEMPT_COLUMNS =
   'id, status, scope, exam_id, exam_version_id, progress, created_at';
 const RUN_COLUMNS = [
   'mode, purpose, selection, source_attempt_id, assignment, accepted_at',
-  'cancel_reason',
+  'cancel_reason, frozen_answers, submission_accepted_at, legacy_completed',
 ].join(', ');
 
 const toAttempt = (row: AttemptRecord): AttemptRow => ({
@@ -203,6 +216,9 @@ export const readRun = async (
     assignment: data.assignment,
     acceptedAt: data.accepted_at,
     cancelReason: data.cancel_reason,
+    frozenAnswers: data.frozen_answers,
+    submissionAcceptedAt: data.submission_accepted_at,
+    legacyCompleted: data.legacy_completed,
   };
 };
 
@@ -268,6 +284,216 @@ export const callStart = async (
       p_question_ids: call.questionIds,
     })
     .single<StartRow>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+// The closed key of one version. It is read only to score or to review a
+// completed attempt and never goes into the practice state.
+export const readAnswerKeys = async (
+  deps: ServerDeps,
+  versionId: string,
+): Promise<AnswerKeys> => {
+  const { data, error } = await deps.db
+    .from('answer_keys')
+    .select('question_id, correct_option_id')
+    .eq('exam_version_id', versionId)
+    .returns<{ question_id: string; correct_option_id: string }[]>();
+  if (error) throw new Error('Key lookup failed', { cause: error });
+  const keys: Record<string, string> = {};
+  for (const row of data) keys[row.question_id] = row.correct_option_id;
+  return keys;
+};
+
+export interface ResultRow {
+  scope: AttemptScope;
+  score: number;
+  max_score: number;
+  correct_count: number;
+  incorrect_count: number;
+  skipped_count: number;
+  computed_at: string;
+  percent: number | string | null;
+  hoeren_score: number | null;
+  hoeren_max: number | null;
+  lesen_score: number | null;
+  lesen_max: number | null;
+  level: DtzLevel | null;
+}
+
+const RESULT_COLUMNS = [
+  'scope, score, max_score, correct_count, incorrect_count, skipped_count',
+  'computed_at, percent, hoeren_score, hoeren_max, lesen_score, lesen_max',
+  'level',
+].join(', ');
+
+export const readResult = async (
+  deps: ServerDeps,
+  attemptId: string,
+): Promise<ResultRow | null> => {
+  const { data, error } = await deps.db
+    .from('attempt_results')
+    .select(RESULT_COLUMNS)
+    .eq('attempt_id', attemptId)
+    .maybeSingle<ResultRow>();
+  if (error) throw new Error('Result lookup failed', { cause: error });
+  return data;
+};
+
+export type RpcResult<Row> =
+  { ok: true; row: Row } | { ok: false; error: unknown };
+
+export interface AnswerRecord {
+  question_id: string;
+  option_id: string;
+  revision: number;
+  updated_at: string;
+}
+
+export interface SaveAnswerCall {
+  sessionId: string;
+  attemptId: string;
+  questionId: string;
+  optionId: string;
+  revision: number;
+}
+
+// The production save: row lock of the attempt, then the database clock.
+export const callSaveAnswer = async (
+  deps: ServerDeps,
+  call: SaveAnswerCall,
+): Promise<RpcResult<AnswerRecord>> => {
+  const { data, error } = await deps.db
+    .rpc('m2_save_answer', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+      p_question_id: call.questionId,
+      p_option_id: call.optionId,
+      p_revision: call.revision,
+    })
+    .single<AnswerRecord>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+export const callSaveProgress = async (
+  deps: ServerDeps,
+  call: { sessionId: string; attemptId: string; progress: unknown },
+): Promise<RpcResult<unknown>> => {
+  const { data, error } = await deps.db.rpc('m2_save_progress', {
+    p_session_id: call.sessionId,
+    p_attempt_id: call.attemptId,
+    p_progress: call.progress,
+  });
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+export interface FinalAnswer {
+  questionId: string;
+  optionId: string;
+  revision: number;
+}
+
+// What the guest confirmed: the phase revision and the number of skipped
+// tasks of the effective answers.
+export interface Confirmation {
+  phaseRevision: number;
+  skipped: number;
+}
+
+export type CommandRecordOutcome =
+  'accepted' | 'replayed' | 'conflict' | 'stale-confirmation';
+
+export interface SubmissionRecord {
+  outcome: CommandRecordOutcome;
+  attempt_status: string;
+  accepted_at: string | null;
+  skipped: number | null;
+  frozen: unknown;
+}
+
+// The production acceptance: one transaction writes the winning answers,
+// freezes the effective set with the moment and the command, and moves the
+// attempt to submitted.
+export const callAcceptSubmission = async (
+  deps: ServerDeps,
+  call: {
+    sessionId: string;
+    attemptId: string;
+    commandId: string;
+    answers: readonly FinalAnswer[];
+    confirmation: Confirmation;
+  },
+): Promise<RpcResult<SubmissionRecord>> => {
+  const { data, error } = await deps.db
+    .rpc('m2_accept_submission', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+      p_command_id: call.commandId,
+      p_answers: call.answers,
+      p_expected_phase_revision: call.confirmation.phaseRevision,
+      p_expected_skipped: call.confirmation.skipped,
+    })
+    .single<SubmissionRecord>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+export interface CancelRecord {
+  outcome: CommandRecordOutcome;
+  attempt_status: string;
+  accepted_at: string | null;
+  skipped: number | null;
+}
+
+export const callCancel = async (
+  deps: ServerDeps,
+  call: {
+    sessionId: string;
+    attemptId: string;
+    commandId: string;
+    confirmation: Confirmation;
+  },
+): Promise<RpcResult<CancelRecord>> => {
+  const { data, error } = await deps.db
+    .rpc('m2_cancel_attempt', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+      p_command_id: call.commandId,
+      p_expected_phase_revision: call.confirmation.phaseRevision,
+      p_expected_skipped: call.confirmation.skipped,
+    })
+    .single<CancelRecord>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+// Stores the result of a submitted attempt; the database checks it against
+// the frozen answers and the key.
+export const callFinalize = async (
+  deps: ServerDeps,
+  call: { sessionId: string; attemptId: string; score: AttemptScore },
+): Promise<RpcResult<unknown>> => {
+  const { score } = call;
+  const { data, error } = await deps.db
+    .rpc('m2_finalize_attempt', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+      p_scope: score.scope,
+      p_score: score.score,
+      p_max_score: score.maxScore,
+      p_correct: score.correct,
+      p_incorrect: score.incorrect,
+      p_skipped: score.skipped,
+      p_percent: score.percent,
+      p_hoeren_score: score.skills?.hoeren.score ?? null,
+      p_hoeren_max: score.skills?.hoeren.maxScore ?? null,
+      p_lesen_score: score.skills?.lesen.score ?? null,
+      p_lesen_max: score.skills?.lesen.maxScore ?? null,
+      p_level: score.level,
+    })
+    .single();
   if (error) return { ok: false, error };
   return { ok: true, row: data };
 };

@@ -84,9 +84,20 @@ const FIXTURES = path.join(import.meta.dirname, 'm2-fixtures.sql');
 // Installs the test-only wrappers of tests/support/m2-fixtures.sql into the
 // isolated test database. They are never part of supabase/migrations or the
 // build; the installer refuses any target but the local container.
+// Specs of parallel workers install them at the same time: one transaction
+// under an advisory lock, so concurrent replacements of a function wait for
+// each other instead of failing.
 export const installM2Fixtures = (target: SqlTarget = localTarget()): void => {
   assertLocalTarget(target);
-  psql(readFileSync(FIXTURES, 'utf8'), target);
+  psql(
+    [
+      'begin;',
+      "select pg_advisory_xact_lock(hashtext('b1k-m2-fixtures'));",
+      readFileSync(FIXTURES, 'utf8'),
+      'commit;',
+    ].join('\n'),
+    target,
+  );
 };
 
 // The advisory lock key of the slot of a guest session and an exam: the same
@@ -170,4 +181,68 @@ export const slotWaiters = (sessionId: string, examId: string): number =>
       where locktype = 'advisory' and not granted
         and ((classid::bigint << 32) | objid::bigint)
           = ${slotKeySql(sessionId, examId)}`),
+  );
+
+// A separate psql session holds the row lock of one attempt until it is
+// released, as a competing save, submit or cancel would.
+export interface AttemptLock extends HeldLock {
+  name: string;
+}
+
+export const holdAttemptLock = async (
+  attemptId: string,
+): Promise<AttemptLock> => {
+  assertLocalTarget(localTarget());
+  const name = `attempt-holder-${randomUUID()}`;
+  const child = spawn(
+    'docker',
+    [
+      'exec',
+      '-e',
+      `PGAPPNAME=${name}`,
+      DB_CONTAINER,
+      'psql',
+      '-U',
+      'postgres',
+      '-tA',
+      '-c',
+      `select 1 from public.attempts where id = ${quote(attemptId)}
+        for update; select pg_sleep(60)`,
+    ],
+    { stdio: 'ignore' },
+  );
+  await waitFor(
+    () =>
+      Number(
+        psql(`select count(*) from pg_stat_activity
+          where application_name = ${quote(name)}
+            and wait_event = 'PgSleep'`),
+      ) === 1,
+    'attempt lock taken',
+  );
+  return {
+    name,
+    release: async () => {
+      psql(`select pg_terminate_backend(pid) from pg_stat_activity
+        where application_name = ${quote(name)}`);
+      await exitOf(child);
+      await waitFor(() => sessionsNamed(name) === 0, 'attempt lock released');
+    },
+  };
+};
+
+// Requests of the given function queued behind the held lock: blocked by it
+// directly or by a request already queued behind it.
+export const waitersBehind = (lock: AttemptLock, fn: string): number =>
+  Number(
+    psql(`with recursive queued(pid) as (
+        select pid from pg_stat_activity
+        where application_name = ${quote(lock.name)}
+        union
+        select w.pid from pg_stat_activity w, queued q
+        where q.pid = any(pg_blocking_pids(w.pid))
+      )
+      select count(*) from pg_stat_activity a, queued q
+      where a.pid = q.pid and a.wait_event_type = 'Lock'
+        and a.query like ${quote(`%${fn}%`)}`),
   );

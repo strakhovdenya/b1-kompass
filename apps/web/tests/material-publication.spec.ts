@@ -11,7 +11,7 @@ import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import type { PublishOutcome } from '../../../scripts/lib/publish-exam-version';
 import { FULL_PILOT_TRACK_ID } from '../../../scripts/lib/pilot';
 import { publishFullPilot } from '../../../scripts/publish-pilot';
-import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
+import { saveAnswer } from '../src/server/attempts/attempts';
 import { getPublishedVersion } from '../src/server/material/published';
 import {
   createPublicClient,
@@ -22,6 +22,7 @@ import {
   readAttempts,
   readResults,
   serviceDb,
+  submitStored,
 } from './support/db';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
 import { CHOICE_URL } from './support/guest-browser';
@@ -371,7 +372,7 @@ test('finished attempt does not pin guest to old version', async () => {
     optionId: 'c',
     revision: 1,
   });
-  const finished = await finishAttempt(depsNow(), guest.token, {
+  const finished = await submitStored(depsNow(), guest.token, {
     attemptId: first.attemptId,
   });
   expect(finished.ok).toBe(true);

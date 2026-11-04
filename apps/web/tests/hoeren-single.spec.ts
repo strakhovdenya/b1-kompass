@@ -12,8 +12,8 @@ import {
   readSessionByToken,
 } from './support/db';
 import {
+  ANSWER_URL,
   CHOICE_URL,
-  HOEREN_URL,
   startFromChoice,
 } from './support/guest-browser';
 
@@ -317,7 +317,7 @@ test('single navigation failure retains selection and media state', async ({
   await startPlayback(page, 6);
 
   // Saving fails: the error is visible, the choice stays and nothing is stored.
-  await context.route(HOEREN_URL, (route) =>
+  await context.route(ANSWER_URL, (route) =>
     route.request().method() === 'POST' ? route.abort() : route.continue(),
   );
   await goTo(page, 2);
@@ -339,7 +339,7 @@ test('single navigation failure retains selection and media state', async ({
 
   // The recording address fails too; once saving works again the answer is kept.
   await context.route(SIGN_URL, (route) => route.abort());
-  await context.unroute(HOEREN_URL);
+  await context.unroute(ANSWER_URL);
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'saved');
   expect(await readAnswers(attempt.id)).toEqual({

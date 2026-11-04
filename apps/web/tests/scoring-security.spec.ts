@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ExamQuestion } from '@b1k/domain';
-import { finishAttempt, saveAnswer } from '../src/server/attempts/attempts';
+import { saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
@@ -12,11 +12,12 @@ import {
   newGuest,
   openStarted,
   readAnswers,
-  readAttemptScope,
   readAttempts,
+  readAttemptScope,
   readResults,
   readSessionByToken,
   serviceDb,
+  submitStored,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
@@ -196,7 +197,7 @@ test('server scores persisted versioned answers', async () => {
   expect(second.isNew).toBe(true);
   expect(second.versionId).not.toBe(first.versionId);
 
-  const finished = await finishAttempt(depsNow(), guest.token, {
+  const finished = await submitStored(depsNow(), guest.token, {
     attemptId: guest.attemptId,
   });
   if (!finished.ok) throw new Error(`finish: ${finished.error}`);
@@ -246,7 +247,7 @@ test('client score and duplicate finish cannot forge result', async () => {
     { attemptId, level: 'B1' },
     { attemptId, role: 'admin' },
   ]) {
-    expect(await finishAttempt(depsNow(), guest.token, forged)).toEqual({
+    expect(await submitStored(depsNow(), guest.token, forged)).toEqual({
       ok: false,
       error: 'invalid-input',
     });
@@ -262,7 +263,7 @@ test('client score and duplicate finish cannot forge result', async () => {
   expect(forgedSave).toEqual({ ok: false, error: 'invalid-input' });
   expect(await readAnswers(attemptId)).toEqual(CONTROL_SELECTIONS);
 
-  const finish = () => finishAttempt(depsNow(), guest.token, { attemptId });
+  const finish = () => submitStored(depsNow(), guest.token, { attemptId });
   const raced = await Promise.all([finish(), finish()]);
   const repeated = await finish();
   const reviews = [...raced, repeated].map((result) => {
@@ -286,7 +287,7 @@ test('short set attempt is finished without grade', async () => {
   expect(await readAttemptScope(guest.attemptId)).toBe('short-set');
   await saveAll(guest.token, guest.attemptId, { 'hoeren-1': 'c' });
 
-  const finished = await finishAttempt(depsNow(), guest.token, {
+  const finished = await submitStored(depsNow(), guest.token, {
     attemptId: guest.attemptId,
   });
   if (!finished.ok) throw new Error(`finish: ${finished.error}`);
@@ -348,12 +349,10 @@ test('public client cannot call scope functions', async () => {
   expect(started.data).toBeNull();
   expect(started.error?.code).toBe('42501');
 
-  const finished = await anon.rpc('finish_attempt', {
+  const finished = await anon.rpc('m2_finalize_attempt', {
     p_session_id: guest.guest.sessionId,
     p_attempt_id: guest.attemptId,
-    p_now: new Date().toISOString(),
     p_scope: 'full-exam',
-    p_scored_answers: answers,
     p_score: 45,
     p_max_score: 45,
     p_correct: 45,
@@ -391,11 +390,17 @@ test('missing key or invalid pinned version refuses finish', async () => {
     expect(await readAttemptScope(attemptId)).toBe('full-exam');
     await saveAll(guest.token, attemptId, CONTROL_SELECTIONS);
 
-    expect(await finishAttempt(depsNow(), guest.token, { attemptId })).toEqual({
+    // The submission is accepted and frozen; without the key no result is
+    // stored and none is invented.
+    expect(await submitStored(depsNow(), guest.token, { attemptId })).toEqual({
       ok: false,
       error: 'unavailable',
     });
-    await expectActiveWithoutResult(sessionId, attemptId);
+    expect(await readAttempts(sessionId)).toContainEqual({
+      id: attemptId,
+      status: 'submitted',
+    });
+    expect(await readResults(attemptId)).toEqual([]);
   });
 
   await test.step('a version whose content breaks the schema', async () => {
@@ -417,7 +422,7 @@ test('missing key or invalid pinned version refuses finish', async () => {
       'full-exam',
     );
 
-    expect(await finishAttempt(depsNow(), guest.token, { attemptId })).toEqual({
+    expect(await submitStored(depsNow(), guest.token, { attemptId })).toEqual({
       ok: false,
       error: 'unavailable',
     });
@@ -426,5 +431,8 @@ test('missing key or invalid pinned version refuses finish', async () => {
 
   const attempts = await readAttempts(sessionId);
   expect(attempts).toHaveLength(2);
-  expect(attempts.every((attempt) => attempt.status === 'active')).toBe(true);
+  expect(attempts.map((attempt) => attempt.status).toSorted()).toEqual([
+    'active',
+    'submitted',
+  ]);
 });

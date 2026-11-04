@@ -122,12 +122,25 @@
     "lesen": "Lesen (reading)",
     "finish": "Finish attempt",
     "finishing": "Checking…",
-    "unsaved": "Not every answer is saved yet (Hören: {hoeren}, Lesen: {lesen}). Retry saving them before you finish; the attempt was not finished.",
-    "finishError": "The attempt was not finished. Your answers are kept. Please try again.",
+    "finishError": "The answers were not submitted. Your answers are kept. Please try again.",
     "confirmTitle": "Some tasks are unanswered",
     "confirmBody": "Unanswered: Hören {hoeren}, Lesen {lesen}. Unanswered tasks count as skipped and cannot be answered afterwards.",
     "confirm": "Finish anyway",
     "cancel": "Back to the tasks",
-    "answered": "Answered in total: {answered} of {total}."
+    "answered": "Answered in total: {answered} of {total}.",
+    "confirmRenewed": "The numbers have changed since you looked. Please check them and confirm again.",
+    "finishUncertain": "The connection was lost while submitting. Your answers are locked until the server answers; send the same submission again.",
+    "resend": "Send again",
+    "accepted": "Your answers are accepted and can no longer be changed. The result is being prepared.",
+    "checkResult": "Show result",
+    "resultNotReady": "The result is not ready yet. Your accepted answers are kept; please try again.",
+    "resultOpening": "The result is ready. Opening…",
+    "cancelAttempt": "Cancel attempt",
+    "cancelTitle": "Cancel this attempt?",
+    "cancelBody": "The attempt ends without a result and cannot be continued. Answers already saved stay; tasks without a saved answer: {skipped}.",
+    "cancelUnsaved": "{unsaved, plural, one {# choice is} other {# choices are}} not saved yet and will be lost.",
+    "cancelConfirm": "Cancel without result",
+    "cancelError": "The attempt was not cancelled. Please try again.",
+    "cancelUncertain": "The connection was lost while cancelling. Send the same cancel again."
   }
 }

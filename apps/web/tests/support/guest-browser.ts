@@ -233,3 +233,9 @@ export const finishFromShell = async (page: Page) => {
   await page.getByTestId('finish-confirm').click();
   await expect(page.getByTestId('attempt-review')).toBeVisible();
 };
+
+// The independent HTTP commands of one attempt: every save, place, status,
+// submit and cancel is its own POST, outside the queue of server actions.
+export const ANSWER_URL = '**/api/attempts/*/answer';
+export const PROGRESS_URL = '**/api/attempts/*/progress';
+export const SUBMIT_URL = '**/api/attempts/*/submit';

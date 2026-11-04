@@ -23,7 +23,8 @@ import {
   serviceDb,
 } from './support/db';
 import { readTestSupabaseEnv } from './support/env';
-import { HOEREN_URL, enterAndStart } from './support/guest-browser';
+import { installM2Fixtures, psql, quote } from './support/sql';
+import { ANSWER_URL, enterAndStart } from './support/guest-browser';
 
 const PROMPT = 'Was soll Herr Rossi machen?';
 const OPTION_A = 'Den anderen Teilnehmern Bescheid sagen.';
@@ -209,7 +210,7 @@ test('failed save retains selection without false saved status', async ({
 }) => {
   await startGuest(page);
   const attempt = await activeAttemptOf((await sessionOf(page.context())).id);
-  await page.route(HOEREN_URL, async (route) => {
+  await page.route(ANSWER_URL, async (route) => {
     if (route.request().method() === 'POST') {
       await route.fulfill({ status: 503, body: 'unavailable' });
     } else {
@@ -224,7 +225,7 @@ test('failed save retains selection without false saved status', async ({
   await expect(option(page, OPTION_C)).toBeChecked();
   expect(await readAnswers(attempt.id)).toEqual({});
 
-  await page.unroute(HOEREN_URL);
+  await page.unroute(ANSWER_URL);
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(saveStatus(page)).toHaveAttribute('data-status', 'saved');
   await expect(option(page, OPTION_C)).toBeChecked();
@@ -322,15 +323,14 @@ test('denies foreign attempt secret and direct API mutations', async ({
       expect(error, table).not.toBeNull();
       expect(data, table).toBeNull();
     }
-    const rpc = await anon.rpc('save_attempt_answer', {
+    const rpc = await anon.rpc('m2_save_answer', {
       p_session_id: owner.guest.sessionId,
       p_attempt_id: owner.attemptId,
       p_question_id: 'hoeren-1',
       p_option_id: 'c',
       p_revision: 2,
-      p_now: new Date().toISOString(),
     });
-    expect(rpc.error).not.toBeNull();
+    expect(rpc.error?.code).toBe('42501');
     expect(rpc.data).toBeNull();
 
     const path = `pilot/${owner.attemptId}.json`;
@@ -473,27 +473,26 @@ test('rejects guest at expiry boundary', async () => {
     }),
   ).toEqual({ ok: false, error: 'session-invalid' });
 
-  // Even with a context obtained earlier, the database refuses new work.
+  // Even with a context obtained earlier, the database refuses new work. The
+  // production save reads the database clock itself; its kernel is judged
+  // here at the exact moment of expiry through the test-only wrapper.
+  installM2Fixtures();
+  expect(() =>
+    psql(`select m2_test.save_answer_at(
+      ${quote(created.guest.sessionId)}, ${quote(practice.attemptId)},
+      'hoeren-1', 'b', 2, ${quote(created.guest.expiresAt.toISOString())})`),
+  ).toThrow(/guest session is not active/);
   await serviceDb
     .from('attempts')
-    .update({ status: 'completed' })
+    .update({ status: 'cancelled' })
     .eq('id', practice.attemptId)
     .throwOnError();
   expect(await openStarted(atExpiry, created)).toEqual({
     status: 'session-invalid',
   });
-  const direct = await serviceDb.rpc('save_attempt_answer', {
-    p_session_id: created.guest.sessionId,
-    p_attempt_id: practice.attemptId,
-    p_question_id: 'hoeren-1',
-    p_option_id: 'b',
-    p_revision: 2,
-    p_now: created.guest.expiresAt.toISOString(),
-  });
-  expect(direct.error?.hint).toBe('guest_session_invalid');
 
   expect(await readAnswers(practice.attemptId)).toEqual({ 'hoeren-1': 'a' });
   expect(await readAttempts(created.guest.sessionId)).toEqual([
-    { id: practice.attemptId, status: 'completed' },
+    { id: practice.attemptId, status: 'cancelled' },
   ]);
 });

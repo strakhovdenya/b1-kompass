@@ -25,10 +25,11 @@
 | Сохранить ответ | ✅ только в свою активную попытку, только допустимый вариант, до истечения сеанса | ❌ нет прав на таблицы и функции | — |
 | Сохранить ответ в чужую попытку | ❌ `attempt-not-found` | ❌ | — |
 | Изменить роль, владельца попытки, сеанс, срок | ❌ лишние поля → `invalid-input`; триггер запрещает менять срок | ❌ | ❌ срок неизменяем и для `service_role` |
-| Завершить попытку | ✅ только свою, вводом служит один `attemptId`; балл считает сервер по сохранённым ответам и закрытому ключу | ❌ нет прав на `finish_attempt` | — |
+| Сдать попытку (`POST …/submit` → `m2_accept_submission`, затем `m2_finalize_attempt`, #40) | ✅ только свою активную, по cookie и точному `Origin`; ответы только назначенных заданий и их вариантов; подтверждение числа пропусков; балл считает сервер по замороженному снимку и закрытому ключу, БД сверяет его с тем же снимком | ❌ нет прав на `m2_accept_submission`, `m2_finalize_attempt` | ✅ `service_role` вызывает только эти обёртки; ядро с явным временем недоступно |
+| Отменить попытку (`POST …/cancel` → `m2_cancel_attempt`, #40) | ✅ только свою активную; результата нет, одно событие `cancel`; после сдачи — `conflict` | ❌ нет прав на `m2_cancel_attempt` | — |
 | Записать готовый балл или статус | ❌ лишние поля → `invalid-input` | ❌ нет прав на `attempt_results`, `attempts` | — |
-| Изменить ответ или результат завершённой попытки | ❌ поздний ответ → `attempt-not-found`; триггеры `attempt_answers_frozen`, `attempt_results_final`, `attempts_keep_completed` | ❌ | ❌ триггеры действуют и для `service_role` |
-| Повторное или параллельное завершение | ✅ возвращает прежний результат, второй не создаётся | ❌ | — |
+| Изменить ответ, снимок или результат сданной, завершённой или отменённой попытки | ❌ поздний ответ и место → `attempt-not-found`; триггеры `attempt_answers_frozen`, `attempt_results_final`, `attempt_results_checked`, `attempts_guard_lifecycle`, `attempt_runs_fixed` | ❌ | ❌ триггеры действуют и для `service_role`; `attempt_runs` (снимок, метка истории) ему только для чтения |
+| Повторная или параллельная сдача, повтор после потерянного ответа | ✅ та же `commandId` возвращает прежний приём и результат, второй не создаётся; гонка сдачи и отмены даёт ровно один конечный исход | ❌ | — |
 | Явно начать попытку (`POST /api/attempts/start` → `m2_start_attempt`, #39) | ✅ только по своей cookie и с точным `Origin` сервера; один активный слот на экзамен; тот же `commandId` возвращает прежнюю попытку, новый при активной — `conflict` | ❌ нет прав на `m2_start_attempt` | ✅ `service_role` вызывает только `m2_start_attempt`; ядро с явным временем и функции переноса M1 ему недоступны |
 | Открыть выбор, страницу попытки, старый адрес `/practice` | ✅ только чтение: попытка и событие `start` не создаются; чужая или отменённая попытка — 404 | ❌ | — |
 | «Пройти заново» | ✅ только открывает выбор; новая попытка — отдельный явный старт | ❌ `restart_attempt`, `open_attempt`, `start_attempt` удалены | — |
@@ -52,10 +53,10 @@
 | Войти без email и пароля | `createGuestSession` → `create_guest_session` | Строка `guest_sessions` с `locale = en`, срок ровно 720 часов от `created_at`. `resolveGuestSession` по токену возвращает тот же сеанс |
 | Выбрать язык интерфейса | `setGuestLocale` | В БД `locale = ru` только у этого сеанса |
 | Открыть опубликованный комплект | явный старт `startAttempt` → `m2_start_attempt`, затем `readAttemptPage` по адресу попытки | 45 заданий. В выдаче нет `correct*` и `answer_keys`. Одна активная попытка |
-| Сохранить ответ | `saveAnswer` → `save_attempt_answer` | Ответ перечитан из `attempt_answers` |
-| Сохранить место | `saveProgress` → `save_attempt_progress` | `attempts.progress` равен отправленному |
+| Сохранить ответ | `saveAnswer` → `m2_save_answer` | Ответ перечитан из `attempt_answers` |
+| Сохранить место | `saveProgress` → `m2_save_progress` | `attempts.progress` равен отправленному |
 | Слушать запись своей попытки | `resolveAttemptAudio` | Выдаются только `url`, `contentType` и `expiresAt`. По URL скачиваются байты, `sha256` которых совпадает с `exam_version_audio.sha256` |
-| Завершить попытку | `finishAttempt` → `finish_attempt` | Одна строка `attempt_results`, балл посчитан сервером |
+| Сдать попытку | статус `readAttemptStatus`, затем `submitAttempt` → `m2_accept_submission` и `m2_finalize_attempt` (тестовый `submitStored`) | Одна строка `attempt_results`, балл посчитан сервером |
 | Получить разбор своей завершённой попытки | `getAttemptReview` | Тот же разбор. Решения совпадают с ключом версии |
 | Начать заново | «Пройти заново» открывает выбор, затем новый явный старт с новым `commandId` | Прежняя попытка `completed` с одним результатом, новая `active` без ответов |
 
@@ -67,12 +68,12 @@
 | --- | --- | --- |
 | Получить ключ до завершения | `getAttemptReview` своей активной попытки | `not-completed`, ключ не выдан |
 | | HTML и RSC-ответы адреса попытки `/practice/<exam>/attempts/<id>` и `…/lesen` владельца | Содержат его попытку, но не `correctOptionId`, `correct_option_id`, `review-solution`, `answer_keys` |
-| Действовать без сеанса или после срока | `saveAnswer`, `saveProgress`, `finishAttempt`, `getAttemptReview`, `startAttempt`, `resolveAttemptAudio` с `null` и с истёкшим токеном (часы на `expires_at`) | `session-invalid` у всех шести |
+| Действовать без сеанса или после срока | `saveAnswer`, `saveProgress`, сдача (`submitStored`), `getAttemptReview`, `startAttempt`, `resolveAttemptAudio` с `null` и с истёкшим токеном (часы на `expires_at`) | `session-invalid` у всех шести |
 | Действовать в чужой попытке | те же операции с токеном другого гостя | `attempt-not-found`, у записи — `not-found`. Ответы чужого гостя не созданы |
 | Подменить роль, владельца, балл, уровень, статус, область, путь объекта | лишние поля `role`, `guestSessionId`, `score`, `level`, `status`, `scope`, `objectPath` во всех операциях | `invalid-input` у всех десяти вызовов |
 | Прочитать таблицы | Data API `select` на `answer_keys`, `attempt_answers`, `attempt_results`, `attempts`, `exam_version_audio`, `exam_versions`, `exams`, `guest_events`, `guest_sessions` | Ошибка у каждой, `data = null` |
 | Записать готовый результат, ключ, статус, владельца, срок, событие или материал | Data API `insert`/`update`/`delete` на `attempt_results`, `answer_keys`, `attempts`, `guest_sessions`, `attempt_answers`, `exam_versions`, `guest_events` | Ошибка у каждой записи. Состояние владельца не изменилось |
-| Вызвать функцию БД | `rpc` функций `create_guest_session`, `m2_start_attempt`, `save_attempt_answer`, `save_attempt_progress`, `finish_attempt`, `publish_exam_version`, `purge_expired_empty_guest_sessions`; удалённые `start_attempt`, `open_attempt`, `restart_attempt` | `42501` у действующих, удалённые не найдены ни одной роли. Поддельный сеанс и поддельный экзамен в БД не появились |
+| Вызвать функцию БД | `rpc` функций `create_guest_session`, `m2_start_attempt`, `m2_save_answer`, `m2_save_progress`, `m2_accept_submission`, `m2_cancel_attempt`, `m2_finalize_attempt`, `publish_exam_version`, `purge_expired_empty_guest_sessions`; удалённые `start_attempt`, `open_attempt`, `restart_attempt`, `save_attempt_answer`, `save_attempt_progress`, `finish_attempt` | `42501` у действующих, удалённые не найдены ни одной роли. Поддельный сеанс и поддельный экзамен в БД не появились |
 | Прочитать или изменить запись в Storage | `exam-sources`: `download`, `createSignedUrl`, `list` (корень и `audio/`), публичный URL, `upload`, `update`, `remove` | Чтение, подпись и запись отклонены. Список пуст, публичный URL отвечает ошибкой ≥ 400, `remove` ничего не удаляет. Объект скачан сервисным ключом, `sha256` прежний |
 | Зарегистрироваться | Supabase Auth `signUp` | Ошибка, пользователь не создан |
 
@@ -99,6 +100,12 @@
   - триггеры `attempts_guard_lifecycle` (идентичность, конечные `completed`/`cancelled`) и расширенный `attempt_answers_frozen` действуют и для `service_role`;
   - `restart_attempt`, `open_attempt`, `start_attempt` удалены.
 - Runtime-команды идут через Route Handlers (`app/api/attempts/**`, `server/next/http.ts`): только POST, точный `Origin` из `APP_ORIGIN` (или Vercel preview), `Content-Type: application/json`, тело ≤ 64 KiB, строгая схема; отказ — до чтения сеанса и любой записи. Host и forwarded-host не доверяются. Токен Guest берётся только из httpOnly cookie; токен в теле, query или заголовке не авторизует. Ответы `Cache-Control: private, no-store`.
+- Миграция `supabase/migrations/20261108000000_m2_submission.sql` (#40):
+  - новые `public.m2_save_answer`, `m2_save_progress`, `m2_accept_submission`, `m2_cancel_attempt` — SECURITY DEFINER с пустым `search_path`, без параметра времени: берут блокировку строки попытки, затем `clock_timestamp()` и вызывают ядро `m2_private` (проверка Guest после ожидания блокировки, владелец, назначение, вариант, ревизия, подтверждение). `m2_finalize_attempt` — SECURITY INVOKER: вставку результата проверяет триггер `attempt_results_checked` для любой роли. `EXECUTE` отозван у `public`/`anon`/`authenticated`, выдан только `service_role`;
+  - ядра `m2_private.save_answer`, `save_progress`, `accept_submission`, `cancel_attempt` с явным временем, их помощники и owner-only `mark_legacy_completed` недоступны ни одной API-роли, `service_role` в том числе; тестовые обёртки с временем — только `tests/support/m2-fixtures.sql`;
+  - `save_attempt_answer`, `save_attempt_progress` и `finish_attempt` удалены без перегрузок совместимости;
+  - снимок сдачи и `legacy_completed` лежат в `attempt_runs`, где у `service_role` только `select`; триггеры фиксируют снимок один раз, запрещают снимать метку, вставлять помеченный run и метить неподходящую попытку даже владельцу;
+  - Origin, метод, тип, размер и строгая схема новых Route Handlers те же, что у старта; `attemptId` берётся только из адреса.
 - Миграция `supabase/migrations/20261106000000_guest_renewal.sql` (#12) добавляет таблицу `guest_events` и функцию `restart_attempt` (удалена в #39).
   - `guest_events`: RLS включён, политик нет. У `public`/`anon`/`authenticated` прав нет, у `service_role` только `select` и `insert`; триггеры запрещают `update`/`delete`/`truncate`. Журнал хранит только вид события, `visitor_id`, `attempt_id` и время, без IP, user agent и отпечатка.
   - `restart_attempt`: права только у `service_role`, у `public`/`anon`/`authenticated` отозваны.
@@ -133,6 +140,7 @@
 | Запись: чужая попытка и сеанс, закрытый бакет, закрытые таблицы и функции для publishable-ключа | там же «denies early foreign review and client score», «seed publishes short set with audio once» | ✅ CI `Quality` (PR #19) |
 | Лимит сеансов в минуту, уведомление без cookie, очистка истёкших пустых сеансов, отказ publishable-ключу на обе функции | `apps/web/tests/guest-limits.spec.ts` | ✅ локальная Supabase |
 | Те же права в облачном проекте Supabase | ручная проверка 2026-10-31 скриптом с publishable-ключом | ✅ все отказы подтверждены, регистрация выключена; см. `docs/deployment.md` |
+| Сдача, отмена, расчёт: обход удержанного save/progress, повтор, гонки, подтверждение, назначение, вариант, срок Guest после блокировки, время от клиента, права и прямые записи `service_role` | `apps/web/tests/exam-submission.spec.ts`, `attempt-lifecycle.spec.ts`, `m1-migration.spec.ts` | ✅ локальная Supabase 2026-11-04; CI `Quality` — на PR задачи #40 (ещё не запущен) |
 | Права новых объектов P1-T2 (`exam_version_audio`, `open_attempt`, `finish_attempt`) в облачном проекте | — | ⏳ скриптом с publishable-ключом не проверялись: миграция применена владельцем, но облачная проверка отказов после неё не выполнялась |
 | Задача очистки в облачном проекте (Integrations → Cron) | ручная проверка владельца после `supabase db push` | ⏳ не выполнена |
 | Приёмочная матрица: разрешённые операции, запрещённые серверные, Data API и Storage пути | `apps/web/tests/release-journey.spec.ts` «release guest allowed operations pass access matrix», «release rejects guest privilege and private resource attacks» | ✅ локальная Supabase 2026-11-01. CI `Quality` — на PR #34 |

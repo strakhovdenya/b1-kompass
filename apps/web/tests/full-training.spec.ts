@@ -2,11 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
-import {
-  finishAttempt,
-  getAttemptReview,
-  saveAnswer,
-} from '../src/server/attempts/attempts';
+import { getAttemptReview, saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   depsNow,
@@ -16,10 +12,12 @@ import {
   readResults,
   readSession,
   readSessionByToken,
+  submitStored,
 } from './support/db';
 import {
   HOEREN_URL,
   LESEN_URL,
+  SUBMIT_URL,
   attemptLesenUrl,
   attemptUrl,
   enterAndStart,
@@ -489,7 +487,7 @@ test('active or foreign review remains private', async ({
   const foreignInput = { attemptId: attempt.id };
   const foreignResults = [
     await getAttemptReview(depsNow(), stranger.token, foreignInput),
-    await finishAttempt(depsNow(), stranger.token, foreignInput),
+    await submitStored(depsNow(), stranger.token, foreignInput),
     await saveAnswer(depsNow(), stranger.token, {
       ...foreignInput,
       questionId: 'hoeren-1',
@@ -503,7 +501,7 @@ test('active or foreign review remains private', async ({
   expect(await readAnswers(attempt.id)).toEqual(ownerAnswers);
   expect(await readResults(attempt.id)).toEqual([]);
 
-  const result = await finishAttempt(depsNow(), attempt.token, foreignInput);
+  const result = await submitStored(depsNow(), attempt.token, foreignInput);
   expect(result.ok).toBe(true);
   const completed = await getAttemptReview(
     depsNow(),
@@ -616,18 +614,18 @@ test('locale switches entire route without losing state', async ({
     'Завершить попытку',
   );
 
-  await context.route(LESEN_URL, (route) =>
-    route.request().method() === 'POST' ? route.abort() : route.continue(),
-  );
+  // A lost submission keeps the answers locked; the same command is sent
+  // again in Russian and completes.
+  await context.route(SUBMIT_URL, (route) => route.abort());
   await page.getByTestId('finish-attempt').click();
   await page.getByTestId('finish-confirm').click();
-  await expect(page.getByTestId('finish-status')).toContainText(
-    'Попытка не завершена',
-  );
+  await expect(page.getByTestId('finish-uncertain')).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   expect(await readResults(attempt.id)).toEqual([]);
-  await context.unroute(LESEN_URL);
+  await context.unroute(SUBMIT_URL);
 
-  await finishFromShell(page, true);
+  await page.getByTestId('finish-resend').click();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
 
   const row = await storedResult(attempt.id);
   expect(row.score).toBe(33);
@@ -803,7 +801,7 @@ test('finish from either block gives one result', async ({ browser }) => {
   const first = await storedResult(attempt.id);
   await finishFromShell(hoerenPage, true);
 
-  const again = await finishAttempt(depsNow(), attempt.token, {
+  const again = await submitStored(depsNow(), attempt.token, {
     attemptId: attempt.id,
   });
   expect(again.ok).toBe(true);
@@ -819,7 +817,7 @@ test('finish from either block gives one result', async ({ browser }) => {
 test('completed lesen route shows review', async ({ browser }) => {
   const context = await browser.newContext();
   const { page, attempt } = await openSeeded(context, MIXED);
-  const finished = await finishAttempt(depsNow(), attempt.token, {
+  const finished = await submitStored(depsNow(), attempt.token, {
     attemptId: attempt.id,
   });
   expect(finished.ok).toBe(true);

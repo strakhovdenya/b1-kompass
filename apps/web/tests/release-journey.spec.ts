@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
-  finishAttempt,
   getAttemptReview,
   saveAnswer,
   saveProgress,
@@ -31,6 +30,7 @@ import {
   serviceDb,
   startBody,
   startFor,
+  submitStored,
 } from './support/db';
 import {
   FULL_EXAM,
@@ -41,6 +41,7 @@ import {
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
+  ANSWER_URL,
   CHOICE_URL,
   HOEREN_URL,
   LESEN_URL,
@@ -247,7 +248,7 @@ test('release failures never fake saved state', async ({ browser }) => {
     const { context, page, attemptId } = guest;
     await waitForPlayer(page);
     const isAction = (method: string) => method === 'POST';
-    for (const path of [HOEREN_URL, LESEN_URL]) {
+    for (const path of [ANSWER_URL]) {
       await context.route(path, (route) =>
         isAction(route.request().method())
           ? route.fulfill({ status: 503, body: 'unavailable' })
@@ -277,19 +278,21 @@ test('release failures never fake saved state', async ({ browser }) => {
     await expect(saved).toHaveCount(0);
     expect(await readAnswers(attemptId)).toEqual({});
 
+    // The failed choices belong to the final answers of a submission: the
+    // confirmation does not count them as unanswered. Going back sends
+    // nothing.
     await page.getByTestId('finish-attempt').click();
-    const unsaved = page.getByTestId('finish-unsaved');
-    await expect(unsaved).toHaveAttribute('role', 'alert');
-    await expect(unsaved).toHaveAttribute('data-unsaved-hoeren', '1');
-    await expect(unsaved).toHaveAttribute('data-unsaved-lesen', '1');
+    const confirmation = page.getByTestId('finish-confirmation');
+    await expect(confirmation).toHaveAttribute('data-unanswered-hoeren', '19');
+    await expect(confirmation).toHaveAttribute('data-unanswered-lesen', '24');
+    await page.getByTestId('finish-cancel').click();
     await expect(page.getByTestId('attempt-review')).toHaveCount(0);
     expect(await readResults(attemptId)).toEqual([]);
     expect(await readAttempts(guest.sessionId)).toEqual([
       { id: attemptId, status: 'active' },
     ]);
 
-    await context.unroute(HOEREN_URL);
-    await context.unroute(LESEN_URL);
+    await context.unroute(ANSWER_URL);
     await tabTo(page, lesen.getByRole('button'), 'lesen retry');
     await page.keyboard.press('Enter');
     await expectStatus(lesen, 'saved');
@@ -408,7 +411,7 @@ test('release guest allowed operations pass access matrix', async () => {
   });
 
   await test.step('finish once and read the own review', async () => {
-    const finished = await finishAttempt(depsNow(), token, { attemptId });
+    const finished = await submitStored(depsNow(), token, { attemptId });
     if (!finished.ok) throw new Error(`finish: ${finished.error}`);
     expect(finished.review).toMatchObject({ score: 1, maxScore: 45 });
     expect(await onlyResult(attemptId)).toMatchObject({
@@ -548,7 +551,7 @@ test('release rejects guest privilege and private resource attacks', async ({
       const refusals = [
         await saveAnswer(deps, token, next),
         await saveProgress(deps, token, { attemptId, progress: PROGRESS }),
-        await finishAttempt(deps, token, { attemptId }),
+        await submitStored(deps, token, { attemptId }),
         await getAttemptReview(deps, token, { attemptId }),
         await resolveAttemptAudio(deps, token, track),
       ];
@@ -568,7 +571,7 @@ test('release rejects guest privilege and private resource attacks', async ({
     const refusals = [
       await saveAnswer(depsNow(), token, next),
       await saveProgress(depsNow(), token, { attemptId, progress: PROGRESS }),
-      await finishAttempt(depsNow(), token, { attemptId }),
+      await submitStored(depsNow(), token, { attemptId }),
       await getAttemptReview(depsNow(), token, { attemptId }),
     ];
     for (const refusal of refusals) {
@@ -595,9 +598,9 @@ test('release rejects guest privilege and private resource attacks', async ({
         guestSessionId: stranger.guest.sessionId,
       }),
       await saveAnswer(depsNow(), owner.token, { ...next, score: 45 }),
-      await finishAttempt(depsNow(), owner.token, { attemptId, score: 45 }),
-      await finishAttempt(depsNow(), owner.token, { attemptId, level: 'B1' }),
-      await finishAttempt(depsNow(), owner.token, {
+      await submitStored(depsNow(), owner.token, { attemptId, score: 45 }),
+      await submitStored(depsNow(), owner.token, { attemptId, level: 'B1' }),
+      await submitStored(depsNow(), owner.token, {
         attemptId,
         status: 'completed',
       }),
@@ -703,6 +706,67 @@ test('release rejects guest privilege and private resource attacks', async ({
         p_scope: 'full-exam',
         p_question_ids: FULL_PILOT.content.questions.map((item) => item.id),
       },
+      m2_save_answer: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_question_id: 'hoeren-1',
+        p_option_id: keyOf('hoeren-1'),
+        p_revision: 2,
+      },
+      m2_save_progress: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_progress: { block: 'hoeren' },
+      },
+      m2_accept_submission: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_command_id: randomUUID(),
+        p_answers: [],
+        p_expected_phase_revision: 0,
+        p_expected_skipped: 45,
+      },
+      m2_cancel_attempt: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_command_id: randomUUID(),
+        p_expected_phase_revision: 0,
+        p_expected_skipped: 45,
+      },
+      m2_finalize_attempt: {
+        p_session_id: sessionId,
+        p_attempt_id: attemptId,
+        p_scope: 'full-exam',
+        p_score: 45,
+        p_max_score: 45,
+        p_correct: 45,
+        p_incorrect: 0,
+        p_skipped: 0,
+        p_percent: 100,
+        p_hoeren_score: 20,
+        p_hoeren_max: 20,
+        p_lesen_score: 25,
+        p_lesen_max: 25,
+        p_level: 'B1',
+      },
+      publish_exam_version: {
+        p_slug: forgedSlug,
+        p_title: 'Forged',
+        p_format: 'DTZ',
+        p_content: FULL_PILOT.content,
+        p_keys: keys,
+        p_audio: [],
+      },
+      purge_expired_empty_guest_sessions: { p_now: '2999-01-01T00:00:00Z' },
+    };
+    for (const [name, args] of Object.entries(calls)) {
+      const { data, error } = await anon.rpc(name, args);
+      expect(data, name).toBeNull();
+      expect(error?.code, name).toBe('42501');
+    }
+    // The M1 entry points and the saves and finish with a caller time are
+    // gone: neither key finds them any more.
+    const removed = {
       save_attempt_answer: {
         p_session_id: sessionId,
         p_attempt_id: attemptId,
@@ -735,23 +799,6 @@ test('release rejects guest privilege and private resource attacks', async ({
         p_lesen_max: 25,
         p_level: 'B1',
       },
-      publish_exam_version: {
-        p_slug: forgedSlug,
-        p_title: 'Forged',
-        p_format: 'DTZ',
-        p_content: FULL_PILOT.content,
-        p_keys: keys,
-        p_audio: [],
-      },
-      purge_expired_empty_guest_sessions: { p_now: '2999-01-01T00:00:00Z' },
-    };
-    for (const [name, args] of Object.entries(calls)) {
-      const { data, error } = await anon.rpc(name, args);
-      expect(data, name).toBeNull();
-      expect(error?.code, name).toBe('42501');
-    }
-    // The M1 entry points are gone: neither key finds them any more.
-    const removed = {
       start_attempt: {
         p_session_id: sessionId,
         p_exam_version_id: versionId,
