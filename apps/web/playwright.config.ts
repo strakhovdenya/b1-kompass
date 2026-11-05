@@ -28,10 +28,15 @@ const env = readTestSupabaseEnv();
 // is as foreign as any other site.
 const originOf = (port: number): string => `http://localhost:${port}`;
 
+// DICTIONARY_TEST_PROVIDER replaces only the external dictionary HTTP
+// sources (MyMemory, OpenThesaurus) with a deterministic server-side fake:
+// CI never calls them. The server accepts it only without VERCEL_ENV and with
+// a loopback APP_ORIGIN; auth, cache and budget still run for real.
 const serverEnv = {
   SUPABASE_URL: env.url,
   SUPABASE_SECRET_KEY: env.secretKey,
   GUEST_SESSIONS_PER_MINUTE: String(TEST_GUEST_SESSIONS_PER_MINUTE),
+  DICTIONARY_TEST_PROVIDER: '1',
 };
 
 export default defineConfig({

@@ -12,6 +12,7 @@ import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ExamQuestion } from '@b1k/domain';
+import { GermanText } from '../dictionary/GermanText';
 
 // 'error' can be retried; 'refused' cannot be saved any more (the attempt is
 // no longer active).
@@ -61,7 +62,7 @@ export const QuestionCard = ({
         <FormControl>
           <FormLabel id={labelId} sx={{ color: 'text.primary', mb: 1 }}>
             <Typography component="h2" variant="h6" lang="de">
-              {question.number}. {question.prompt}
+              {question.number}. <GermanText>{question.prompt}</GermanText>
             </Typography>
           </FormLabel>
           <RadioGroup
@@ -77,7 +78,8 @@ export const QuestionCard = ({
                 control={<Radio />}
                 label={
                   <span lang="de">
-                    <strong>{option.id}</strong> {option.text}
+                    <strong>{option.id}</strong>{' '}
+                    <GermanText>{option.text}</GermanText>
                   </span>
                 }
               />

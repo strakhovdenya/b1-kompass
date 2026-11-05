@@ -15,6 +15,7 @@ import type {
   Selections,
 } from '@b1k/domain';
 import { AudioPlayer } from '../audio/AudioPlayer';
+import { DictionaryBoundary } from '../dictionary/DictionaryBoundary';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
 import type { ReviewBlock } from '../results/AttemptReviewView';
@@ -217,7 +218,9 @@ export const TrainingShell = ({
             }
           />
         ))}
-        {children}
+        {/* The dictionary wraps only the block page: the recording, the
+            answers and the submission keep their own lifecycle. */}
+        <DictionaryBoundary>{children}</DictionaryBoundary>
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           <AttemptSubmissionControls
             phase={submission.phase}

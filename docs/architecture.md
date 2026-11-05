@@ -16,6 +16,7 @@
 | Оценка | `packages/domain/src/scoring` | Шкала и пороги только здесь. Сервер хранит результат политики, UI показывает сохранённый разбор |
 | Восстановление | `attempts.progress`, `readAttemptPage` (адрес попытки) | После refresh тот же сеанс получает свои ответы, блок, задание, абзац и позицию записи. Звук сам не запускается |
 | Доступ | `security.md` | `anon`/`authenticated` не имеют прав на таблицы, функции и бакет. Браузер не обращается к Supabase, кроме чтения байтов записи по подписанному URL |
+| Словарь (#60) | `features/dictionary` (UI), `POST /api/dictionary`, `server/dictionary`, `dictionary_cache`, `dictionary_budget` | Перевод одного немецкого слова DE→EN/RU по языку сеанса. Над отображением текста; материал, ответы, попытка и проигрыватель не меняются. См. «Словарь слов (#60)» |
 
 Интерфейс UI: фокус клавиатуры всегда виден. Тема (`theme/ThemeRegistry.tsx`) рисует сплошное кольцо `:focus-visible` у элементов и `Mui-focusVisible` у кнопок, радио и ползунка; проверка — `tests/release-journey.spec.ts`.
 
@@ -30,8 +31,10 @@ apps/web/src/server/**        доверенный сервер: единств�
   attempts/                   repository (строки и RPC БД) → read (чтение по адресу и статус) / start / submit / cancel / reconcile (расчёт результата) / review (разбор) → projection (plain data); attempts.ts — фасад, ещё держит сохранение ответа и места
   audio/                      контракт аудиоисточника и выдача записи после проверки доступа
   material/                   чтение публичной проекции опубликованной версии
-  next/                       связка с Next: cookie, env, server actions входа/языка/аудио, кэш запроса; http.ts — охрана Route Handlers, origin.ts — чистый разбор доверенного Origin
+  dictionary/                 словарь: проверка слова, сервис lookup, общий кэш и бюджет (store.ts), адаптеры MyMemory/OpenThesaurus, тестовый провайдер e2e, разбор конфигурации
+  next/                       связка с Next: cookie, env, server actions входа/языка/аудио, кэш запроса; http.ts — охрана Route Handlers, origin.ts — чистый разбор доверенного Origin; dictionary.ts — связка словаря с env и проверенным Guest
 apps/web/src/app/api/attempts/** Route Handlers команд попытки: POST start и [attemptId]/{answer,progress,status,submit,cancel}
+apps/web/src/app/api/dictionary/ Route Handler POST поиска одного слова
 apps/web/src/i18n/request.ts  язык интерфейса из гостевого сеанса
 apps/web/src/features/audio/  браузерный плеер: свой у каждого браузера
 apps/web/src/features/training/ оболочка попытки: плеер, ответы, место; useAttemptSubmission и AttemptSubmissionControls — сдача и отмена; attempt-client — HTTP-команды
@@ -40,6 +43,7 @@ apps/web/src/features/hoeren/ Hören Teil 1–4: одиночные, пары Te
 apps/web/src/features/lesen/  Lesen Teil 1–5 рядом со своим текстом
 apps/web/src/features/results/ разбор завершённой попытки и «Пройти заново»
 apps/web/src/features/locale/ переключатель EN/RU сеанса
+apps/web/src/features/dictionary/ словарь: DTO (entry.ts), слово (word.ts), DictionaryBoundary/GermanText/DictionaryCard, клиент lookup, произношение, переключатель
 apps/web/src/theme/           тема MUI и видимое кольцо фокуса
 packages/domain/**            чистые правила и контракты: схема материала, срок Guest, локали, результат сохранения, политика оценки (scoring/)
 scripts/lib/publish-exam-version.ts единая доверенная публикация; её вызывают scripts/seed-pilot-question.ts (короткий набор) и scripts/publish-pilot.ts (полный пилот); scripts/prepare-pilot/ готовит JSON
@@ -189,8 +193,20 @@ supabase/migrations/**        схема, неизменяемость, функ
 - Состав выпуска, название (`label`) и карточка выпуска в Step Summary (#58) — тоже чистые функции `gate.mjs` (разбор `ISSUE-<n>`/PR, экранирование внешних строк, сборка карточки); это информация, а не gate, она не влияет на решения допуска. Описание: `docs/deployment.md`, раздел «Название и карточка выпуска (#58)» (ARC-06).
 - **Статус:** код CD есть в PR #56; подтверждённого CD и выпуска через него ещё нет. Пока владелец не выполнит первый выпуск с approval, состояние Production по-прежнему определяется последним Git-деплоем Vercel (см. статусы в `docs/deployment.md`).
 
+## Словарь слов (#60)
+
+Отдельная возможность поверх отображения материала (ARC-05). Цепочка: React/MUI UI → `POST /api/dictionary` → проверенный Guest → `server/dictionary` (кэш и бюджет Supabase) → адаптеры MyMemory/OpenThesaurus → единый DTO `DictionaryEntry` (`features/dictionary/entry.ts`).
+
+- **Независимость от материала (ARC-03 неприменим).** `GermanText` оборачивает уже отрисованный немецкий текст (`QuestionCard`: задание и текст варианта; `LesenScreen`: заголовок и абзацы) в зону `data-dictionary-text`. Текст, `lang="de"`, `data-paragraph`, якорь чтения и `examContentSchema` не меняются; переводы не попадают в `exam_versions.content`, ключи и оценку. Замороженная версия попытки словарю не нужна: кэш общий для всех версий и экзаменов.
+- **Граница UI.** `DictionaryBoundary` стоит в `TrainingShell` вокруг страницы блока, после проигрывателей и до управления сдачей; в режиме разбора его нет. Он держит переключатель (boolean `b1k.dictionary.enabled.v1` в `localStorage`, по умолчанию включён), контроллер lookup (`lookup.ts`: один запрос, `AbortController` + request id, устаревший ответ отбрасывается) и карточку. Desktop: немодальный `Popper` у Range слова (flip/preventOverflow) после hover 500 мс, двойного клика или выделения; закрытие Escape, клик снаружи (`ClickAwayListener`), крестик. Телефон: tap или выделение открывают `Drawer anchor="bottom"` (persistent, без блокировки прокрутки). Клавиатура/screen reader: одна кнопка «Перевести выделенное слово», фокус переходит в карточку и возвращается к кнопке. Отдельные слова не являются элементами и tab-stop.
+- **Ответы.** При включённом переводчике click по тексту варианта внутри `label` отменяется (`preventDefault`) и не активирует radio; radio выбирается своим контролом и клавиатурой, `useAnswerStore` и порядок сохранения не меняются. Выключенный переводчик возвращает исходную разметку.
+- **Слово.** `features/dictionary/word.ts` — общий чистый модуль клиента и сервера: `Intl.Segmenter('de', word)`, объединение через один дефис, NFC, только латинские буквы с внутренними дефисом/апострофом, 2–64 символа и ≤ 200 байт UTF-8, регистр сохраняется.
+- **Сервер.** `lookupWord` (`server/dictionary/dictionary.ts`): строгое тело `{word}`, проверка слова, допуск Guest в БД (каждый lookup, в том числе из кэша: функция повторно проверяет сеанс и считает `guestread:<session>` 60 карточек в минуту), чтение кэша, атомарный бюджет провайдеров, провайдеры параллельно, upsert кэша. Целевой язык — только `GuestContext.locale`. Адаптеры никогда не бросают: `found` / `not-found` / `unavailable`; бюджет добавляет `limited`. Ошибка провайдера или исчерпанная квота дают карточку со ссылками, упражнение продолжается.
+- **Кэш и бюджет (БД).** `dictionary_cache` (ключ: provider + version + слово с регистром + target `en`/`ru`/`de`; `found` 30 дней, `not-found` 1 день; ошибки не кэшируются). `dictionary_budget` + `reserve_dictionary_budget(session, items)` резервирует все scopes или ни одного (`guestread:<session>` 60 карточек/мин, `guest:<session>` 10 новых слов/мин, `mymemory` 4000 символов/сутки, `openthesaurus` 30/мин) и сам проверяет срок Guest. `purge_dictionary_data` (pg_cron, ежечасно) удаляет истёкший кэш и окна старше 2 суток. Внешних ключей к `guest_sessions` нет, очистка сеансов не затронута.
+- **Замена провайдера** — новый адаптер `DictionaryProviders` и новая `PROVIDER_VERSION`; `QuestionCard`, `LesenScreen` и схема экзамена не меняются. Тестовый провайдер e2e подменяет только HTTP-источники (см. `security.md`).
+
 ## Дальнейшее развитие
 
-В M1 нет видимого внешнего аудиоплеера, таймеров и экзаменационного режима, аккаунтов, автоматического импорта, словаря и устных модулей. Они перечислены в `docs/roadmap.md` и в интерфейсе не показаны.
+В M1 нет видимого внешнего аудиоплеера, таймеров и экзаменационного режима, аккаунтов, автоматического импорта и устных модулей. Словарь одного слова реализован (#60, раздел выше); личный словарь и перевод фраз отложены. Они перечислены в `docs/roadmap.md` и в интерфейсе не показаны.
 
 Итоги по навыкам и уровень уже отображаются на экране результата. Библиотека с пользовательским выбором экзамена, новые виды проигрывателя, версия структуры JSON, аккаунты и администраторские операции описаны как условия будущих изменений в [architecture-evolution.md](architecture-evolution.md). Обрабатывать их следует в соответствующих PRD из [roadmap.md](roadmap.md), сохраняя действующие контракты и проверки M1.

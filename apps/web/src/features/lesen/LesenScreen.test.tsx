@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it } from 'vitest';
 import type { ExamQuestion, ExamText } from '@b1k/domain';
 import messages from '../../../messages/en.json';
+import { DictionaryActiveContext } from '../dictionary/GermanText';
 import { LesenScreen, resolveAnchor, splitParagraphs } from './LesenScreen';
 import type { ReadingAnchor } from './LesenScreen';
 
@@ -35,17 +36,26 @@ interface RenderOptions {
   texts: ExamText[];
   anchor?: ReadingAnchor;
   selections?: Record<string, string>;
+  isDictionaryOn?: boolean;
 }
 
-const render = ({ questions, texts, anchor, selections }: RenderOptions) =>
+const render = ({
+  questions,
+  texts,
+  anchor,
+  selections,
+  isDictionaryOn = false,
+}: RenderOptions) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
-      <LesenScreen
-        questions={questions}
-        texts={texts}
-        initialSelections={selections ?? {}}
-        initialAnchor={anchor}
-      />
+      <DictionaryActiveContext.Provider value={isDictionaryOn}>
+        <LesenScreen
+          questions={questions}
+          texts={texts}
+          initialSelections={selections ?? {}}
+          initialAnchor={anchor}
+        />
+      </DictionaryActiveContext.Provider>
     </NextIntlClientProvider>,
   );
 
@@ -88,6 +98,31 @@ describe('LesenScreen', () => {
     expect(resolveAnchor({ textId: 't1', paragraph: -1 }, 't1', 2)).toBe(0);
     expect(resolveAnchor({ textId: 't1', paragraph: 1.5 }, 't1', 2)).toBe(0);
     expect(resolveAnchor(null, 't1', 2)).toBe(0);
+  });
+
+  it('dictionary zones keep the reading anchor and both narrow panels', () => {
+    const body = 'Erster Absatz mit Lücke.\n\nZweiter Absatz: E-Mail.';
+    const options = {
+      questions: [question('lesen-1', 1, 't1')],
+      texts: [text('t1', body)],
+      anchor: { textId: 't1', paragraph: 1 },
+    };
+    const plain = render(options);
+    const marked = render({ ...options, isDictionaryOn: true });
+    expect(marked).toContain('data-anchor="1"');
+    expect(marked.match(/data-paragraph="\d"/g)).toEqual([
+      'data-paragraph="0"',
+      'data-paragraph="1"',
+    ]);
+    // Title, two paragraphs, the task and two options are zones.
+    expect(marked.match(/data-dictionary-text=""/g)).toHaveLength(6);
+    expect(plain).not.toContain('data-dictionary-text');
+    // The text is unchanged: only the zone wrappers are added.
+    const strip = (html: string) => html.replace(/<[^>]+>/g, '');
+    expect(strip(marked)).toBe(strip(plain));
+    expect(marked).toContain('data-testid="lesen-view-text"');
+    expect(marked).toContain('data-testid="lesen-view-questions"');
+    expect(marked).toContain('data-testid="reading-text"');
   });
 
   it('reading text is rendered as plain text', () => {
