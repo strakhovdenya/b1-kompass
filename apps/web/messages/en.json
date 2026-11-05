@@ -149,5 +149,40 @@
     "cancelConfirm": "Cancel without result",
     "cancelError": "The attempt was not cancelled. Please try again.",
     "cancelUncertain": "The connection was lost while cancelling. Send the same cancel again."
+  },
+  "dictionary": {
+    "toggle": "Word translator",
+    "stateOn": "On",
+    "stateOff": "Off",
+    "hint": "Hover over a German word, select it or tap it to see its meaning. Choose an answer with its round button.",
+    "off": "The translator is off. Answers can be chosen by clicking their text.",
+    "translateSelection": "Translate selected word",
+    "selectOneWord": "Select one German word in the task or text first.",
+    "close": "Close translation",
+    "loading": "Looking up the word…",
+    "translation": "Translation",
+    "alternatives": "Also:",
+    "baseform": "Base form:",
+    "synonyms": "German synonyms",
+    "lookUp": "Translate {word}",
+    "notFound": "No translation found for this word.",
+    "translationUnavailable": "The translation service is not available right now. Try the dictionaries below.",
+    "limited": "The free translation limit is reached for now. Try again in a minute or use the dictionaries below.",
+    "lexicalUnavailable": "Synonyms are not available right now.",
+    "unavailable": "The translator is not available right now. Your answers are not affected.",
+    "sessionInvalid": "Your guest session has ended. Reload the page to continue.",
+    "invalidWord": "Only one German word can be translated.",
+    "speak": "Listen",
+    "speakWord": "Listen to {word}",
+    "speechUnavailable": "Pronunciation is not available in this browser.",
+    "speechNoVoice": "This device has no German voice for pronunciation.",
+    "moreDictionaries": "More in other dictionaries",
+    "links": {
+      "dwds": "DWDS",
+      "duden": "Duden",
+      "google": "Google Translate"
+    },
+    "sourceTranslation": "Translation:",
+    "sourceSynonyms": "Synonyms:"
   }
 }

@@ -93,6 +93,34 @@ describe('TrainingShell', () => {
     expect(html).not.toContain('data-testid="restart-attempt"');
   });
 
+  it('keeps the dictionary apart from the recording and the attempt', () => {
+    const html = render(null);
+    const audio = html.indexOf('data-testid="audio-element"');
+    const bar = html.indexOf('data-testid="dictionary-bar"');
+    const boundary = html.indexOf('data-testid="dictionary-boundary"');
+    const page = html.indexOf('block page');
+    const finish = html.indexOf('data-testid="finish-attempt"');
+    // The recording comes before the dictionary, the finish point after the
+    // block: neither is inside the dictionary boundary.
+    expect(audio).toBeGreaterThan(-1);
+    expect(audio).toBeLessThan(bar);
+    expect(bar).toBeLessThan(boundary);
+    expect(boundary).toBeLessThan(page);
+    expect(page).toBeLessThan(finish);
+    expect(html.match(/data-testid="audio-element"/g)).toHaveLength(1);
+    expect(html).toMatch(
+      /aria-pressed="true"[^>]*data-testid="dictionary-toggle"|data-testid="dictionary-toggle"[^>]*aria-pressed="true"/,
+    );
+    // The switch is a button, not an input that could look like an answer.
+    expect(html.slice(bar, boundary)).not.toContain('<input');
+    expect(html).toContain('data-enabled="true"');
+    expect(html).toContain('data-testid="dictionary-translate-selection"');
+    // No card is open and nothing is looked up while rendering.
+    expect(html).not.toContain('data-testid="dictionary-card"');
+    // The confirmed answer is still counted by the shell.
+    expect(html).toContain('Answered in total: 1 of 3.');
+  });
+
   it('shows the accepted submission instead of the finish point', () => {
     const html = render(null, true);
     expect(html).toContain('block page');
@@ -108,6 +136,7 @@ describe('TrainingShell', () => {
     expect(html).not.toContain('data-testid="audio-element"');
     expect(html).not.toContain('data-testid="finish-attempt"');
     expect(html).toContain('data-testid="restart-attempt"');
+    expect(html).not.toContain('data-testid="dictionary-bar"');
     expect(html.match(/data-testid="review-item"/g)).toHaveLength(1);
     expect(html).toContain('data-question-id="lesen-1"');
   });

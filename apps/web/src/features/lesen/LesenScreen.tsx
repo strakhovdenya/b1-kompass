@@ -9,6 +9,7 @@ import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ExamQuestion, ExamText, Selections } from '@b1k/domain';
+import { GermanText } from '../dictionary/GermanText';
 import { QuestionCard } from '../practice/QuestionCard';
 import { useTraining } from '../training/TrainingContext';
 
@@ -334,7 +335,7 @@ export const LesenScreen = ({
               }}
             >
               <Typography component="h2" variant="h6" lang="de" gutterBottom>
-                {text.title}
+                <GermanText>{text.title}</GermanText>
               </Typography>
               <Stack spacing={2} lang="de">
                 {paragraphs.map((paragraph, paragraphIndex) => (
@@ -344,7 +345,7 @@ export const LesenScreen = ({
                     data-testid={`reading-paragraph-${paragraphIndex}`}
                     sx={{ whiteSpace: 'pre-wrap' }}
                   >
-                    {paragraph}
+                    <GermanText>{paragraph}</GermanText>
                   </Typography>
                 ))}
               </Stack>

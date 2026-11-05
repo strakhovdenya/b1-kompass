@@ -112,6 +112,24 @@
   - `create_guest_session`, `start_attempt` и `finish_attempt` заменены с прежними сигнатурами и правами.
 - Миграция `supabase/migrations/20261102000000_guest_session_limits.sql` (#18) добавляет функции `create_guest_session` и `purge_expired_empty_guest_sessions`; исполнять их может только `service_role`, у `public`/`anon`/`authenticated` права отозваны.
 
+- Миграция `supabase/migrations/20261109000000_word_dictionary_cache.sql` (#60) — словарь слов:
+  - таблицы `dictionary_cache` и `dictionary_budget`: RLS включён, политик нет, у `public`/`anon`/`authenticated` отозвано всё, у `service_role` — `select/insert/update/delete`. Прямой Data API с publishable-ключом получает `42501` на чтение и запись, кэш не меняется;
+  - `reserve_dictionary_budget(uuid, jsonb)` — SECURITY INVOKER, `search_path = ''`; `EXECUTE` отозван у `public`/`anon`/`authenticated`, выдан только `service_role`. Функция сама проверяет, что Guest существует и `now() < expires_at`, и резервирует все scopes вызова или ни одного (упорядоченные условные upsert, отказ откатывает всю транзакцию);
+  - `purge_dictionary_data(timestamptz)` — только `service_role` и pg_cron; внешних ключей к `guest_sessions` нет, очистка сеансов работает как раньше;
+  - в кэше нет session id, ответов, результатов и ключей; scopes `guest:<session id>` и `guestread:<session id>` бюджета живут не дольше двух суток;
+  - каждый lookup, включая слово из кэша, вызывает функцию (scope `guestread`): сеанс проверяется и `resolveGuestSession`, и функцией БД.
+
+## Словарь: API и внешние провайдеры (#60)
+
+- `POST /api/dictionary`: `readCommandBody` (POST, точный `Origin`, `application/json`, ≤ 64 KiB, JSON), затем отказ `413` для объявленного `Content-Length` > 1 KiB, затем `resolveGuestSession` по httpOnly cookie. Строгая схема `{word: string}`: лишние поля (например, `target`) — `400`. Слово проверяется (`features/dictionary/word.ts`: одна латинская лексема, без пробелов, цифр, URL, управляющих символов и других письменностей, ≤ 64 символов / 200 байт) до кэша, бюджета и сети. Ответ всегда `Cache-Control: private, no-store`. Отказ по Origin/сеансу/телу не пишет кэш и не тратит бюджет (`apps/web/tests/dictionary.spec.ts`).
+- Язык перевода — только `locale` проверенного Guest на сервере; из тела запроса не принимается.
+- Браузер не обращается к MyMemory и OpenThesaurus. Сервер ходит только на фиксированные HTTPS-адреса (`api.mymemory.translated.net/get`, `www.openthesaurus.de/synonyme/search`), пользовательский URL не принимает; `redirect: 'error'`, таймаут 4 с, ответ ≤ 64 KiB, JSON проверяется схемой, повторов нет.
+- Провайдерам уходят только выбранное слово, языковая пара и необязательный контакт `DICTIONARY_CONTACT_EMAIL` (MyMemory `de`, User-Agent OpenThesaurus). Не передаются текст материала, ответы, ключи, cookies, IP (`ip` и `X-Forwarded-For` не задаются), Guest ID.
+- Ответ провайдера не доверяется: `quotaFinished`, `responseStatus ≠ 200`, `MYMEMORY WARNING`, перевод, равный слову, строки с управляющими символами или ссылками не считаются переводом и не кэшируются как перевод. Карточка выводит строки только как React-текст; ссылки DWDS/Duden/Google Translate/источников строятся приложением из проверенного слова (`rel="noopener noreferrer"`), URL из ответа провайдера не становятся ссылкой (`DictionaryCard.test.tsx`).
+- Журналы сервера по словарю содержат только имя провайдера и вид отказа или код ошибки БД, без слова, сеанса и тела ответа.
+- Тестовый провайдер (`DICTIONARY_TEST_PROVIDER=1`) подменяет только HTTP-источники: проверка Guest, кэш и бюджет работают по-настоящему. Он принимается только без `VERCEL_ENV` и с loopback `APP_ORIGIN`; иначе конфигурация считается ошибочной и сервер не отвечает переводами вообще (`503`), фиктивных ответов нет.
+- Переключатель словаря хранит в `localStorage` один boolean; личные данные и слова в браузере не сохраняются, кроме памяти страницы.
+
 ## Лимит и очистка гостевых сеансов
 
 - Новый сеанс создаётся только через `create_guest_session`: подсчёт и вставка в одном вызове под транзакционной advisory-блокировкой. На весь сайт — не больше 30 новых сеансов за минуту (`GUEST_SESSIONS_PER_MINUTE`, по умолчанию 30). Сверх лимита сеанс и cookie не создаются, посетитель видит на главной уведомление попробовать снова через минуту.
@@ -162,3 +180,6 @@
 | Те же отказы Data API и Storage в облачном проекте после миграций #3–#12 | скрипт с publishable-ключом | ⏳ не выполнена |
 | Release gate: недоверенный запуск, устаревший SHA, CI, Environments, DB URL, история миграций, staged deployment, promotion | `scripts/release/gate.test.mjs` | ✅ локально `node --test` (#56); CI `Quality` — на PR #56 |
 | Изоляция секретов по Environments и approval до SQL на реальном запуске | `Release Production` | ⏳ не выполнялась: Environments и secrets владельцем ещё не настроены |
+| Словарь (#60): отказы Data API на кэш/бюджет для `anon` и `authenticated`, отказы API (Guest, Origin, тип, лишние поля, размер), атомарный бюджет при параллельных вызовах, срок Guest в функции | `apps/web/tests/dictionary.spec.ts` «denies direct database dictionary access», «rejects unauthorized dictionary requests without mutation», «concurrent lookups respect shared provider budget» | ✅ локальная Supabase 2026-11-05; CI `Quality` — на PR задачи #60 |
+| Словарь (#60): недоверенные ответы провайдеров, проверка слова, безопасный вывод | `apps/web/src/server/dictionary/dictionary.test.ts`, `apps/web/src/features/dictionary/DictionaryCard.test.tsx` | ✅ Vitest локально |
+| Права объектов словаря в облачном проекте, задача `purge-dictionary-data` | ручная проверка после выпуска | ⏳ миграция в Production не применялась |
