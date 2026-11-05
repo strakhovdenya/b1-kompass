@@ -153,7 +153,7 @@ export const TrainingShell = ({
   const nav =
     blocks.length > 1 ? (
       <nav aria-label={t('blocks')}>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" useFlexGap sx={{ flexWrap: 'wrap', gap: 1 }}>
           {blocks.map(({ block, href }) => (
             <Button
               key={block}

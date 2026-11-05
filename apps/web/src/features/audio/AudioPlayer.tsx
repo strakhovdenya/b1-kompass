@@ -269,7 +269,11 @@ export const AudioPlayer = ({
         }}
         onError={audio ? handleError : undefined}
       />
-      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+      <Stack
+        direction="row"
+        useFlexGap
+        sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}
+      >
         <Button
           variant="contained"
           onClick={togglePlay}

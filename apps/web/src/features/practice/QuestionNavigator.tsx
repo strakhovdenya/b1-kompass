@@ -126,7 +126,9 @@ export const QuestionNavigator = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          flexWrap: 'wrap',
           columnGap: 1,
+          rowGap: 1,
         }}
       >
         <Typography
@@ -145,6 +147,7 @@ export const QuestionNavigator = ({
           sx={{
             display: { xs: 'inline-flex', md: 'none' },
             minHeight: TARGET_PX,
+            maxWidth: '100%',
           }}
         >
           {t('allQuestions', { current: current?.label ?? '' })}
