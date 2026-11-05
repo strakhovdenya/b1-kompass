@@ -31,7 +31,7 @@
       "timedBlock": "Timed block",
       "exam": "Full exam with time limit"
     },
-    "trainingDetail": "{count, plural, one {# task} other {All # tasks}} of Hören and Lesen, no time limit. You can switch between the blocks and finish when you are ready.",
+    "trainingDetail": "Free practice with no time limit. Choose what to practise below. You can finish when you are ready.",
     "comingSoon": "Coming soon.",
     "start": "Start training",
     "starting": "Starting…",
@@ -42,7 +42,13 @@
     "error": "The training could not be started. Please try again.",
     "notEnabled": "This mode is not available yet.",
     "incompatible": "This attempt cannot be opened in this version of the trainer.",
-    "notFound": "This attempt was not found."
+    "notFound": "This attempt was not found.",
+    "selectionLabel": "What do you want to practise?",
+    "selection": {
+      "all": "Whole set: Hören and Lesen ({count, plural, one {# task} other {# tasks}})",
+      "hoeren": "Hören only ({count, plural, one {# task} other {# tasks}})",
+      "lesen": "Lesen only ({count, plural, one {# task} other {# tasks}})"
+    }
   },
   "save": {
     "idle": "Choose one answer.",
@@ -92,7 +98,7 @@
     "restartError": "A new run could not be started. Please try again.",
     "score": "{score} of {maxScore} points ({percent})",
     "counts": "Right: {right} · Wrong: {wrong} · Skipped: {skipped}",
-    "noLevel": "This is a short practice of a few tasks. Its points are not an official DTZ level.",
+    "noLevel": "This result covers only part of the exam. Its points are not an official DTZ level.",
     "outcome": {
       "right": "Right",
       "wrong": "Wrong",
@@ -110,7 +116,8 @@
       "belowA2": "below A2",
       "a2": "A2",
       "b1": "B1"
-    }
+    },
+    "untimedFull": "Free training of the whole set, without a time limit."
   },
   "error": {
     "message": "Something went wrong. Your saved answers are kept.",

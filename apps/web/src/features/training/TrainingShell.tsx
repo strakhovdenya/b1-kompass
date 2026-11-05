@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -24,20 +24,17 @@ import {
   attemptPath,
   choicePath,
   requestSaveAnswer,
-  requestSaveProgress,
 } from './attempt-client';
 import { useAnswerStore } from './answers';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
+import { useAttemptProgress } from './useAttemptProgress';
 import { useAttemptSubmission } from './useAttemptSubmission';
 
 export interface ResolveAudioInput {
   attemptId: string;
   trackId: string;
 }
-
-// While the recording plays the position is saved at most this often.
-const PROGRESS_INTERVAL_MS = 10_000;
 
 const BLOCK_PATHS: readonly {
   block: ReviewBlock;
@@ -114,91 +111,12 @@ export const TrainingShell = ({
   const current: ReviewBlock = pathname.startsWith(lesenPath)
     ? 'lesen'
     : 'hoeren';
-  const currentRef = useRef(current);
-  const progressRef = useRef(initialProgress);
-  const lastSavedAt = useRef(0);
-  const timer = useRef<number | undefined>(undefined);
-  const queue = useRef<Promise<void>>(Promise.resolve());
-  const isDone = useRef(initialReview !== null || isResultPending);
-  const isDirty = useRef(false);
-
-  useEffect(() => {
-    currentRef.current = current;
-  }, [current]);
-
-  // Saves are sent one after another, so the last place wins. A failure is
-  // logged only: it never blocks choosing, saving or submitting.
-  const flushProgress = useCallback(() => {
-    window.clearTimeout(timer.current);
-    timer.current = undefined;
-    const progress = progressRef.current;
-    if (!progress || isDone.current || !isDirty.current) return;
-    isDirty.current = false;
-    lastSavedAt.current = Date.now();
-    queue.current = queue.current.then(async () => {
-      try {
-        const result = await requestSaveProgress({ attemptId, progress });
-        if (!result.ok) {
-          isDirty.current = true;
-          console.error({ progressError: result.error });
-        }
-      } catch (error) {
-        isDirty.current = true;
-        console.error({ error });
-      }
-    });
-  }, [attemptId]);
-
-  const reportProgress = useCallback(
-    (patch: Partial<AttemptProgress>, isUrgent = true) => {
-      if (isDone.current) return;
-      const previous = progressRef.current;
-      const next: AttemptProgress = {
-        ...previous,
-        ...patch,
-        block: patch.block ?? currentRef.current,
-      };
-      if (previous?.hoeren || patch.hoeren) {
-        next.hoeren = { ...previous?.hoeren, ...patch.hoeren };
-      }
-      if (previous?.lesen || patch.lesen) {
-        next.lesen = { ...previous?.lesen, ...patch.lesen };
-      }
-      // Opening a screen reports the place it just read: nothing to write.
-      if (JSON.stringify(next) === JSON.stringify(previous)) return;
-      isDirty.current = true;
-      progressRef.current = next;
-      const wait = lastSavedAt.current + PROGRESS_INTERVAL_MS - Date.now();
-      if (isUrgent || wait <= 0) flushProgress();
-      else if (timer.current === undefined) {
-        timer.current = window.setTimeout(flushProgress, wait);
-      }
-    },
-    [flushProgress],
-  );
-
-  const readProgress = useCallback(() => progressRef.current, []);
-
-  // A closed attempt saves no place: a pending timer is dropped, a request
-  // already in flight is refused by the server.
-  const stopProgress = useCallback(() => {
-    isDone.current = true;
-    window.clearTimeout(timer.current);
-    timer.current = undefined;
-  }, []);
-
-  useEffect(() => {
-    const handleHidden = () => {
-      if (document.visibilityState === 'hidden') flushProgress();
-    };
-    document.addEventListener('visibilitychange', handleHidden);
-    window.addEventListener('pagehide', flushProgress);
-    return () => {
-      document.removeEventListener('visibilitychange', handleHidden);
-      window.removeEventListener('pagehide', flushProgress);
-      window.clearTimeout(timer.current);
-    };
-  }, [flushProgress]);
+  const { readProgress, reportProgress, stopProgress } = useAttemptProgress({
+    attemptId,
+    block: current,
+    initialProgress,
+    isSettled: initialReview !== null || isResultPending,
+  });
 
   const submission = useAttemptSubmission({
     attemptId,

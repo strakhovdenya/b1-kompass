@@ -111,22 +111,28 @@ export interface PracticeInput {
   progress: unknown;
 }
 
-// Only the assigned tasks of the pinned version, without the key.
+// Only the assigned tasks of the pinned version, without the key. Groups,
+// texts and recordings of tasks that are not assigned stay on the server.
 export const toPracticeState = (input: PracticeInput): PracticeState => {
   const { view, content, review } = input;
   const assigned = new Set(view.questionIds);
+  const questions = content.questions.filter((item) => assigned.has(item.id));
+  const textIds = new Set(questions.map((item) => item.textId));
+  const hasHoeren = questions.some((item) => item.skill === 'hoeren');
   return {
     attemptId: view.attemptId,
     examSlug: view.examSlug,
     versionId: view.versionId,
     examTitle: input.examTitle,
     source: content.source,
-    questions: content.questions.filter((item) => assigned.has(item.id)),
-    groups: content.groups ?? [],
-    texts: content.texts ?? [],
+    questions,
+    groups: (content.groups ?? []).filter((group) =>
+      group.questionIds.some((id) => assigned.has(id)),
+    ),
+    texts: (content.texts ?? []).filter((text) => textIds.has(text.id)),
     selections: input.selections,
     revisions: input.revisions,
-    trackIds: input.trackIds,
+    trackIds: hasHoeren ? input.trackIds : [],
     review,
     progress: review ? null : parseStoredProgress(input.progress),
   };

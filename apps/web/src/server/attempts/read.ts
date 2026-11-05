@@ -307,6 +307,9 @@ export interface ExamChoice {
   // The version a new start would run on; the start checks it again.
   versionId: string;
   questionCount: number;
+  // The size of each free block, as the start would assign it.
+  hoerenCount: number;
+  lesenCount: number;
   activeAttemptId: string | null;
 }
 
@@ -323,11 +326,16 @@ export const readExamChoice = async (
     findActiveAttempt(deps, guest.sessionId, exam.id),
   ]);
   if (!version) return null;
+  const { questions } = version.content;
+  const countOf = (skill: string): number =>
+    questions.filter((question) => question.skill === skill).length;
   return {
     examSlug: exam.slug,
     examTitle: exam.title,
     versionId: version.id,
-    questionCount: version.content.questions.length,
+    questionCount: questions.length,
+    hoerenCount: countOf('hoeren'),
+    lesenCount: countOf('lesen'),
     activeAttemptId: active ? active.id : null,
   };
 };

@@ -37,13 +37,13 @@ const startInput = z.strictObject({
 
 type StartInput = z.infer<typeof startInput>;
 
-// The capabilities are switched on in order: this release starts only the
-// free training of the whole set. Timed modes, single skills and the repeat
-// of errors answer not-enabled before anything is written.
+// The capabilities are switched on in order: this release starts the free
+// training of the whole set or of one skill. Timed modes and the repeat of
+// errors answer not-enabled before anything is written. The tasks are
+// assigned from the pinned version, never taken from the client.
 const isEnabled = (input: StartInput): boolean =>
   input.mode === 'training' &&
   input.purpose === 'normal' &&
-  input.selection === 'all' &&
   input.sourceAttemptId === null;
 
 const RULE_FAILURES: Readonly<Record<string, RunTechnicalFailure>> = {

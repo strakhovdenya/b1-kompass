@@ -66,9 +66,10 @@ const OUTCOME_COLOR: Readonly<Record<QuestionOutcome, string>> = {
 const optionText = (question: ExamQuestion, optionId: string): string =>
   question.options.find((option) => option.id === optionId)?.text ?? '';
 
-// Server result of a completed attempt, shown as stored. The full exam shows
-// the totals per skill and the level; the short set gets points and the
-// per-task review only, an official level is never shown for it.
+// Server result of a completed attempt, shown as stored. The full set shows
+// the totals per skill and the level, marked as taken without a time limit;
+// a single skill or a short set gets points and the per-task review only, an
+// official level is never shown for it.
 export const AttemptReviewView = ({
   review,
   questions,
@@ -129,11 +130,12 @@ export const AttemptReviewView = ({
             skipped: review.skipped,
           })}
         </Typography>
-        {review.showsLevel ? null : (
-          <Alert severity="info" data-testid="result-scope">
-            {t('noLevel')}
-          </Alert>
-        )}
+        <Alert
+          severity="info"
+          data-testid={review.showsLevel ? 'result-untimed' : 'result-scope'}
+        >
+          {t(review.showsLevel ? 'untimedFull' : 'noLevel')}
+        </Alert>
         {onRestart ? (
           <Stack spacing={1} sx={{ alignItems: 'flex-start' }}>
             <Button
