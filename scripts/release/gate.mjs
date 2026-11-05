@@ -14,6 +14,8 @@
 //   db-url           SUPABASE_DB_URL is the session pooler of SUPABASE_PROJECT_ID with TLS
 //   migrations       remote history against supabase/migrations (--phase before|after)
 //   promotion        bounded read of the public alias after `vercel promote`
+//   composition      what the release contains (ISSUE-n, PR), information only, exit 0
+//   release-card     markdown release card for the Step Summary, information only, exit 0
 
 import {
   appendFileSync,
@@ -165,6 +167,7 @@ export const checkPreflight = (input) => {
   const sha = trigger.sha;
   const reasons = [
     ...checkTrigger(trigger, repository),
+    ...parseLabel(trigger.label).reasons,
     ...checkRepository(api.repository, repository),
     ...checkHead(api.head, sha),
     ...checkCi(api.ciRuns, api.ciJobs, { sha, repository }),
@@ -473,6 +476,398 @@ export const checkMigrationHistory = ({ local, remote, phase }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Release information (#58): label, composition and release card.
+// Information only, never a gate: nothing below can refuse a release except
+// the label check of the preflight. Every function is pure; the wrappers at
+// the end receive their readers and never throw.
+
+const LABEL_PATTERN = /^[A-Za-z0-9А-Яа-яЁё #._:-]{0,80}$/;
+const ISSUE_REF = /\bISSUE-(\d+)\b/g;
+const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const COUNT = /^\d+$/;
+const TEXT_LIMIT = 200;
+const UNKNOWN = 'не определено';
+
+export const COMPOSITION_REASONS = [
+  'compare-empty',
+  'github-api-unavailable',
+  'previous-sha-unknown',
+  'public-sha-missing',
+];
+
+// The optional name of a release. Untrusted input: a white list, never a
+// black list. An empty name is valid (the release then has no name).
+export const parseLabel = (label) => {
+  const value = label ?? '';
+  const isValid = typeof value === 'string' && LABEL_PATTERN.test(value);
+  return {
+    ...outcome(isValid ? [] : ['release-label-invalid']),
+    label: isValid ? value : '',
+  };
+};
+
+const ENTITIES = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '|': '&#124;',
+  '@': '&#64;',
+  '#': '&#35;',
+};
+
+// The only way an external string (label, commit message, PR title, approval
+// comment, login) enters the Step Summary: one line, bounded, with markdown
+// and HTML control characters neutralised.
+export const escapeMarkdown = (value, limit = TEXT_LIMIT) => {
+  let text = String(value ?? '')
+    .replace(/\p{Cc}+/gu, ' ')
+    .trim();
+  if (text.length > limit) text = `${text.slice(0, limit - 1)}…`;
+  return text
+    .replace(/[&<>|@#]/g, (char) => ENTITIES[char])
+    .replace(/[\\`[\]*_]/g, (char) => `\\${char}`);
+};
+
+const uniqueSorted = (numbers) => [...new Set(numbers)].sort((a, b) => a - b);
+
+// ISSUE-<n> and the PR number come from the first line of a message; a merge
+// commit also names its task in the first non-empty line of its body.
+export const parseCommitMessage = (message) => {
+  const lines = String(message ?? '').split(/\r?\n/);
+  const first = lines[0] ?? '';
+  const merge = /^Merge pull request #(\d+)\b/.exec(first);
+  const squash = /\(#(\d+)\)\s*$/.exec(first);
+  const scanned = [first];
+  if (merge) {
+    const body = lines.slice(1).find((line) => line.trim() !== '');
+    if (body !== undefined) scanned.push(body);
+  }
+  const issues = scanned.flatMap((line) =>
+    [...line.matchAll(ISSUE_REF)].map((match) => Number(match[1])),
+  );
+  const prs = [merge?.[1], squash?.[1]].filter(Boolean).map(Number);
+  return { issues, prs };
+};
+
+export const summarizeCommits = (commits, total) => {
+  const parsed = commits.map((commit) =>
+    parseCommitMessage(commit?.commit?.message),
+  );
+  const isTotalKnown = Number.isInteger(total) && total >= commits.length;
+  return {
+    determined: true,
+    count: isTotalKnown ? total : commits.length,
+    issues: uniqueSorted(parsed.flatMap((item) => item.issues)),
+    prs: uniqueSorted(parsed.flatMap((item) => item.prs)),
+    truncated: isTotalKnown && total > commits.length,
+  };
+};
+
+const undetermined = (reason) => ({ determined: false, reason });
+
+// SHA of the public deployment: meta.releaseSha first, else the commit SHA
+// that Vercel records for a Git deployment.
+export const publicSha = (deployment) => {
+  const meta = deployment?.meta ?? {};
+  const sha = [meta.releaseSha, meta.githubCommitSha].find(
+    (value) => typeof value === 'string' && SHA.test(value),
+  );
+  return sha ? { sha } : { sha: null, ...undetermined('public-sha-missing') };
+};
+
+// `<previous>...<candidate>` compare result of the GitHub API.
+export const describeCompare = (compareApi) => {
+  if (compareApi?.status === 404) return undetermined('previous-sha-unknown');
+  if (!compareApi?.ok) return undetermined('github-api-unavailable');
+  const commits = compareApi.data?.commits;
+  if (!Array.isArray(commits) || commits.length === 0) {
+    return undetermined('compare-empty');
+  }
+  return summarizeCommits(commits, compareApi.data?.total_commits);
+};
+
+const githubUrl = (repository, kind, number) =>
+  `https://github.com/${repository}/${kind}/${number}`;
+
+const numberList = (numbers, link) =>
+  numbers.length === 0
+    ? 'нет'
+    : numbers.map((number) => link(number)).join(', ');
+
+// One text for the Summary line and the card cell. With a repository the
+// numbers become links.
+export const compositionText = (composition, repository = null) => {
+  if (!composition?.determined) {
+    const reason = COMPOSITION_REASONS.includes(composition?.reason)
+      ? composition.reason
+      : 'github-api-unavailable';
+    return `состав не определён: ${reason}`;
+  }
+  const hasLinks = REPOSITORY_NAME.test(repository ?? '');
+  const issue = (n) =>
+    hasLinks
+      ? `[ISSUE-${n}](${githubUrl(repository, 'issues', n)})`
+      : `ISSUE-${n}`;
+  const pull = (n) =>
+    hasLinks ? `[#${n}](${githubUrl(repository, 'pull', n)})` : `#${n}`;
+  const issues = numberList(composition.issues ?? [], issue);
+  const prs = numberList(composition.prs ?? [], pull);
+  const note = composition.truncated
+    ? ' (списки неполные: compare вернул часть коммитов)'
+    : '';
+  return `коммитов: ${composition.count}; задачи: ${issues}; PR: ${prs}${note}`;
+};
+
+const isNumberList = (list) =>
+  Array.isArray(list) && list.every((n) => Number.isInteger(n) && n > 0);
+
+// The composition crosses a job boundary as JSON text: read it defensively.
+export const parseComposition = (value) => {
+  const isDetermined =
+    value?.determined === true &&
+    Number.isInteger(value.count) &&
+    value.count > 0 &&
+    isNumberList(value.issues) &&
+    isNumberList(value.prs);
+  if (isDetermined) {
+    return {
+      determined: true,
+      count: value.count,
+      issues: value.issues,
+      prs: value.prs,
+      truncated: value.truncated === true,
+    };
+  }
+  const reason = COMPOSITION_REASONS.includes(value?.reason)
+    ? value.reason
+    : 'github-api-unavailable';
+  return undetermined(reason);
+};
+
+// The approver of the Environment `production` from the review history of
+// the run: the approved record of that Environment, else "not determined".
+export const pickApprover = (approvalsApi, environmentName = 'production') => {
+  const records = approvalsApi?.ok ? approvalsApi.data : null;
+  if (!Array.isArray(records)) return { determined: false };
+  const record = records.find(
+    (item) =>
+      item?.state === 'approved' &&
+      typeof item.user?.login === 'string' &&
+      (item.environments ?? []).some((env) => env?.name === environmentName),
+  );
+  if (!record) return { determined: false };
+  const comment = typeof record.comment === 'string' ? record.comment : '';
+  return { determined: true, login: record.user.login, comment };
+};
+
+// Steps of the job `Release` in their order. The first one whose outcome is
+// failure or cancelled is the stop stage.
+export const RELEASE_STAGES = [
+  ['checkout', 'checkout'],
+  ['setup_node', 'установка Node'],
+  ['recheck', 'повторный preflight после approval'],
+  ['install_deps', 'установка зависимостей'],
+  ['install_vercel', 'установка Vercel CLI'],
+  ['candidate_recheck', 'проверка кандидата'],
+  ['db_target', 'проверка адреса БД'],
+  ['history_before', 'история миграций до SQL'],
+  ['dry_run', 'dry run миграций'],
+  ['apply', 'применение миграций'],
+  ['history_after', 'история миграций после SQL'],
+  ['smoke_after', 'smoke после SQL'],
+  ['candidate_final', 'проверка кандидата перед promote'],
+  ['promote', 'promote'],
+  ['confirm', 'подтверждение alias и публичной главной'],
+];
+
+export const deriveReleaseStatus = (steps) => {
+  if (typeof steps !== 'object' || steps === null) {
+    return { status: 'unknown', stage: null };
+  }
+  for (const [id, title] of RELEASE_STAGES) {
+    const result = steps[id]?.outcome;
+    if (result === 'failure' || result === 'cancelled') {
+      return { status: 'not-released', stage: title };
+    }
+  }
+  const isReleased = steps.confirm?.outcome === 'success';
+  return { status: isReleased ? 'released' : 'unknown', stage: null };
+};
+
+const OUTCOME_TEXT = {
+  success: 'успешно',
+  failure: 'ошибка',
+  cancelled: 'отменено',
+  skipped: 'не выполнялся',
+};
+
+const outcomeText = (value) => OUTCOME_TEXT[value] ?? UNKNOWN;
+
+const commitCell = (sha, repository) => {
+  if (!SHA.test(sha ?? '')) return UNKNOWN;
+  const short = sha.slice(0, 7);
+  const full = `\`${sha}\``;
+  if (!REPOSITORY_NAME.test(repository ?? '')) return `${short} ${full}`;
+  return `[${short}](${githubUrl(repository, 'commit', sha)}) ${full}`;
+};
+
+const deploymentCell = (id) =>
+  DEPLOYMENT_ID.test(id ?? '') ? `\`${id}\`` : UNKNOWN;
+
+const migrationNumbers = (steps, id) => {
+  const outputs = steps?.[id]?.outputs;
+  const remote = outputs?.remote_count;
+  const local = outputs?.local_count;
+  if (!COUNT.test(remote ?? '') || !COUNT.test(local ?? '')) return null;
+  return { remote, local, pending: String(outputs.pending ?? '') };
+};
+
+const migrationCells = (steps) => {
+  const before = migrationNumbers(steps, 'history_before');
+  const after = migrationNumbers(steps, 'history_after');
+  if (!before) return { history: UNKNOWN, applied: UNKNOWN };
+  const afterCount = after ? after.remote : UNKNOWN;
+  const history = `${before.remote} → ${afterCount} (файлов: ${before.local})`;
+  const versions = before.pending.split(',').filter((v) => VERSION.test(v));
+  if (versions.length === 0) return { history, applied: 'нет' };
+  const list = versions.map((version) => `\`${version}\``).join(', ');
+  const isConfirmed = steps?.history_after?.outcome === 'success';
+  const applied = isConfirmed ? list : `${list} (применение не подтверждено)`;
+  return { history, applied };
+};
+
+const aliasCell = (aliasId, candidateId, previousId) => {
+  if (!DEPLOYMENT_ID.test(aliasId ?? '')) return UNKNOWN;
+  let owner = 'другой deployment';
+  if (aliasId === candidateId) owner = 'кандидат';
+  else if (aliasId === previousId) owner = 'предыдущий';
+  return `${owner} (\`${aliasId}\`)`;
+};
+
+const statusCell = (phase, steps) => {
+  if (phase === 'preliminary') return 'ожидает подтверждения';
+  const { status, stage } = deriveReleaseStatus(steps);
+  if (status === 'released') return 'выпущен';
+  if (status === 'not-released') {
+    return `не выпущен: остановка на этапе «${stage}»`;
+  }
+  return 'не определён';
+};
+
+const approverCell = (approver) => {
+  if (!approver?.determined) return UNKNOWN;
+  const login = escapeMarkdown(approver.login, 80);
+  const comment = escapeMarkdown(approver.comment);
+  return comment === '' ? login : `${login}: «${comment}»`;
+};
+
+const promoteCell = (steps) => {
+  const exit = steps?.promote?.outputs?.exit_code;
+  const code = COUNT.test(exit ?? '') ? exit : UNKNOWN;
+  return `${outcomeText(steps?.promote?.outcome)}; код выхода CLI: ${code}`;
+};
+
+const rollbackCell = (previousId) =>
+  DEPLOYMENT_ID.test(previousId ?? '')
+    ? `\`vercel rollback ${previousId}\` — только при совместимом SQL`
+    : UNKNOWN;
+
+// The release card: one markdown table. Only the fields read below are taken
+// from the input; anything else (tokens, the database URL, response bodies)
+// is ignored and cannot reach the Summary.
+export const buildReleaseCard = (input) => {
+  const { phase, repository, label, sha, actor, runId } = input;
+  const steps = input.steps ?? null;
+  const isFinal = phase !== 'preliminary';
+  const rows = [];
+  const add = (name, value) => rows.push(`| ${name} | ${value} |`);
+  const name = escapeMarkdown(label, 80);
+  const composition = parseComposition(input.composition);
+  add('Название', name === '' ? 'без названия' : name);
+  add('Коммит', commitCell(sha, repository));
+  add('Состав', compositionText(composition, repository));
+  add('Запустил', escapeMarkdown(actor, 80) || UNKNOWN);
+  if (isFinal) add('Подтвердил', approverCell(input.approver));
+  const candidate = deploymentCell(input.candidateId);
+  add('Кандидат', `${candidate} ${escapeMarkdown(input.candidateUrl)}`.trim());
+  add('Предыдущий deployment', deploymentCell(input.previousId));
+  add('Preflight', outcomeText(input.preflight));
+  add('Smoke до SQL', outcomeText(input.smokeBefore));
+  if (isFinal) {
+    const migrations = migrationCells(steps);
+    add('Повторный preflight', outcomeText(steps?.recheck?.outcome));
+    add('Миграции remote до → после', migrations.history);
+    add('Применённые миграции', migrations.applied);
+    add('Smoke после SQL', outcomeText(steps?.smoke_after?.outcome));
+    add('Promote', promoteCell(steps));
+    const { candidateId, previousId, aliasId } = input;
+    add('Alias сейчас', aliasCell(aliasId, candidateId, previousId));
+    add('Откат', rollbackCell(previousId));
+  }
+  add('Итог', statusCell(phase, steps));
+  const hasRun =
+    REPOSITORY_NAME.test(repository ?? '') && COUNT.test(runId ?? '');
+  const run = hasRun
+    ? ` ([запуск](${githubUrl(repository, 'actions/runs', runId)}))`
+    : '';
+  const kind = isFinal ? 'итоговая' : 'предварительная';
+  return [
+    `### Карточка выпуска (${kind})${run}`,
+    '',
+    '| Поле | Значение |',
+    '| --- | --- |',
+    ...rows,
+  ].join('\n');
+};
+
+const NO_DATA = { ok: false, status: 0, data: null };
+
+const attempt = async (read) => {
+  try {
+    return await read();
+  } catch {
+    return NO_DATA;
+  }
+};
+
+// Composition of the release: the public deployment's commit against the
+// candidate. The reader hides the network; any failure is "not determined".
+export const runComposition = async (reader) => {
+  try {
+    if (!DEPLOYMENT_ID.test(reader.previousId ?? '')) {
+      return undetermined('public-sha-missing');
+    }
+    const deploymentApi = await attempt(() =>
+      reader.readDeployment(reader.previousId),
+    );
+    const previous = publicSha(deploymentApi?.ok ? deploymentApi.data : null);
+    if (!previous.sha) return undetermined('public-sha-missing');
+    const compareApi = await attempt(() =>
+      reader.readCompare(previous.sha, reader.candidateSha),
+    );
+    return describeCompare(compareApi);
+  } catch {
+    return undetermined('github-api-unavailable');
+  }
+};
+
+// The card with the data only the final job can read. Never throws.
+export const runReleaseCard = async (reader, input) => {
+  try {
+    const isFinal = input.phase !== 'preliminary';
+    const approvalsApi = isFinal ? await attempt(reader.readApprovals) : null;
+    const aliasApi = isFinal ? await attempt(reader.readAlias) : null;
+    return buildReleaseCard({
+      ...input,
+      approver: pickApprover(approvalsApi),
+      aliasId: aliasApi?.ok ? (aliasApi.data?.deploymentId ?? null) : null,
+    });
+  } catch {
+    return '### Карточка выпуска\n\nкарточка не собрана';
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Command line (I/O only)
 
 const GITHUB_API = 'https://api.github.com';
@@ -573,6 +968,7 @@ const runPreflight = async () => {
     repository: process.env.GITHUB_REPOSITORY,
     ref: process.env.GITHUB_REF,
     sha: process.env.GITHUB_SHA,
+    label: process.env.RELEASE_LABEL ?? '',
   };
   const get = createGithubReader();
   const repo = `/repos/${repository}`;
@@ -721,6 +1117,9 @@ const runMigrations = async (flags) => {
   });
   const reasons = [...local.reasons, ...remote.reasons, ...history.reasons];
   if (!report(`migrations ${phase}`, outcome(reasons))) return;
+  setOutput('remote_count', remote.versions.length);
+  setOutput('local_count', local.versions.length);
+  setOutput('pending', history.pending.join(','));
   const pending = history.pending.join(', ') || 'none';
   const counts = `remote ${remote.versions.length} of ${local.versions.length}`;
   console.log(`${counts}, pending: ${pending}`);
@@ -763,6 +1162,85 @@ const runPromotion = async (flags) => {
   report('public home', outcome(checkHome(home)));
 };
 
+const parseJson = (text) => {
+  try {
+    return JSON.parse(text ?? '');
+  } catch {
+    return null;
+  }
+};
+
+// Information only: whatever happens, the step ends with exit code 0.
+const runCompositionCommand = async (flags) => {
+  let composition = { determined: false, reason: 'github-api-unavailable' };
+  try {
+    const github = createGithubReader();
+    const vercel = createVercelReader();
+    const repository = need('GITHUB_REPOSITORY');
+    composition = await runComposition({
+      previousId: flags['previous-id'] ?? '',
+      candidateSha: need('RELEASE_SHA'),
+      readDeployment: (id) => vercel(`/v13/deployments/${id}`),
+      readCompare: (base, head) =>
+        github(`/repos/${repository}/compare/${base}...${head}?per_page=100`),
+    });
+  } catch {
+    // keeps the "not determined" result
+  }
+  setOutput('composition', JSON.stringify(composition));
+  addSummary(`- Состав выпуска: ${compositionText(composition)}`);
+  console.log(`release composition: ${compositionText(composition)}`);
+};
+
+const createCardReader = (phase) => {
+  if (phase === 'preliminary') return {};
+  const repository = need('GITHUB_REPOSITORY');
+  const github = createGithubReader();
+  const vercel = createVercelReader();
+  const publicAlias = need('PUBLIC_ALIAS');
+  return {
+    readApprovals: () =>
+      github(
+        `/repos/${repository}/actions/runs/${need('GITHUB_RUN_ID')}/approvals`,
+      ),
+    readAlias: () => vercel(`/v4/aliases/${publicAlias}`),
+  };
+};
+
+// Information only: the card is written with exit code 0 whatever happens.
+const runReleaseCardCommand = async () => {
+  const env = process.env;
+  const phase = env.CARD_PHASE === 'preliminary' ? 'preliminary' : 'final';
+  const needs = parseJson(env.NEEDS_JSON) ?? {};
+  let reader = {};
+  try {
+    reader = createCardReader(phase);
+  } catch {
+    // the card falls back to "not determined" fields
+  }
+  const composition =
+    parseJson(env.COMPOSITION) ?? parseJson(needs.stage?.outputs?.composition);
+  const card = await runReleaseCard(reader, {
+    phase,
+    repository: env.GITHUB_REPOSITORY,
+    runId: env.GITHUB_RUN_ID,
+    label: env.RELEASE_LABEL,
+    sha: env.RELEASE_SHA,
+    actor: env.GITHUB_ACTOR,
+    composition,
+    candidateId: env.DEPLOYMENT_ID,
+    candidateUrl: env.DEPLOYMENT_URL,
+    previousId: env.PREVIOUS_DEPLOYMENT_ID,
+    preflight: phase === 'preliminary' ? 'success' : needs.preflight?.result,
+    smokeBefore: phase === 'preliminary' ? 'success' : needs.stage?.result,
+    steps: parseJson(env.STEPS_JSON),
+  });
+  addSummary(`
+${card}
+`);
+  console.log(`release card (${phase}) written to the Step Summary`);
+};
+
 const COMMANDS = {
   preflight: runPreflight,
   'vercel-project': runVercelProject,
@@ -771,6 +1249,8 @@ const COMMANDS = {
   'db-url': runDbUrl,
   migrations: runMigrations,
   promotion: runPromotion,
+  composition: runCompositionCommand,
+  'release-card': runReleaseCardCommand,
 };
 
 const main = async (argv) => {

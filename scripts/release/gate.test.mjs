@@ -3,19 +3,32 @@
 // network, no secrets, no Vercel or Supabase project.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  RELEASE_STAGES,
+  buildReleaseCard,
   checkCandidate,
   checkDbUrl,
   checkMigrationHistory,
   checkPreflight,
   checkSmoke,
   checkVercelProject,
+  compositionText,
   decidePromotion,
+  deriveReleaseStatus,
+  describeCompare,
+  escapeMarkdown,
+  parseCommitMessage,
+  parseLabel,
   parseLocalMigrations,
   parseRemoteVersions,
+  pickApprover,
+  publicSha,
   reconcilePromotion,
+  runComposition,
+  runReleaseCard,
 } from './gate.mjs';
 
 const REPOSITORY = 'strakhovdenya/b1-kompass';
@@ -973,4 +986,603 @@ test('rejects uncertain promotion', async () => {
   assert.deepEqual(result, { decision: 'failed', observed: PREVIOUS_ID });
   assert.equal(reads, 4);
   assert.ok(!['promote', 'retry'].includes(result.decision));
+});
+
+// ------------------------------------------------- label, composition, card (#58)
+
+const label = (value) => parseLabel(value);
+
+test('label: accepts Cyrillic and allowed punctuation', () => {
+  for (const value of ['ISSUE-12 таймеры', 'Ёжик #5: v1.2_final', 'a-b.c']) {
+    assert.deepEqual(label(value), { ok: true, reasons: [], label: value });
+  }
+});
+
+test('label: rejects command substitution, backtick, semicolon and newline', () => {
+  const rejected = [
+    '$(id)',
+    'a`id`',
+    'a;b',
+    'a\nb',
+    'a/b',
+    "a'b",
+    'a"b',
+    'a&b',
+    'a|b',
+    'a<b',
+    'rocket 🚀',
+    '${{ secrets.X }}',
+  ];
+  for (const value of rejected) {
+    assert.deepEqual(label(value).reasons, ['release-label-invalid'], value);
+    assert.equal(label(value).label, '');
+  }
+});
+
+test('label: rejects 81 characters, accepts 80 and empty', () => {
+  assert.equal(label('a'.repeat(80)).ok, true);
+  assert.equal(label('я'.repeat(80)).ok, true);
+  assert.equal(label('a'.repeat(81)).ok, false);
+  assert.equal(label('').ok, true);
+  assert.equal(label(undefined).ok, true);
+  assert.equal(label(null).label, '');
+});
+
+test('preflight: invalid label is refused', () => {
+  const bad = validPreflight();
+  bad.trigger.label = 'x; rm -rf /';
+  assert.deepEqual(refusal(bad), ['release-label-invalid']);
+
+  const good = validPreflight();
+  good.trigger.label = 'ISSUE-12 таймеры';
+  assert.equal(checkPreflight(good).ok, true);
+});
+
+const mergeMessage = (pr, branch, title) =>
+  `Merge pull request #${pr} from strakhovdenya/${branch}\n\n${title}`;
+const commit = (message) => ({ sha: SHA, commit: { message } });
+
+test('composition: several merge commits give issues and PRs without duplicates', () => {
+  const commits = [
+    commit('feat: ISSUE-44 timers'),
+    commit('test: ISSUE-44 timers again'),
+    commit(mergeMessage(57, 'task/ISSUE-56-manual-cd', 'Manual CD')),
+    commit(mergeMessage(55, 'task/ISSUE-41-free-blocks', 'Free blocks')),
+    commit('fix: other work (#60)'),
+    commit(mergeMessage(55, 'task/ISSUE-41-free-blocks', 'ISSUE-7 title')),
+  ];
+  assert.deepEqual(describeCompare(ok({ commits, total_commits: 6 })), {
+    determined: true,
+    count: 6,
+    issues: [7, 41, 44, 56],
+    prs: [55, 57, 60],
+    truncated: false,
+  });
+  const cut = describeCompare(ok({ commits, total_commits: 250 }));
+  assert.equal(cut.count, 250);
+  assert.match(compositionText(cut), /списки неполные/);
+  assert.deepEqual(parseCommitMessage('ISSUE-12 x\nISSUE-99 in body'), {
+    issues: [12],
+    prs: [],
+  });
+});
+
+test('composition: commits without ISSUE or PR are counted only', () => {
+  const commits = [commit('chore: tidy'), commit('docs: notes\n\nISSUE-5')];
+  assert.deepEqual(describeCompare(ok({ commits })), {
+    determined: true,
+    count: 2,
+    issues: [],
+    prs: [],
+    truncated: false,
+  });
+  assert.deepEqual(parseCommitMessage(undefined), { issues: [], prs: [] });
+});
+
+test('composition: empty compare is not determined', () => {
+  for (const data of [{ commits: [] }, {}, { commits: 'x' }]) {
+    assert.deepEqual(describeCompare(ok(data)), {
+      determined: false,
+      reason: 'compare-empty',
+    });
+  }
+});
+
+test('composition: unavailable API is not determined', () => {
+  for (const api of [fail(0), fail(403), fail(500)]) {
+    assert.deepEqual(describeCompare(api), {
+      determined: false,
+      reason: 'github-api-unavailable',
+    });
+  }
+  assert.equal(describeCompare(undefined).reason, 'github-api-unavailable');
+});
+
+test('composition: unknown previous SHA is not determined', () => {
+  assert.deepEqual(describeCompare(fail(404)), {
+    determined: false,
+    reason: 'previous-sha-unknown',
+  });
+});
+
+test('composition: public SHA from releaseSha or githubCommitSha', () => {
+  const both = { meta: { releaseSha: SHA, githubCommitSha: OLD_SHA } };
+  assert.deepEqual(publicSha(both), { sha: SHA });
+  assert.deepEqual(publicSha({ meta: { githubCommitSha: OLD_SHA } }), {
+    sha: OLD_SHA,
+  });
+  const badRelease = { meta: { releaseSha: 'zz', githubCommitSha: OLD_SHA } };
+  assert.deepEqual(publicSha(badRelease), { sha: OLD_SHA });
+});
+
+test('composition: alias without SHA is not determined', async () => {
+  const withoutSha = [
+    {},
+    { meta: {} },
+    { meta: { releaseSha: 'short' } },
+    null,
+  ];
+  for (const deployment of withoutSha) {
+    assert.deepEqual(publicSha(deployment), {
+      sha: null,
+      determined: false,
+      reason: 'public-sha-missing',
+    });
+  }
+  const reader = (deploymentApi) => ({
+    previousId: PREVIOUS_ID,
+    candidateSha: SHA,
+    readDeployment: async () => deploymentApi,
+    readCompare: async () => ok({ commits: [commit('x')] }),
+  });
+  const expected = { determined: false, reason: 'public-sha-missing' };
+  assert.deepEqual(await runComposition(reader(ok({ meta: {} }))), expected);
+  assert.deepEqual(await runComposition(reader(fail(404))), expected);
+  const noPrevious = { ...reader(ok({})), previousId: '' };
+  assert.deepEqual(await runComposition(noPrevious), expected);
+});
+
+test('composition: throwing reader does not fail', async () => {
+  process.exitCode = undefined;
+  const boom = async () => {
+    throw new Error('boom');
+  };
+  const composition = await runComposition({
+    previousId: PREVIOUS_ID,
+    candidateSha: SHA,
+    readDeployment: boom,
+    readCompare: boom,
+  });
+  assert.equal(composition.determined, false);
+  const card = await runReleaseCard(
+    { readApprovals: boom, readAlias: boom },
+    { phase: 'final', sha: SHA, repository: REPOSITORY, composition },
+  );
+  assert.match(card, /Карточка выпуска/);
+  assert.match(card, /\| Подтвердил \| не определено \|/);
+  const broken = await runReleaseCard({}, null);
+  assert.match(broken, /карточка не собрана/);
+  assert.equal(process.exitCode, undefined);
+});
+
+test('composition: summary lines for determined and unknown', () => {
+  const found = { determined: true, count: 3, issues: [41, 44], prs: [55] };
+  assert.equal(
+    compositionText(found),
+    'коммитов: 3; задачи: ISSUE-41, ISSUE-44; PR: #55',
+  );
+  assert.equal(
+    compositionText({ determined: true, count: 1, issues: [], prs: [] }),
+    'коммитов: 1; задачи: нет; PR: нет',
+  );
+  const reasons = [
+    'compare-empty',
+    'github-api-unavailable',
+    'previous-sha-unknown',
+    'public-sha-missing',
+  ];
+  for (const reason of reasons) {
+    assert.equal(
+      compositionText({ determined: false, reason }),
+      `состав не определён: ${reason}`,
+    );
+  }
+});
+
+const approval = (overrides = {}) => ({
+  state: 'approved',
+  comment: 'ship it',
+  user: { login: REVIEWER },
+  environments: [{ name: 'production' }],
+  ...overrides,
+});
+
+test('approvals: picks production approver and survives denied API', () => {
+  const prepare = approval({
+    environments: [{ name: 'release-prepare' }],
+    user: { login: 'someone' },
+  });
+  const rejected = approval({ state: 'rejected', comment: 'no' });
+  assert.deepEqual(pickApprover(ok([rejected, prepare, approval()])), {
+    determined: true,
+    login: REVIEWER,
+    comment: 'ship it',
+  });
+  const unknown = { determined: false };
+  assert.deepEqual(pickApprover(fail(403)), unknown);
+  assert.deepEqual(pickApprover(ok([])), unknown);
+  assert.deepEqual(pickApprover(ok([rejected])), unknown);
+  assert.deepEqual(pickApprover(ok([prepare])), unknown);
+  assert.deepEqual(pickApprover(ok({ not: 'a list' })), unknown);
+});
+
+const allSteps = () => ({
+  recheck: { outcome: 'success' },
+  install_deps: { outcome: 'success' },
+  install_vercel: { outcome: 'success' },
+  candidate_recheck: { outcome: 'success' },
+  db_target: { outcome: 'success' },
+  history_before: {
+    outcome: 'success',
+    outputs: {
+      remote_count: '3',
+      local_count: '5',
+      pending: '20260101000000,20260102000000',
+    },
+  },
+  dry_run: { outcome: 'success' },
+  apply: { outcome: 'success' },
+  history_after: {
+    outcome: 'success',
+    outputs: { remote_count: '5', local_count: '5', pending: '' },
+  },
+  smoke_after: { outcome: 'success' },
+  candidate_final: { outcome: 'success' },
+  promote: { outcome: 'success', outputs: { exit_code: '0' } },
+  confirm: { outcome: 'success' },
+});
+
+test('status: derives stop stage from step outcomes', () => {
+  assert.deepEqual(deriveReleaseStatus(allSteps()), {
+    status: 'released',
+    stage: null,
+  });
+  const failedApply = allSteps();
+  failedApply.apply = { outcome: 'failure' };
+  failedApply.history_after = { outcome: 'skipped' };
+  failedApply.confirm = { outcome: 'skipped' };
+  assert.deepEqual(deriveReleaseStatus(failedApply), {
+    status: 'not-released',
+    stage: 'применение миграций',
+  });
+  const cancelled = allSteps();
+  cancelled.smoke_after = { outcome: 'cancelled' };
+  assert.equal(deriveReleaseStatus(cancelled).stage, 'smoke после SQL');
+  for (const unreadable of [null, undefined, 'x', {}]) {
+    assert.deepEqual(deriveReleaseStatus(unreadable), {
+      status: 'unknown',
+      stage: null,
+    });
+  }
+  const skippedAll = allSteps();
+  skippedAll.confirm = { outcome: 'skipped' };
+  assert.equal(deriveReleaseStatus(skippedAll).status, 'unknown');
+});
+
+const known = { determined: true, count: 3, issues: [41, 44], prs: [55] };
+const finalCard = (overrides = {}) => ({
+  phase: 'final',
+  repository: REPOSITORY,
+  runId: '123',
+  label: 'ISSUE-12 таймеры',
+  sha: SHA,
+  actor: REVIEWER,
+  composition: known,
+  approver: { determined: true, login: REVIEWER, comment: 'ok' },
+  candidateId: 'dpl_Candidate123',
+  candidateUrl: CANDIDATE_URL,
+  previousId: 'dpl_Prev1',
+  preflight: 'success',
+  smokeBefore: 'success',
+  steps: allSteps(),
+  aliasId: 'dpl_Candidate123',
+  ...overrides,
+});
+
+const rowOf = (card, name) =>
+  card.split('\n').find((line) => line.startsWith(`| ${name} |`));
+
+test('card: full successful release snapshot', () => {
+  const repo = `https://github.com/${REPOSITORY}`;
+  assert.equal(
+    buildReleaseCard(finalCard()),
+    [
+      `### Карточка выпуска (итоговая) ([запуск](${repo}/actions/runs/123))`,
+      '',
+      '| Поле | Значение |',
+      '| --- | --- |',
+      '| Название | ISSUE-12 таймеры |',
+      `| Коммит | [aaaaaaa](${repo}/commit/${SHA}) \`${SHA}\` |`,
+      `| Состав | коммитов: 3; задачи: [ISSUE-41](${repo}/issues/41), [ISSUE-44](${repo}/issues/44); PR: [#55](${repo}/pull/55) |`,
+      `| Запустил | ${REVIEWER} |`,
+      `| Подтвердил | ${REVIEWER}: «ok» |`,
+      `| Кандидат | \`dpl_Candidate123\` ${CANDIDATE_URL} |`,
+      '| Предыдущий deployment | `dpl_Prev1` |',
+      '| Preflight | успешно |',
+      '| Smoke до SQL | успешно |',
+      '| Повторный preflight | успешно |',
+      '| Миграции remote до → после | 3 → 5 (файлов: 5) |',
+      '| Применённые миграции | `20260101000000`, `20260102000000` |',
+      '| Smoke после SQL | успешно |',
+      '| Promote | успешно; код выхода CLI: 0 |',
+      '| Alias сейчас | кандидат (`dpl_Candidate123`) |',
+      '| Откат | `vercel rollback dpl_Prev1` — только при совместимом SQL |',
+      '| Итог | выпущен |',
+    ].join('\n'),
+  );
+});
+
+test('card: release without migrations snapshot', () => {
+  const steps = allSteps();
+  steps.history_before.outputs = {
+    remote_count: '5',
+    local_count: '5',
+    pending: '',
+  };
+  const card = buildReleaseCard(finalCard({ steps }));
+  assert.equal(
+    rowOf(card, 'Применённые миграции'),
+    '| Применённые миграции | нет |',
+  );
+  assert.equal(
+    rowOf(card, 'Миграции remote до → после'),
+    '| Миграции remote до → после | 5 → 5 (файлов: 5) |',
+  );
+  const unread = allSteps();
+  delete unread.history_before;
+  const unreadCard = buildReleaseCard(finalCard({ steps: unread }));
+  assert.equal(
+    rowOf(unreadCard, 'Применённые миграции'),
+    '| Применённые миграции | не определено |',
+  );
+});
+
+test('card: failed release shows stop stage and alias state', () => {
+  const steps = allSteps();
+  steps.promote = { outcome: 'success', outputs: { exit_code: '1' } };
+  steps.confirm = { outcome: 'failure' };
+  const card = buildReleaseCard(finalCard({ steps, aliasId: 'dpl_Prev1' }));
+  assert.equal(
+    rowOf(card, 'Итог'),
+    '| Итог | не выпущен: остановка на этапе «подтверждение alias и публичной главной» |',
+  );
+  assert.equal(
+    rowOf(card, 'Alias сейчас'),
+    '| Alias сейчас | предыдущий (`dpl_Prev1`) |',
+  );
+  assert.equal(
+    rowOf(card, 'Promote'),
+    '| Promote | успешно; код выхода CLI: 1 |',
+  );
+  assert.equal(
+    rowOf(card, 'Откат'),
+    '| Откат | `vercel rollback dpl_Prev1` — только при совместимом SQL |',
+  );
+  const other = buildReleaseCard(finalCard({ steps, aliasId: 'dpl_Other9' }));
+  assert.match(rowOf(other, 'Alias сейчас'), /другой deployment/);
+  const noAlias = buildReleaseCard(finalCard({ steps, aliasId: null }));
+  assert.equal(
+    rowOf(noAlias, 'Alias сейчас'),
+    '| Alias сейчас | не определено |',
+  );
+});
+
+test('card: unknown approver is not determined', async () => {
+  for (const approvalsApi of [fail(403), ok([]), ok(null)]) {
+    const card = await runReleaseCard(
+      {
+        readApprovals: async () => approvalsApi,
+        readAlias: async () => ok({ deploymentId: 'dpl_Candidate123' }),
+      },
+      finalCard({ approver: undefined, aliasId: undefined }),
+    );
+    assert.equal(rowOf(card, 'Подтвердил'), '| Подтвердил | не определено |');
+    assert.match(rowOf(card, 'Alias сейчас'), /кандидат/);
+  }
+});
+
+test('card: escapes pipes, html, newlines and backticks', () => {
+  const evil = 'a|b <script>x</script>\nline `tick` [l](u) *b* _i_ &amp;';
+  const card = buildReleaseCard(
+    finalCard({
+      label: evil,
+      actor: evil,
+      approver: { determined: true, login: evil, comment: evil },
+    }),
+  );
+  const cells = card.split('\n').filter((line) => line.startsWith('| '));
+  for (const line of cells) {
+    assert.equal(line.split(/(?<!\\)\|/).length, 4, line);
+    assert.doesNotMatch(line, /<|\r/);
+  }
+  const name = rowOf(card, 'Название');
+  assert.match(name, /a&#124;b &lt;script&gt;/);
+  assert.match(
+    name,
+    /line \\`tick\\` \\\[l\\\]\(u\) \\\*b\\\* \\_i\\_ &amp;amp;/,
+  );
+  assert.equal(escapeMarkdown('x'.repeat(300)).length, 200);
+  assert.equal(escapeMarkdown(undefined), '');
+  assert.equal(escapeMarkdown('a\\b'), 'a\\\\b');
+});
+
+test('card: preliminary card before approval', () => {
+  const card = buildReleaseCard(finalCard({ phase: 'preliminary' }));
+  assert.match(card, /^### Карточка выпуска \(предварительная\)/);
+  assert.equal(rowOf(card, 'Итог'), '| Итог | ожидает подтверждения |');
+  assert.equal(rowOf(card, 'Smoke до SQL'), '| Smoke до SQL | успешно |');
+  assert.ok(rowOf(card, 'Состав'));
+  assert.ok(rowOf(card, 'Кандидат'));
+  const finalOnly = [
+    'Подтвердил',
+    'Применённые миграции',
+    'Smoke после SQL',
+    'Promote',
+    'Alias сейчас',
+    'Откат',
+  ];
+  for (const name of finalOnly)
+    assert.equal(rowOf(card, name), undefined, name);
+});
+
+test('card: preliminary card with unknown composition', () => {
+  const unknown = { determined: false, reason: 'previous-sha-unknown' };
+  const card = buildReleaseCard(
+    finalCard({ phase: 'preliminary', composition: unknown, steps: null }),
+  );
+  assert.equal(
+    rowOf(card, 'Состав'),
+    '| Состав | состав не определён: previous-sha-unknown |',
+  );
+  assert.equal(rowOf(card, 'Итог'), '| Итог | ожидает подтверждения |');
+  assert.equal(rowOf(card, 'Promote'), undefined);
+  const garbage = buildReleaseCard(
+    finalCard({ phase: 'preliminary', composition: 'not json' }),
+  );
+  assert.match(rowOf(garbage, 'Состав'), /состав не определён/);
+});
+
+test('card: ignores unknown input fields', () => {
+  const secret =
+    'postgresql://postgres.x:S3CRET@aws-0-eu-west-1.pooler.supabase.com:5432/postgres';
+  const card = buildReleaseCard(
+    finalCard({
+      SUPABASE_DB_URL: secret,
+      bypass: 'BYPASS-VALUE',
+      VERCEL_TOKEN: 'TOKEN-VALUE',
+      body: '<html>response body</html>',
+      steps: {
+        ...allSteps(),
+        db_target: { outcome: 'success', outputs: { url: secret } },
+      },
+    }),
+  );
+  const forbidden = [
+    'S3CRET',
+    'BYPASS-VALUE',
+    'TOKEN-VALUE',
+    'response body',
+    'postgresql://',
+  ];
+  for (const value of forbidden)
+    assert.equal(card.includes(value), false, value);
+  assert.equal(card, buildReleaseCard(finalCard()));
+});
+
+// ------------------------------------------------------------ workflow text
+
+const WORKFLOW = readFileSync(
+  new URL('../../.github/workflows/release-production.yml', import.meta.url),
+  'utf8',
+);
+
+// Every `run:` value of a workflow: an inline value or a block scalar.
+const runBlocks = (yaml) => {
+  const lines = yaml.split(/\r?\n/);
+  const blocks = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = /^(\s*)(-\s+)?run:\s*(.*)$/.exec(lines[i]);
+    if (!match) continue;
+    const keyIndent = match[1].length + (match[2]?.length ?? 0);
+    const body = [match[3]];
+    const isBlock = /^[|>][+-]?\d*$/.test(match[3]);
+    for (let j = i + 1; isBlock && j < lines.length; j += 1) {
+      const indent = /^\s*/.exec(lines[j])[0].length;
+      if (lines[j].trim() !== '' && indent <= keyIndent) break;
+      body.push(lines[j]);
+    }
+    blocks.push(body.join('\n'));
+  }
+  return blocks;
+};
+
+const jobSection = (yaml, job) => {
+  const start = yaml.indexOf(`\n  ${job}:\n`);
+  const next = yaml.slice(start + 1).search(/\n  [a-z-]+:\n/);
+  return next === -1 ? yaml.slice(start) : yaml.slice(start, start + 1 + next);
+};
+
+test('workflow: no expression inside run blocks', () => {
+  const blocks = runBlocks(WORKFLOW);
+  assert.ok(blocks.length >= 10);
+  for (const block of blocks) assert.equal(block.includes('${{'), false, block);
+
+  const synthetic = [
+    'jobs:',
+    '  a:',
+    '    steps:',
+    '      - run: echo "${{ github.event.inputs.label }}"',
+    '      - name: x',
+    '        run: |',
+    '          echo ok',
+    '          echo "${{ github.event.inputs.label }}"',
+    '      - name: y',
+    '        run: >-',
+    '          node x',
+    '            "${{ github.event.inputs.label }}"',
+    '      - name: z',
+    '        env:',
+    '          L: ${{ github.event.inputs.label }}',
+    '        run: echo "$L"',
+  ].join('\n');
+  const all = runBlocks(synthetic);
+  assert.equal(all.length, 4);
+  assert.equal(all.filter((block) => block.includes('${{')).length, 3);
+});
+
+test('workflow: label wiring, environment urls and card steps', () => {
+  const header = WORKFLOW.slice(0, WORKFLOW.indexOf('\njobs:'));
+  const runName =
+    /run-name: .*github\.run_number.*github\.event\.inputs\.label/;
+  assert.match(header, runName);
+  assert.match(
+    header,
+    /RELEASE_LABEL: \$\{\{ github\.event\.inputs\.label \}\}/,
+  );
+  assert.match(header, /inputs:\n\s+label:\n(\s+.*\n)*?\s+required: false/);
+  assert.equal(WORKFLOW.includes('${{ inputs.label }}'), false);
+  assert.match(WORKFLOW, /--meta "releaseLabel=\$\{RELEASE_LABEL\}"/);
+
+  const stage = jobSection(WORKFLOW, 'stage');
+  const release = jobSection(WORKFLOW, 'release');
+  const stageUrl =
+    /environment:\n\s+name: release-prepare\n\s+url: \$\{\{ steps\.candidate\.outputs\.deployment_url \}\}/;
+  assert.match(stage, stageUrl);
+  const releaseUrl =
+    /environment:\n\s+name: production\n\s+url: https:\/\/b1-kompass\.vercel\.app\n/;
+  assert.match(release, releaseUrl);
+  assert.match(stage, /id: composition/);
+  assert.match(stage, /gate\.mjs composition/);
+  assert.doesNotMatch(release, /gate\.mjs composition/);
+  assert.match(stage, /CARD_PHASE: preliminary/);
+  const cardStep = release.slice(release.indexOf('Write final release card'));
+  assert.match(cardStep, /if: always\(\)/);
+  assert.match(cardStep, /CARD_PHASE: final/);
+  assert.match(cardStep, /STEPS_JSON: \$\{\{ toJSON\(steps\) \}\}/);
+  assert.match(cardStep, /NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}/);
+  assert.match(cardStep, /gate\.mjs release-card/);
+  const order = [
+    'id: candidate',
+    'id: composition',
+    'id: smoke',
+    'write preliminary release card',
+  ].map((token) => stage.toLowerCase().indexOf(token));
+  assert.ok(order.every((index) => index > 0));
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+  );
+  for (const [id] of RELEASE_STAGES) {
+    assert.match(release, new RegExp(`id: ${id}\\n`), id);
+  }
 });

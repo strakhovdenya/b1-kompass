@@ -154,6 +154,22 @@ Merge → CI/Quality → Run workflow (main)
 - История миграций доказывает только **зарегистрированные** миграции. Ручные DDL вне миграций и полную runtime-совместимость она не гарантирует. Breaking SQL идёт отдельным review по схеме expand → deploy → contract: SQL выпуска обязан работать и со старой опубликованной версией, потому что до promote она продолжает обслуживать сайт.
 - Workflow не использует account-wide `SUPABASE_ACCESS_TOKEN` и привязку CLI к проекту; запрещены сброс базы, правка истории миграций, `config push` и `--include-all`. Supabase CLI — `2.122.0` из `npm ci` (не v3).
 
+### Название и карточка выпуска (#58)
+
+**Название.** Поле `label` при запуске (Actions → Release Production → Run workflow) необязательное: например `ISSUE-12 таймеры`. Допустимы буквы (латиница и кириллица), цифры, пробел и `. # _ : -`, до 80 символов; всё остальное отклоняет `Preflight` с причиной `release-label-invalid` до шагов с секретами. Название — недоверенный ввод: в шаги оно попадает только через `env` (`RELEASE_LABEL`), а не через выражение в `run:`. Оно видно в названии запуска (`Release #<номер запуска> — <название>`; короткого SHA в названии нет, потому что в выражениях GitHub нет подстроки), в Step Summary и в метаданных staged deployment (`releaseLabel` рядом с `releaseSha`).
+
+**Где смотреть историю выпусков.**
+
+- GitHub → Actions → Release Production: список запусков с названиями и итоговая карточка в Summary запуска.
+- GitHub → Deployments: у Environment `release-prepare` ссылка «View deployment» ведёт на staged-кандидата, у `production` — на `https://b1-kompass.vercel.app`.
+- Vercel → Deployments: метаданные deployment (`releaseSha`, `releaseLabel`).
+
+**Как читать карточку.** В Summary две карточки (единая таблица «Поле — Значение»). `Stage` пишет предварительную до approval: название, коммит, состав, кто запустил, кандидат и предыдущий deployment, preflight, smoke до SQL, итог «ожидает подтверждения». `Release` пишет итоговую (`if: always()`, в том числе после падения на любом шаге): добавляются кто подтвердил и комментарий, миграции remote «до → после» и список применённых (или «нет»), smoke после SQL, promote (код выхода CLI), фактический alias (кандидат, предыдущий или другой), команда `vercel rollback <предыдущий deployment>` с пометкой «только при совместимом SQL» и итог: «выпущен» либо «не выпущен: остановка на этапе …». Если approval отклонён, `Release` не запускается и остаётся предварительная карточка.
+
+**Состав** — коммиты между публичным deployment (SHA из `meta.releaseSha`, иначе `meta.githubCommitSha` deployment, на который указывает alias `b1-kompass.vercel.app`) и кандидатом: GitHub compare, `ISSUE-<n>` и номера PR из первой строки сообщений (и из тела merge-коммита), без дублей, с числом коммитов. Если определить нельзя, карточка пишет «состав не определён: <причина>»: `compare-empty`, `github-api-unavailable`, `previous-sha-unknown` (compare вернул 404), `public-sha-missing` (у публичного deployment нет SHA или его не удалось прочитать). Состав и карточка — информация, а не gate: они не меняют решений выпуска и не роняют его.
+
+**Кто подтвердил** берётся из `GET /repos/<repo>/actions/runs/<run_id>/approvals` (запись Environment `production` в состоянии `approved`) существующим правом `actions: read` job `Release`; при отказе API или отсутствии записи — «не определено».
+
 ### Настройки владельца (до merge PR #56)
 
 Merge PR #56 сам отключает автопубликацию `main` (`vercel.json`), поэтому всё ниже готовится **до** merge. Значения секретов в документ и в логи не пишутся.

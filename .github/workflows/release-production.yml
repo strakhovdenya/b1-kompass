@@ -1,5 +1,10 @@
 name: Release Production
 
+# Run name: "Release #<run number>" plus the optional label. GitHub expressions
+# have no substring function, so the commit SHA is not part of the name; it is
+# in the release card of the Step Summary.
+run-name: "Release #${{ github.run_number }}${{ github.event.inputs.label && format(' — {0}', github.event.inputs.label) || '' }}"
+
 # Manual CD of B1 Kompass (Issue #56):
 #   preflight (no secrets) -> stage (release-prepare: VERCEL_TOKEN) ->
 #   owner approval (production) -> SQL -> smoke -> promote -> alias check.
@@ -11,6 +16,12 @@ name: Release Production
 
 on:
   workflow_dispatch:
+    inputs:
+      label:
+        description: "Release name, optional (letters, digits, space and . # _ : -; up to 80)"
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -33,6 +44,9 @@ env:
   RELEASE_REVIEWER: strakhovdenya
   PUBLIC_ALIAS: b1-kompass.vercel.app
   RELEASE_SHA: ${{ github.sha }}
+  # Untrusted input: it reaches steps only through the environment, is checked
+  # by the preflight against a white list and is never put into a run: block.
+  RELEASE_LABEL: ${{ github.event.inputs.label }}
 
 jobs:
   preflight:
@@ -65,13 +79,16 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release-prepare
+    environment:
+      name: release-prepare
+      url: ${{ steps.candidate.outputs.deployment_url }}
     permissions:
       contents: read
     outputs:
       deployment_id: ${{ steps.candidate.outputs.deployment_id }}
       deployment_url: ${{ steps.candidate.outputs.deployment_url }}
       previous_deployment_id: ${{ steps.candidate.outputs.previous_deployment_id }}
+      composition: ${{ steps.composition.outputs.composition }}
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
@@ -112,8 +129,12 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
+          meta=(--meta "releaseSha=${RELEASE_SHA}")
+          if [ -n "${RELEASE_LABEL}" ]; then
+            meta+=(--meta "releaseLabel=${RELEASE_LABEL}")
+          fi
           url="$(vercel deploy --prebuilt --prod --skip-domain \
-            --meta "releaseSha=${RELEASE_SHA}" | tail -n 1)"
+            "${meta[@]}" | tail -n 1)"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
       - name: Verify staged candidate through the Vercel API
@@ -123,11 +144,34 @@ jobs:
           DEPLOY_URL: ${{ steps.deploy.outputs.url }}
         run: node scripts/release/gate.mjs deployment --url "$DEPLOY_URL"
 
+      # Information only (what the release contains): never fails the release.
+      - name: Describe release composition
+        id: composition
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PREVIOUS_DEPLOYMENT_ID: ${{ steps.candidate.outputs.previous_deployment_id }}
+        run: node scripts/release/gate.mjs composition --previous-id "$PREVIOUS_DEPLOYMENT_ID"
+
       - name: Read-only smoke of the candidate
+        id: smoke
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           DEPLOYMENT_URL: ${{ steps.candidate.outputs.deployment_url }}
         run: node scripts/release/gate.mjs smoke --url "$DEPLOYMENT_URL" --stage staged
+
+      # Preliminary release card: what the owner approves, before approval.
+      - name: Write preliminary release card
+        if: ${{ success() }}
+        continue-on-error: true
+        env:
+          CARD_PHASE: preliminary
+          DEPLOYMENT_ID: ${{ steps.candidate.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.candidate.outputs.deployment_url }}
+          PREVIOUS_DEPLOYMENT_ID: ${{ steps.candidate.outputs.previous_deployment_id }}
+          COMPOSITION: ${{ steps.composition.outputs.composition }}
+        run: node scripts/release/gate.mjs release-card
 
       - name: Remove Vercel working files
         if: always()
@@ -140,7 +184,9 @@ jobs:
     timeout-minutes: 30
     # Required reviewer: the owner. Nothing below runs, and neither the
     # database nor the public alias changes, before the approval.
-    environment: production
+    environment:
+      name: production
+      url: https://b1-kompass.vercel.app
     permissions:
       contents: read
       actions: read
@@ -153,31 +199,37 @@ jobs:
       PREVIOUS_DEPLOYMENT_ID: ${{ needs.stage.outputs.previous_deployment_id }}
     steps:
       - uses: actions/checkout@v7
+        id: checkout
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@v7
+        id: setup_node
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Recheck HEAD of main, CI/Quality and Environments after approval
+        id: recheck
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/release/gate.mjs preflight
 
       - name: Install dependencies (pinned Supabase CLI, no secrets)
+        id: install_deps
         run: |
           npm ci --no-audit --no-fund
           test "$(./node_modules/.bin/supabase --version)" = "${SUPABASE_CLI_VERSION}"
           psql --version
 
       - name: Install pinned Vercel CLI
+        id: install_vercel
         run: |
           npm install --global --no-audit --no-fund "vercel@${VERCEL_CLI_VERSION}"
           vercel --version
 
       - name: Recheck staged candidate
+        id: candidate_recheck
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: >-
@@ -185,11 +237,13 @@ jobs:
           --url "$DEPLOYMENT_URL" --expect-id "$DEPLOYMENT_ID"
 
       - name: Check Supabase DB target
+        id: db_target
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: node scripts/release/gate.mjs db-url
 
       - name: Check remote migration history before push
+        id: history_before
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -201,6 +255,7 @@ jobs:
             --remote-file "$RUNNER_TEMP/history-before.txt"
 
       - name: Dry run of Supabase migrations
+        id: dry_run
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: >-
@@ -208,6 +263,7 @@ jobs:
           --db-url "$SUPABASE_DB_URL" --skip-vault --dry-run --yes
 
       - name: Apply Supabase migrations
+        id: apply
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: >-
@@ -215,6 +271,7 @@ jobs:
           --db-url "$SUPABASE_DB_URL" --skip-vault --yes
 
       - name: Check remote migration history after push
+        id: history_after
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -226,6 +283,7 @@ jobs:
             --remote-file "$RUNNER_TEMP/history-after.txt"
 
       - name: Read-only smoke of the candidate after migrations
+        id: smoke_after
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: >-
@@ -233,6 +291,7 @@ jobs:
           --url "$DEPLOYMENT_URL" --stage after-migrations
 
       - name: Recheck staged candidate before promote
+        id: candidate_final
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: >-
@@ -254,6 +313,7 @@ jobs:
           exit 0
 
       - name: Confirm public alias serves the candidate
+        id: confirm
         if: ${{ !cancelled() && steps.promote.outcome == 'success' }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -265,3 +325,17 @@ jobs:
       - name: Remove Vercel working files
         if: always()
         run: rm -rf .vercel apps/web/.vercel
+
+      # Final release card, also after a failure at any step above. It reads
+      # the results of the steps and jobs, the approver and the real alias.
+      # Information only: it never fails the release.
+      - name: Write final release card
+        if: always()
+        continue-on-error: true
+        env:
+          CARD_PHASE: final
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          STEPS_JSON: ${{ toJSON(steps) }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/release/gate.mjs release-card
