@@ -1,0 +1,267 @@
+name: Release Production
+
+# Manual CD of B1 Kompass (Issue #56):
+#   preflight (no secrets) -> stage (release-prepare: VERCEL_TOKEN) ->
+#   owner approval (production) -> SQL -> smoke -> promote -> alias check.
+# Merge to main runs only CI; Vercel Git deploys of main are disabled in
+# apps/web/vercel.json. The candidate is always the current HEAD of main.
+# Runbook: docs/deployment.md, section "Ручной выпуск Production".
+# Vercel CLI reads VERCEL_TOKEN from the env of the step that needs it; the
+# token is never passed as an argument, and the build step does not get it.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+# One release at a time, in order. A run waiting for the owner approval keeps
+# the group; nothing is cancelled.
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+  queue: max
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: "24"
+  VERCEL_CLI_VERSION: "65.11.0"
+  SUPABASE_CLI_VERSION: "2.122.0"
+  EXPECTED_REPOSITORY: strakhovdenya/b1-kompass
+  RELEASE_REVIEWER: strakhovdenya
+  PUBLIC_ALIAS: b1-kompass.vercel.app
+  RELEASE_SHA: ${{ github.sha }}
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Release gate tests
+        run: node --test scripts/release/gate.test.mjs
+
+      - name: Check trigger, HEAD of main, CI/Quality and Environments
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release/gate.mjs preflight
+
+  stage:
+    name: Stage
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-prepare
+    permissions:
+      contents: read
+    outputs:
+      deployment_id: ${{ steps.candidate.outputs.deployment_id }}
+      deployment_url: ${{ steps.candidate.outputs.deployment_url }}
+      previous_deployment_id: ${{ steps.candidate.outputs.previous_deployment_id }}
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pinned Vercel CLI
+        run: |
+          npm install --global --no-audit --no-fund "vercel@${VERCEL_CLI_VERSION}"
+          vercel --version
+
+      - name: Check Vercel project, Vercel Authentication and automation bypass
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/release/gate.mjs vercel-project
+
+      - name: Pull Production project settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production
+
+      - name: Build Production output
+        run: vercel build --prod
+
+      - name: Drop pulled environment files
+        if: always()
+        run: rm -f .vercel/.env.* apps/web/.vercel/.env.*
+
+      - name: Deploy staged Production without the public domain
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          url="$(vercel deploy --prebuilt --prod --skip-domain \
+            --meta "releaseSha=${RELEASE_SHA}" | tail -n 1)"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify staged candidate through the Vercel API
+        id: candidate
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: node scripts/release/gate.mjs deployment --url "$DEPLOY_URL"
+
+      - name: Read-only smoke of the candidate
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOYMENT_URL: ${{ steps.candidate.outputs.deployment_url }}
+        run: node scripts/release/gate.mjs smoke --url "$DEPLOYMENT_URL" --stage staged
+
+      - name: Remove Vercel working files
+        if: always()
+        run: rm -rf .vercel apps/web/.vercel
+
+  release:
+    name: Release
+    needs: [preflight, stage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Required reviewer: the owner. Nothing below runs, and neither the
+    # database nor the public alias changes, before the approval.
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      SUPABASE_PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+      DEPLOYMENT_ID: ${{ needs.stage.outputs.deployment_id }}
+      DEPLOYMENT_URL: ${{ needs.stage.outputs.deployment_url }}
+      PREVIOUS_DEPLOYMENT_ID: ${{ needs.stage.outputs.previous_deployment_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Recheck HEAD of main, CI/Quality and Environments after approval
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release/gate.mjs preflight
+
+      - name: Install dependencies (pinned Supabase CLI, no secrets)
+        run: |
+          npm ci --no-audit --no-fund
+          test "$(./node_modules/.bin/supabase --version)" = "${SUPABASE_CLI_VERSION}"
+          psql --version
+
+      - name: Install pinned Vercel CLI
+        run: |
+          npm install --global --no-audit --no-fund "vercel@${VERCEL_CLI_VERSION}"
+          vercel --version
+
+      - name: Recheck staged candidate
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: >-
+          node scripts/release/gate.mjs deployment
+          --url "$DEPLOYMENT_URL" --expect-id "$DEPLOYMENT_ID"
+
+      - name: Check Supabase DB target
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: node scripts/release/gate.mjs db-url
+
+      - name: Check remote migration history before push
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -X -q -A -t -v ON_ERROR_STOP=1 \
+            -c 'begin transaction read only' \
+            -c 'select version from supabase_migrations.schema_migrations order by version' \
+            -c 'commit' > "$RUNNER_TEMP/history-before.txt"
+          node scripts/release/gate.mjs migrations --phase before \
+            --remote-file "$RUNNER_TEMP/history-before.txt"
+
+      - name: Dry run of Supabase migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: >-
+          ./node_modules/.bin/supabase db push
+          --db-url "$SUPABASE_DB_URL" --skip-vault --dry-run --yes
+
+      - name: Apply Supabase migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: >-
+          ./node_modules/.bin/supabase db push
+          --db-url "$SUPABASE_DB_URL" --skip-vault --yes
+
+      - name: Check remote migration history after push
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -X -q -A -t -v ON_ERROR_STOP=1 \
+            -c 'begin transaction read only' \
+            -c 'select version from supabase_migrations.schema_migrations order by version' \
+            -c 'commit' > "$RUNNER_TEMP/history-after.txt"
+          node scripts/release/gate.mjs migrations --phase after \
+            --remote-file "$RUNNER_TEMP/history-after.txt"
+
+      - name: Read-only smoke of the candidate after migrations
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: >-
+          node scripts/release/gate.mjs smoke
+          --url "$DEPLOYMENT_URL" --stage after-migrations
+
+      - name: Recheck staged candidate before promote
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: >-
+          node scripts/release/gate.mjs deployment
+          --url "$DEPLOYMENT_URL" --expect-id "$DEPLOYMENT_ID"
+
+      # One promote of the verified deployment ID, no rebuild. Its exit code is
+      # recorded, never trusted: the next step reads the real alias.
+      - name: Promote verified deployment
+        id: promote
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set +e
+          vercel promote "$DEPLOYMENT_ID" --timeout=3m
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          echo "vercel promote exited with ${code}; previous: ${PREVIOUS_DEPLOYMENT_ID}"
+          exit 0
+
+      - name: Confirm public alias serves the candidate
+        if: ${{ !cancelled() && steps.promote.outcome == 'success' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PROMOTE_EXIT: ${{ steps.promote.outputs.exit_code }}
+        run: >-
+          node scripts/release/gate.mjs promotion
+          --deployment-id "$DEPLOYMENT_ID" --promote-exit "$PROMOTE_EXIT"
+
+      - name: Remove Vercel working files
+        if: always()
+        run: rm -rf .vercel apps/web/.vercel

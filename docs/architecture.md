@@ -179,6 +179,15 @@ supabase/migrations/**        схема, неизменяемость, функ
 - **История.** Миграция сама вызывает owner-only `m2_private.mark_legacy_completed()`: `legacy_completed = true` получают `completed` с сохранённым результатом и без снимка (M1 и старый finish #39). Результат, время и события не меняются. Такие попытки читаются по сохранённому результату и ответам без расчёта. Триггеры не дают снять метку, вставить помеченный run или пометить неподходящую попытку; runtime не передаёт и не пишет метку.
 - Проверки: `tests/exam-submission.spec.ts`, `tests/attempt-lifecycle.spec.ts` (сломанный ключ, история), `tests/m1-migration.spec.ts` (классификация из файла миграции).
 
+## Граница CI и ручного CD (#56)
+
+- **CI** (`.github/workflows/ci.yml`, job `Quality`) проверяет PR и push в `main`: typecheck, lint, Vitest, release gate tests, build, Playwright против локальной Supabase. Он не имеет production-секретов и ничего не публикует.
+- **Merge не публикует.** `apps/web/vercel.json` выключает Vercel Git deploy ветки `main` (`git.deploymentEnabled.main = false`); Preview других веток остаются.
+- **CD** — отдельный ручной `Release Production` (`.github/workflows/release-production.yml`, только `workflow_dispatch` из `main`). Порядок фиксирован: preflight без секретов → staged Production deployment Vercel без публичного домена и read-only smoke → approval владельца (Environment `production`) → проверка и применение миграций Supabase → повтор smoke → `vercel promote` того же deployment ID без пересборки → чтение фактического alias `b1-kompass.vercel.app`. SQL всегда идёт после approval и до promote: опубликованный код не опережает схему.
+- Решения о допуске принимают чистые функции `scripts/release/gate.mjs` (SHA/CI, Environments, Vercel deployment и alias, DB URL, история миграций), покрытые `scripts/release/gate.test.mjs`. Workflow только собирает данные API и вызывает их.
+- Ограничения: сверяются зарегистрированные миграции, а не ручные DDL; автоматического SQL rollback нет; breaking SQL — expand → deploy → contract, совместимость со старой опубликованной версией до promote. Runbook и восстановление — `docs/deployment.md`, «Ручной выпуск Production».
+- **Статус:** код CD есть в PR #56; подтверждённого CD и выпуска через него ещё нет. Пока владелец не выполнит первый выпуск с approval, состояние Production по-прежнему определяется последним Git-деплоем Vercel (см. статусы в `docs/deployment.md`).
+
 ## Дальнейшее развитие
 
 В M1 нет видимого внешнего аудиоплеера, таймеров и экзаменационного режима, аккаунтов, автоматического импорта, словаря и устных модулей. Они перечислены в `docs/roadmap.md` и в интерфейсе не показаны.

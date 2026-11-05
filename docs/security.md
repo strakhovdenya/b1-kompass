@@ -127,6 +127,17 @@
 - Все ответы сайта получают `Cache-Control: private, no-store`, страницы гостя динамические: личные ответы не попадают в общий кэш. Дополнительно заданы `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`.
 - Секреты не пишутся в Git (`.env*`, `private/` исключены), журналы сервера не выводят токены.
 
+## Секреты CI/CD и выпуск Production (#56)
+
+- CI (`Quality`) работает без production-секретов: локальная Supabase в Docker, тестовые ключи.
+- Секреты выпуска хранятся только в GitHub Environments, не на уровне repository/organization:
+  - `release-prepare` — `VERCEL_TOKEN` (staged deployment и smoke);
+  - `production` — `VERCEL_TOKEN` и `SUPABASE_DB_URL`. Этот Environment требует approval владельца (`strakhovdenya`, self-review разрешён), поэтому ни один шаг с `SUPABASE_DB_URL` и `vercel promote` не выполняется до подтверждения.
+  - Оба Environment разрешены только ветке `main`; preflight без секретов проверяет это через GitHub API и отказывает при отсутствии Environment, лишней ветке, другом reviewer или ошибке API.
+- Секрет попадает только в `env` конкретного шага, которому он нужен (Vercel CLI читает `VERCEL_TOKEN` из окружения, не из аргументов); `npm ci`, сборка и job-level `env` его не видят; `checkout` без сохранённых учётных данных. Gate не печатает URL базы, токены и значения bypass, `vercel curl` выполняется без вывода; `.vercel/` удаляется, артефакты не публикуются.
+- Supabase: используется узкая строка подключения Session pooler проверенного проекта (`postgres.<project>`, `*.pooler.supabase.com:5432`, TLS), а не account-wide `SUPABASE_ACCESS_TOKEN`. Запрещены сброс базы, правка истории миграций, `config push`, `--include-all`.
+- Vercel: Vercel Authentication не отключается; gate требует `ssoProtection` с охватом production deployment URL (не `null`, не `enabled: false`, не только `preview`). Protection Bypass for Automation создаёт и отзывает владелец в Vercel; в GitHub он не хранится, `vercel curl` берёт его через API для smoke-GET. Gate отказывает, если bypass не создан заранее (иначе CLI создал бы новый постоянный секрет).
+
 ## Статус проверок
 
 | Проверка | Где | Статус |
@@ -148,3 +159,5 @@
 | Production: заголовки и клиентский код | `curl https://b1-kompass.vercel.app/` 2026-10-31 23:23 UTC, только чтение | ✅ `200`, `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, HSTS, `nosniff`, `DENY`, `same-origin`. `/practice` без cookie → `307` на `/`, `http://` → `308` на HTTPS. В 12 JS-файлах главной (≈ 0,9 МБ) нет `sb_secret_`, `service_role`, `SUPABASE_SECRET_KEY`, адреса Supabase, `answer_keys`, `correct_option_id` |
 | Работа сайта на Vercel по HTTPS: вход, ответы, разбор | ручная проверка владельца | ⏳ не выполнена: гостевой маршрут на production не проходился (решение владельца: только чтение) |
 | Те же отказы Data API и Storage в облачном проекте после миграций #3–#12 | скрипт с publishable-ключом | ⏳ не выполнена |
+| Release gate: недоверенный запуск, устаревший SHA, CI, Environments, DB URL, история миграций, staged deployment, promotion | `scripts/release/gate.test.mjs` | ✅ локально `node --test` (#56); CI `Quality` — на PR #56 |
+| Изоляция секретов по Environments и approval до SQL на реальном запуске | `Release Production` | ⏳ не выполнялась: Environments и secrets владельцем ещё не настроены |
