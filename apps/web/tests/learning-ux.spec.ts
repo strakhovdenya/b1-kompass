@@ -177,9 +177,19 @@ const expectNoSidewaysScroll = async (page: Page, screen: string) => {
 // Nothing of the text sticks out of its box or out of the screen.
 const expectTextContained = async (locator: Locator, screen: string) => {
   const report = await locator.evaluate((element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    const rects = Array.from(range.getClientRects());
+    // Only the letters count: a space at the end of a pre-wrap line hangs
+    // beyond the box by design and is not text the guest reads.
+    const rects: DOMRect[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? '';
+      const start = text.search(/\S/);
+      if (start === -1) continue;
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, text.trimEnd().length);
+      rects.push(...Array.from(range.getClientRects()));
+    }
     const box = element.getBoundingClientRect();
     return {
       right: Math.max(...rects.map((rect) => rect.right)),
