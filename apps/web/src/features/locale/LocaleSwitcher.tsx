@@ -30,7 +30,6 @@ export const LocaleSwitcher = ({ changeLocale }: LocaleSwitcherProps) => {
 
   return (
     <ToggleButtonGroup
-      size="small"
       exclusive
       value={locale}
       onChange={handleChange}
@@ -42,9 +41,11 @@ export const LocaleSwitcher = ({ changeLocale }: LocaleSwitcherProps) => {
           key={item}
           value={item}
           lang={item}
+          aria-label={t(item)}
           data-testid={`locale-${item}`}
+          sx={{ minWidth: 48, minHeight: 44, px: 1, fontWeight: 700 }}
         >
-          {t(item)}
+          {t(`short.${item}`)}
         </ToggleButton>
       ))}
     </ToggleButtonGroup>

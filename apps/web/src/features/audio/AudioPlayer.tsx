@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -29,7 +35,25 @@ interface AudioPlayerProps {
   initialPosition?: number;
   // The place after the guest paused or sought (urgent), or while playing.
   onPosition?: (seconds: number, isUrgent: boolean) => void;
+  // Whether the recording belongs to the block on screen. The shell decides;
+  // the player knows no modes or timers. An inactive player is hidden and
+  // paused, refuses every new play (including the media keys of the system),
+  // and keeps its element, source and place.
+  isActive?: boolean;
 }
+
+// Readable by assistive technology, invisible on screen.
+const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  m: '-1px',
+  p: 0,
+  border: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+} as const;
 
 const SKIP_BACK_SECONDS = 5;
 
@@ -64,6 +88,7 @@ export const AudioPlayer = ({
   resolveAudio,
   initialPosition = 0,
   onPosition,
+  isActive = true,
 }: AudioPlayerProps) => {
   const t = useTranslations('audio');
   const element = useRef<HTMLAudioElement>(null);
@@ -72,11 +97,20 @@ export const AudioPlayer = ({
   );
   const shouldResume = useRef(false);
   const hasRetried = useRef(false);
+  const isActiveRef = useRef(isActive);
   const [audio, setAudio] = useState<PlayableAudio | null>(null);
   const [status, setStatus] = useState<PlayerStatus>('loading');
   const [isPlaying, setIsPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // Leaving the block pauses the recording where it is; the pause is
+  // reported through onPause like any other.
+  // A layout effect: the ref follows the prop before the guest can tap Play.
+  useLayoutEffect(() => {
+    isActiveRef.current = isActive;
+    if (!isActive) element.current?.pause();
+  }, [isActive]);
 
   const apply = useCallback((access: AudioAccess) => {
     if (access.ok) {
@@ -129,7 +163,7 @@ export const AudioPlayer = ({
   // without asking the guest, whatever the local clock says; a second
   // failure in a row is shown.
   const handleError = () => {
-    const wasPlaying = isPlaying;
+    const wasPlaying = isPlaying && isActiveRef.current;
     setIsPlaying(false);
     if (hasRetried.current) {
       setStatus('error');
@@ -159,7 +193,7 @@ export const AudioPlayer = ({
     }
     if (shouldResume.current) {
       shouldResume.current = false;
-      media.play().catch(handlePlayError);
+      if (isActiveRef.current) media.play().catch(handlePlayError);
     }
   };
 
@@ -167,7 +201,7 @@ export const AudioPlayer = ({
     const media = element.current;
     if (!media) return;
     if (media.paused) {
-      media.play().catch(handlePlayError);
+      if (isActiveRef.current) media.play().catch(handlePlayError);
     } else {
       media.pause();
     }
@@ -194,78 +228,93 @@ export const AudioPlayer = ({
       component="section"
       variant="outlined"
       aria-label={t('label')}
-      sx={{ p: { xs: 2, sm: 3 } }}
+      hidden={!isActive}
+      data-testid="audio-player"
+      sx={{ px: { xs: 1.5, sm: 2 }, py: { xs: 0.5, sm: 1 } }}
     >
-      <Stack spacing={1.5}>
-        <Typography component="h2" variant="subtitle1">
-          {t('label')}
+      <audio
+        ref={element}
+        src={audio?.url}
+        preload="metadata"
+        data-testid="audio-element"
+        onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={() => setDuration(element.current?.duration ?? 0)}
+        onTimeUpdate={() => {
+          setPosition(element.current?.currentTime ?? 0);
+          if (!element.current?.paused) reportPosition(false);
+        }}
+        onSeeked={() => reportPosition(true)}
+        onPlay={() => {
+          // Media keys or a headset can start a hidden element.
+          if (!isActiveRef.current) {
+            element.current?.pause();
+            return;
+          }
+          setIsPlaying(true);
+        }}
+        onPlaying={() => {
+          if (!isActiveRef.current) {
+            element.current?.pause();
+            return;
+          }
+          hasRetried.current = false;
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          if (!element.current?.ended) reportPosition(true);
+        }}
+        onEnded={() => {
+          setIsPlaying(false);
+          onPosition?.(0, true);
+        }}
+        onError={audio ? handleError : undefined}
+      />
+      <Stack
+        direction="row"
+        useFlexGap
+        sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}
+      >
+        <Button
+          variant="contained"
+          onClick={togglePlay}
+          disabled={!canPlay}
+          data-testid="audio-toggle"
+          data-playing={isPlaying}
+          sx={{ minWidth: 104, minHeight: 44 }}
+        >
+          {isPlaying ? `❚❚ ${t('pause')}` : `▶ ${t('play')}`}
+        </Button>
+        <Button
+          variant="text"
+          onClick={() => seekTo(Math.max(0, position - SKIP_BACK_SECONDS))}
+          disabled={!canPlay}
+          data-testid="audio-back"
+          sx={{ minHeight: 44 }}
+        >
+          {t('back', { seconds: SKIP_BACK_SECONDS })}
+        </Button>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          data-testid="audio-time"
+          sx={{ ml: 'auto', fontVariantNumeric: 'tabular-nums' }}
+        >
+          {formatTime(position)} / {formatTime(duration)}
         </Typography>
-        <audio
-          ref={element}
-          src={audio?.url}
-          preload="metadata"
-          data-testid="audio-element"
-          onLoadedMetadata={handleLoadedMetadata}
-          onDurationChange={() => setDuration(element.current?.duration ?? 0)}
-          onTimeUpdate={() => {
-            setPosition(element.current?.currentTime ?? 0);
-            if (!element.current?.paused) reportPosition(false);
-          }}
-          onSeeked={() => reportPosition(true)}
-          onPlay={() => setIsPlaying(true)}
-          onPlaying={() => {
-            hasRetried.current = false;
-          }}
-          onPause={() => {
-            setIsPlaying(false);
-            if (!element.current?.ended) reportPosition(true);
-          }}
-          onEnded={() => {
-            setIsPlaying(false);
-            onPosition?.(0, true);
-          }}
-          onError={audio ? handleError : undefined}
-        />
-        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-          <Button
-            variant="contained"
-            onClick={togglePlay}
-            disabled={!canPlay}
-            data-testid="audio-toggle"
-            data-playing={isPlaying}
-            sx={{ minWidth: 104 }}
-          >
-            {isPlaying ? `❚❚ ${t('pause')}` : `▶ ${t('play')}`}
-          </Button>
-          <Button
-            variant="text"
-            onClick={() => seekTo(Math.max(0, position - SKIP_BACK_SECONDS))}
-            disabled={!canPlay}
-            data-testid="audio-back"
-          >
-            {t('back', { seconds: SKIP_BACK_SECONDS })}
-          </Button>
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            data-testid="audio-time"
-            sx={{ ml: 'auto', fontVariantNumeric: 'tabular-nums' }}
-          >
-            {formatTime(position)} / {formatTime(duration)}
-          </Typography>
-        </Stack>
-        <Slider
-          aria-label={t('seek')}
-          value={Math.min(position, duration || 0)}
-          min={0}
-          max={duration || 1}
-          step={1}
-          disabled={!canPlay || !duration}
-          onChange={(_event, value) => seekTo(Number(value))}
-          getAriaValueText={formatTime}
-        />
-        <AudioStatusLine status={status} onRetry={retry} />
       </Stack>
+      <Slider
+        aria-label={t('seek')}
+        value={Math.min(position, duration || 0)}
+        min={0}
+        max={duration || 1}
+        step={1}
+        size="small"
+        disabled={!canPlay || !duration}
+        onChange={(_event, value) => seekTo(Number(value))}
+        getAriaValueText={formatTime}
+        sx={{ display: 'block', py: 1.25, mt: -0.25 }}
+      />
+      <AudioStatusLine status={status} onRetry={retry} />
     </Paper>
   );
 };
@@ -294,6 +343,8 @@ const AudioStatusLine = ({ status, onRetry }: AudioStatusLineProps) => {
       </Alert>
     );
   }
+  // Ready is announced but not drawn: the player is its own proof. Loading
+  // stays visible.
   return (
     <Typography
       role="status"
@@ -302,6 +353,7 @@ const AudioStatusLine = ({ status, onRetry }: AudioStatusLineProps) => {
       color="text.secondary"
       data-testid="audio-status"
       data-status={status}
+      sx={status === 'ready' ? VISUALLY_HIDDEN : { pb: 0.5 }}
     >
       {status === 'loading' ? t('loading') : t('ready')}
     </Typography>

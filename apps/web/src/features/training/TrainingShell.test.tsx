@@ -96,29 +96,38 @@ describe('TrainingShell', () => {
   it('keeps the dictionary apart from the recording and the attempt', () => {
     const html = render(null);
     const audio = html.indexOf('data-testid="audio-element"');
-    const bar = html.indexOf('data-testid="dictionary-bar"');
     const boundary = html.indexOf('data-testid="dictionary-boundary"');
+    const action = html.indexOf('data-testid="dictionary-translate-selection"');
     const page = html.indexOf('block page');
     const finish = html.indexOf('data-testid="finish-attempt"');
     // The recording comes before the dictionary, the finish point after the
     // block: neither is inside the dictionary boundary.
     expect(audio).toBeGreaterThan(-1);
-    expect(audio).toBeLessThan(bar);
-    expect(bar).toBeLessThan(boundary);
-    expect(boundary).toBeLessThan(page);
+    expect(audio).toBeLessThan(boundary);
+    // The keyboard action is the first control inside the boundary.
+    expect(boundary).toBeLessThan(action);
+    expect(action).toBeLessThan(page);
     expect(page).toBeLessThan(finish);
     expect(html.match(/data-testid="audio-element"/g)).toHaveLength(1);
-    expect(html).toMatch(
-      /aria-pressed="true"[^>]*data-testid="dictionary-toggle"|data-testid="dictionary-toggle"[^>]*aria-pressed="true"/,
-    );
-    // The switch is a button, not an input that could look like an answer.
-    expect(html.slice(bar, boundary)).not.toContain('<input');
-    expect(html).toContain('data-enabled="true"');
-    expect(html).toContain('data-testid="dictionary-translate-selection"');
+    // The permanent panel is gone, and so is any second switch: the one
+    // switch is portalled into the server header slot after mounting, so
+    // server rendering holds none.
+    expect(html).not.toContain('data-testid="dictionary-bar"');
+    expect(html).not.toContain('data-testid="dictionary-toggle"');
+    expect(html).not.toContain('type="radio"');
     // No card is open and nothing is looked up while rendering.
     expect(html).not.toContain('data-testid="dictionary-card"');
     // The confirmed answer is still counted by the shell.
     expect(html).toContain('Answered in total: 1 of 3.');
+  });
+
+  it('hides the recording outside Hören without unmounting it', () => {
+    const html = render(null);
+    const player = /<section[^>]*data-testid="audio-player"[^>]*>/.exec(html);
+    // The page is Lesen: the player is hidden, the element stays in the page.
+    expect(player?.[0]).toContain('hidden=""');
+    expect(html).toContain('data-testid="audio-element"');
+    expect(html).toContain('data-testid="audio-status"');
   });
 
   it('shows the accepted submission instead of the finish point', () => {

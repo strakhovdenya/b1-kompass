@@ -41,6 +41,17 @@ describe('PracticeSet', () => {
     expect(html).not.toContain('data-testid="finish-attempt"');
   });
 
+  it('marks the answered step in the navigator without moving the question', () => {
+    const html = render();
+    expect(html).toMatch(
+      /<button[^>]*data-testid="go-to-question-2"[^>]*data-progress="answered"|data-progress="answered"[^>]*data-testid="go-to-question-2"/,
+    );
+    expect(html).toMatch(
+      /<button[^>]*data-testid="go-to-question-1"[^>]*data-progress="empty"|data-progress="empty"[^>]*data-testid="go-to-question-1"/,
+    );
+    expect(html).toContain('data-testid="navigator-toggle"');
+  });
+
   it('has no review before completion', () => {
     expect(render()).not.toContain('data-testid="attempt-review"');
   });

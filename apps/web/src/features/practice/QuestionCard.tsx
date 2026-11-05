@@ -11,6 +11,8 @@ import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import { alpha } from '@mui/material/styles';
+import type { SxProps, Theme } from '@mui/material/styles';
 import type { ExamQuestion } from '@b1k/domain';
 import { GermanText } from '../dictionary/GermanText';
 
@@ -49,19 +51,25 @@ export const QuestionCard = ({
       component="section"
       variant="outlined"
       data-testid={`question-card-${question.id}`}
-      sx={{ p: { xs: 2, sm: 3 } }}
+      sx={{ p: { xs: 1.5, sm: 3 }, minWidth: 0 }}
     >
-      <Stack spacing={2}>
+      <Stack spacing={{ xs: 1, sm: 2 }}>
         <Typography variant="body2" color="text.secondary">
           {t('practice.partial', {
             skill: t(`practice.skill.${question.skill}`),
             teil: question.teil,
-            number: question.number,
           })}
         </Typography>
-        <FormControl>
-          <FormLabel id={labelId} sx={{ color: 'text.primary', mb: 1 }}>
-            <Typography component="h2" variant="h6" lang="de">
+        <FormControl sx={{ minWidth: 0 }}>
+          <FormLabel
+            id={labelId}
+            sx={{
+              color: 'text.primary',
+              mb: 1.5,
+              '&.Mui-focused': { color: 'text.primary' },
+            }}
+          >
+            <Typography component="h2" variant="taskPrompt" lang="de">
               {question.number}. <GermanText>{question.prompt}</GermanText>
             </Typography>
           </FormLabel>
@@ -70,12 +78,21 @@ export const QuestionCard = ({
             name={labelId}
             value={selectedOptionId ?? ''}
             onChange={(event) => onChoose(event.target.value)}
+            sx={{ gap: 1, flexWrap: 'nowrap' }}
           >
             {question.options.map((option) => (
               <FormControlLabel
                 key={option.id}
                 value={option.id}
-                control={<Radio />}
+                control={<Radio sx={{ p: '12px' }} />}
+                slotProps={{
+                  typography: {
+                    variant: 'answerOption',
+                    component: 'span',
+                    sx: { flex: 1, minWidth: 0, py: 0.5, pr: 1 },
+                  },
+                }}
+                sx={optionSx(option.id === selectedOptionId)}
                 label={
                   <span lang="de">
                     <strong>{option.id}</strong>{' '}
@@ -91,6 +108,23 @@ export const QuestionCard = ({
     </Paper>
   );
 };
+
+// One answer row: a 48 px radio with the letter and the text beside it. The
+// chosen row has a soft fill and a stronger frame besides the checked radio,
+// so the choice does not rest on colour alone.
+const optionSx = (isSelected: boolean): SxProps<Theme> => ({
+  m: 0,
+  width: '100%',
+  minHeight: 56,
+  alignItems: 'center',
+  borderRadius: 1.5,
+  borderStyle: 'solid',
+  borderWidth: 2,
+  borderColor: isSelected ? 'primary.main' : 'grey.300',
+  bgcolor: (theme) =>
+    isSelected ? alpha(theme.palette.primary.main, 0.1) : 'transparent',
+  '&:has(.Mui-focusVisible)': { borderColor: 'primary.dark' },
+});
 
 interface SaveStatusLineProps {
   status: SaveStatus;

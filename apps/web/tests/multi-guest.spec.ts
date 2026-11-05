@@ -242,19 +242,27 @@ test('four isolated guests share audio object and retain independent state', asy
       }
     }),
   );
-  const stillPlaying = await Promise.all(
+  // Lesen paused every recording where its guest left Hören; the places stay
+  // apart and nothing moves any more.
+  const pausedOnLesen = await Promise.all(
     guests.map((guest) => snapshotOf(guest.page)),
   );
-  stillPlaying.forEach((snapshot, index) => {
+  pausedOnLesen.forEach((snapshot, index) => {
     expect(snapshot).toMatchObject({
-      paused: false,
+      paused: true,
       marker: `guest-${index}`,
     });
     expect(snapshot.currentTime).toBeGreaterThan(
       playing[index]?.currentTime ?? 0,
     );
   });
-  expectDistinctPositions(stillPlaying);
+  expectDistinctPositions(pausedOnLesen);
+  const settled = await Promise.all(
+    guests.map((guest) => snapshotOf(guest.page)),
+  );
+  settled.forEach((snapshot, index) => {
+    expect(snapshot.currentTime).toBe(pausedOnLesen[index]?.currentTime);
+  });
 
   for (const [index, guest] of guests.entries()) {
     const plan = PLANS[index];

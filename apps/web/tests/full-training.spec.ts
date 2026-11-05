@@ -9,6 +9,7 @@ import {
   newGuest,
   readAnswers,
   readAttempts,
+  readProgress,
   readResults,
   readSession,
   readSessionByToken,
@@ -385,7 +386,7 @@ test('empty attempt shows zero result', async ({ browser }) => {
   await context.close();
 });
 
-test('switching blocks keeps attempt answers and playback', async ({
+test('switching blocks pauses playback and keeps answers', async ({
   browser,
 }) => {
   const context = await browser.newContext();
@@ -400,19 +401,45 @@ test('switching blocks keeps attempt answers and playback', async ({
   expect(before.currentTime).toBeGreaterThanOrEqual(PLAY_FROM_SECONDS);
 
   await goToLesen(page);
+  // Lesen hides the recording and pauses it where it was; the element stays.
+  await expect(page.getByTestId('audio-player')).toBeHidden();
+  await expect(audioOf(page)).toHaveCount(1);
+  const onLesen = await snapshotOf(page);
+  expect(onLesen).toMatchObject({
+    paused: true,
+    isConnected: true,
+    marker: 'listener',
+  });
+  expect(onLesen.currentTime).toBeGreaterThanOrEqual(before.currentTime);
   await checked(page, 'lesen-1', keyOf(byId('lesen-1')));
+  const still = await snapshotOf(page);
+  expect(still.paused).toBe(true);
+  expect(still.currentTime).toBe(onLesen.currentTime);
+  // The server holds the place of the pause.
+  await expect
+    .poll(
+      async () =>
+        (
+          (await readProgress(attempt.id)) as {
+            positionSeconds?: number;
+          } | null
+        )?.positionSeconds ?? -1,
+    )
+    .toBeGreaterThanOrEqual(onLesen.currentTime - TOLERANCE_SECONDS);
+
   await goToHoeren(page);
+  // Back in Hören the same element waits for an explicit Play.
+  await expect(page.getByTestId('audio-player')).toBeVisible();
   const after = await snapshotOf(page);
 
   expect(await documentMarker(page)).toBe('same');
   await expect(audioOf(page)).toHaveCount(1);
   expect(after).toMatchObject({
-    paused: false,
+    paused: true,
     isConnected: true,
     marker: 'listener',
   });
-  const expected = before.currentTime + (after.nowSeconds - before.nowSeconds);
-  expect(Math.abs(after.currentTime - expected)).toBeLessThanOrEqual(
+  expect(Math.abs(after.currentTime - onLesen.currentTime)).toBeLessThanOrEqual(
     TOLERANCE_SECONDS,
   );
   await checked(page, 'hoeren-1', keyOf(byId('hoeren-1')));

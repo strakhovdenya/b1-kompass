@@ -9,6 +9,8 @@ import Typography from '@mui/material/Typography';
 import type { ExamGroup, ExamQuestion, Selections } from '@b1k/domain';
 import { useTraining } from '../training/TrainingContext';
 import { QuestionCard } from './QuestionCard';
+import { QuestionNavigator } from './QuestionNavigator';
+import type { NavigatorStep } from './QuestionNavigator';
 import { buildSteps } from './steps';
 import type { PracticeStep } from './steps';
 
@@ -67,6 +69,32 @@ export const PracticeSet = ({
     Object.hasOwn(selections, item.id),
   ).length;
 
+  const isChosen = (question: ExamQuestion): boolean =>
+    Object.hasOwn(pending, question.id) ||
+    Object.hasOwn(selections, question.id);
+  const navigatorSteps = steps.flatMap((item): NavigatorStep[] => {
+    const first = item.questions[0];
+    const last = item.questions[item.questions.length - 1];
+    if (!first || !last) return [];
+    const chosen = item.questions.filter(isChosen).length;
+    return [
+      {
+        key: item.key,
+        label:
+          first === last ? `${first.number}` : `${first.number}–${last.number}`,
+        number: first.number,
+        count: item.questions.length,
+        teil: first.teil,
+        progress:
+          chosen === 0
+            ? 'empty'
+            : chosen === item.questions.length
+              ? 'answered'
+              : 'partial',
+      },
+    ];
+  });
+
   const cards = step.questions.map((question) => {
     const choice = Object.hasOwn(pending, question.id)
       ? pending[question.id]
@@ -84,46 +112,13 @@ export const PracticeSet = ({
   });
 
   return (
-    <Stack spacing={2}>
-      <nav aria-label={t('navigation')}>
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          sx={{ alignItems: 'center', flexWrap: 'wrap' }}
-        >
-          <Typography data-testid="set-position" sx={{ mr: 1 }}>
-            {t('position', { current: index + 1, total })}
-          </Typography>
-          {steps.map((item, itemIndex) => {
-            const first = item.questions[0];
-            const last = item.questions[item.questions.length - 1];
-            if (!first || !last) return null;
-            const label =
-              first === last
-                ? `${first.number}`
-                : `${first.number}–${last.number}`;
-            return (
-              <Button
-                key={item.key}
-                size="small"
-                variant={itemIndex === index ? 'contained' : 'outlined'}
-                aria-current={itemIndex === index ? 'step' : undefined}
-                aria-label={t('goTo', {
-                  number: label,
-                  count: item.questions.length,
-                })}
-                data-testid={`go-to-question-${first.number}`}
-                disabled={isSaving}
-                onClick={() => setIndex(itemIndex)}
-                sx={{ minWidth: 40 }}
-              >
-                {label}
-              </Button>
-            );
-          })}
-        </Stack>
-      </nav>
+    <Stack spacing={{ xs: 1.5, sm: 2 }}>
+      <QuestionNavigator
+        steps={navigatorSteps}
+        index={index}
+        isDisabled={isSaving}
+        onSelect={setIndex}
+      />
       {step.group && renderGroup ? (
         renderGroup(step, cards)
       ) : (

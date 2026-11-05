@@ -78,6 +78,11 @@ const readLayout = (selector: string): LayoutReport => {
   const covered: string[] = [];
   for (const element of elements) {
     const rect = element.getBoundingClientRect();
+    // An action that is visually hidden until it has the focus (the
+    // keyboard action of the dictionary) takes no pointer and is not asked
+    // for a tap target; once focused it is shown and checked like any other.
+    const isVisuallyHidden = rect.width <= 2 || rect.height <= 2;
+    if (isVisuallyHidden && element !== document.activeElement) continue;
     if (rect.left < -0.5 || rect.right > root.clientWidth + 0.5) {
       outside.push(nameOf(element));
       continue;
@@ -283,4 +288,17 @@ export const expectNoFocusTrap = async (page: Page, screen: string) => {
 export const expectAccessibleScreen = async (page: Page, screen: string) => {
   await expectUsableLayout(page, screen);
   await expectNoFocusTrap(page, screen);
+};
+
+// The compact navigator of a phone keeps its list closed. Opens it when its
+// button is shown, then clicks the step; a wide screen shows the grid already.
+export const goToStep = async (page: Page, number: number) => {
+  const toggle = page.getByTestId('navigator-toggle');
+  if (
+    (await toggle.isVisible()) &&
+    (await toggle.getAttribute('aria-expanded')) !== 'true'
+  ) {
+    await toggle.click();
+  }
+  await page.getByTestId(`go-to-question-${number}`).click();
 };
