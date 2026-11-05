@@ -177,24 +177,30 @@ const expectNoSidewaysScroll = async (page: Page, screen: string) => {
 // Nothing of the text sticks out of its box or out of the screen.
 const expectTextContained = async (locator: Locator, screen: string) => {
   const report = await locator.evaluate((element) => {
-    // Only the letters count: a space at the end of a pre-wrap line hangs
-    // beyond the box by design and is not text the guest reads.
+    // Only the letters count: a space or a line break at the end of a
+    // pre-wrap line hangs beyond the box by design and is not read text.
     const rects: DOMRect[] = [];
+    let worst = { word: '', right: -1 };
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const text = node.textContent ?? '';
-      const start = text.search(/\S/);
-      if (start === -1) continue;
-      const range = document.createRange();
-      range.setStart(node, start);
-      range.setEnd(node, text.trimEnd().length);
-      rects.push(...Array.from(range.getClientRects()));
+      for (const word of text.matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, word.index);
+        range.setEnd(node, word.index + word[0].length);
+        for (const rect of Array.from(range.getClientRects())) {
+          rects.push(rect);
+          if (rect.right > worst.right)
+            worst = { word: word[0], right: rect.right };
+        }
+      }
     }
     const box = element.getBoundingClientRect();
     return {
       right: Math.max(...rects.map((rect) => rect.right)),
       left: Math.min(...rects.map((rect) => rect.left)),
       boxRight: box.right,
+      worstWord: worst.word,
       screen: document.documentElement.clientWidth,
       overflow: element.scrollWidth - element.clientWidth,
     };
@@ -205,9 +211,10 @@ const expectTextContained = async (locator: Locator, screen: string) => {
   expect(report.left, `${screen}: text before the screen`).toBeGreaterThan(
     -0.5,
   );
-  expect(report.right, `${screen}: text beyond its box`).toBeLessThanOrEqual(
-    report.boxRight + 0.5,
-  );
+  expect(
+    report.right,
+    `${screen}: text beyond its box (${report.worstWord})`,
+  ).toBeLessThanOrEqual(report.boxRight + 0.5);
   expect(report.overflow, `${screen}: clipped text`).toBeLessThanOrEqual(1);
 };
 
