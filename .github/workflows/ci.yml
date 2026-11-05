@@ -41,6 +41,9 @@ jobs:
       - name: Unit tests (domain and web)
         run: npm test
 
+      - name: Release gate tests (scripts/release)
+        run: node --test scripts/release/gate.test.mjs
+
       - name: Build
         run: npm run build
 
