@@ -164,18 +164,17 @@ export const historicalCompletionSql = (
       attempt_id, question_id, option_id, revision, updated_at
     ) values ${answers};`);
   }
+  // The historical completion bypasses the lifecycle guards for these two
+  // statements only, with a transaction-local setting and no DDL.
   parts.push(
-    `alter table public.attempts disable trigger attempts_guard_lifecycle;`,
+    `set local session_replication_role = replica;`,
     `update public.attempts
       set status = 'completed', updated_at = ${quote(completion.completedAt)}
       where id = ${id};`,
-    `alter table public.attempts enable trigger attempts_guard_lifecycle;`,
   );
   const { result } = completion;
   if (result) {
     parts.push(
-      `alter table public.attempt_results
-        disable trigger attempt_results_checked;`,
       `insert into public.attempt_results (
         attempt_id, scope, score, max_score, correct_count, incorrect_count,
         skipped_count, computed_at, percent
@@ -185,14 +184,15 @@ export const historicalCompletionSql = (
         ${quote(completion.completedAt)},
         round(${result.score} * 1000.0 / ${result.maxScore}) / 10
       );`,
-      `alter table public.attempt_results
-        enable trigger attempt_results_checked;`,
+      `set local session_replication_role = origin;`,
       `insert into public.guest_events (kind, visitor_id, attempt_id,
         occurred_at)
         select 'finish', s.visitor_id, ${id}, ${quote(completion.completedAt)}
         from public.guest_sessions s
         where s.id = ${quote(completion.sessionId)};`,
     );
+  } else {
+    parts.push(`set local session_replication_role = origin;`);
   }
   return parts.join('\n');
 };

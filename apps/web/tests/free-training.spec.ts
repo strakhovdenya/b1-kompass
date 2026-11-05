@@ -399,10 +399,10 @@ test('unassigned skill and early or foreign review stay private', async ({
       optionId: fullKeyOf(foreignId),
       revision: 1,
     });
-    expect(forged.ok).toBe(false);
+    expect(forged).toEqual({ ok: false, error: 'option-not-allowed' });
     expect(await readAnswers(attemptId)).toEqual({ [ownId]: fullKeyOf(ownId) });
     // The SQL refuses it too, whoever calls it.
-    const refuseDirect = async () => {
+    const refuseDirect = async (reason: string) => {
       const direct = await serviceDb.rpc('m2_save_answer', {
         p_session_id: owner.guest.sessionId,
         p_attempt_id: attemptId,
@@ -410,12 +410,12 @@ test('unassigned skill and early or foreign review stay private', async ({
         p_option_id: fullKeyOf(foreignId),
         p_revision: 1,
       });
-      expect(direct.error).not.toBeNull();
+      expect(direct.error?.hint).toBe(reason);
       expect(await readAnswers(attemptId)).toEqual({
         [ownId]: fullKeyOf(ownId),
       });
     };
-    await refuseDirect();
+    await refuseDirect('question_not_assigned');
 
     // Before completion nobody gets a key: not the owner, not another guest.
     expect(
@@ -443,7 +443,7 @@ test('unassigned skill and early or foreign review stay private', async ({
     expect(own_.status()).toBe(200);
     expect(body).not.toContain(foreignId);
     expect(body).not.toContain(foreignQuestion?.prompt.slice(0, 20) ?? '?');
-    await refuseDirect();
+    await refuseDirect('attempt_not_found');
 
     const results = await readResults(attemptId);
     expect(results).toHaveLength(1);
