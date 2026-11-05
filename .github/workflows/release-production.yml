@@ -6,6 +6,8 @@ name: Release Production
 # Merge to main runs only CI; Vercel Git deploys of main are disabled in
 # apps/web/vercel.json. The candidate is always the current HEAD of main.
 # Runbook: docs/deployment.md, section "Ручной выпуск Production".
+# Vercel CLI reads VERCEL_TOKEN from the env of the step that needs it; the
+# token is never passed as an argument, and the build step does not get it.
 
 on:
   workflow_dispatch:
@@ -96,7 +98,7 @@ jobs:
       - name: Pull Production project settings
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: vercel pull --yes --environment=production
 
       - name: Build Production output
         run: vercel build --prod
@@ -111,7 +113,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           url="$(vercel deploy --prebuilt --prod --skip-domain \
-            --meta "releaseSha=${RELEASE_SHA}" --token="$VERCEL_TOKEN" | tail -n 1)"
+            --meta "releaseSha=${RELEASE_SHA}" | tail -n 1)"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
       - name: Verify staged candidate through the Vercel API
@@ -245,7 +247,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set +e
-          vercel promote "$DEPLOYMENT_ID" --timeout=3m --token="$VERCEL_TOKEN"
+          vercel promote "$DEPLOYMENT_ID" --timeout=3m
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           echo "vercel promote exited with ${code}; previous: ${PREVIOUS_DEPLOYMENT_ID}"

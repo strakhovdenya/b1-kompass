@@ -451,6 +451,23 @@ test('accepts trusted staged deployment', () => {
   });
   assert.deepEqual(projectResult, { ok: true, reasons: [] });
   assert.ok(!JSON.stringify(projectResult).includes('owner-secret-value'));
+
+  const protectedTypes = [
+    'all',
+    'all_except_custom_domains',
+    'prod_deployment_urls_and_all_previews',
+  ];
+  for (const deploymentType of protectedTypes) {
+    const enabled = {
+      ...project,
+      ssoProtection: { enabled: true, deploymentType },
+    };
+    const result = checkVercelProject(ok(enabled), {
+      projectId: PROJECT_ID,
+      orgId: ORG_ID,
+    });
+    assert.deepEqual(result, { ok: true, reasons: [] }, deploymentType);
+  }
 });
 
 test('rejects invalid staged deployment', () => {
@@ -572,10 +589,38 @@ test('rejects invalid staged deployment', () => {
     id: PROJECT_ID,
     accountId: ORG_ID,
     rootDirectory: 'apps/web',
-    ssoProtection: { deploymentType: 'preview' },
+    ssoProtection: { deploymentType: 'prod_deployment_urls_and_all_previews' },
     protectionBypass: { s: { scope: 'automation-bypass' } },
   };
+  const { ssoProtection: _sso, ...withoutSso } = project;
   const projectCases = [
+    ['auth missing', withoutSso, 'vercel-authentication-disabled'],
+    [
+      'auth enabled false',
+      {
+        ...project,
+        ssoProtection: {
+          enabled: false,
+          deploymentType: 'prod_deployment_urls_and_all_previews',
+        },
+      },
+      'vercel-authentication-disabled',
+    ],
+    [
+      'auth previews only',
+      { ...project, ssoProtection: { deploymentType: 'preview' } },
+      'vercel-authentication-disabled',
+    ],
+    [
+      'auth unknown type',
+      { ...project, ssoProtection: { deploymentType: 'none' } },
+      'vercel-authentication-disabled',
+    ],
+    [
+      'auth not an object',
+      { ...project, ssoProtection: 'on' },
+      'vercel-authentication-disabled',
+    ],
     [
       'no bypass',
       { ...project, protectionBypass: {} },

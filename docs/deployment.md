@@ -149,7 +149,7 @@ Merge → CI/Quality → Run workflow (main)
 | `Release` | `production` (required reviewer) | `VERCEL_TOKEN`, `SUPABASE_DB_URL` | после approval: повтор preflight, повтор проверки кандидата, проверка DB URL, история миграций до push (префикс), `db push --dry-run`, `db push --db-url … --skip-vault`, история после push (равенство), smoke, повтор проверки кандидата, один `vercel promote <id>`, ограниченное чтение alias (18 × 10 с) и GET главной | рабочая БД, затем публичный alias |
 
 - Один workflow-level `concurrency` (`release-production`, `cancel-in-progress: false`, `queue: max`): запуски идут по очереди, ожидание approval удерживает группу. Повторная сверка HEAD и CI выполняется после approval, до SQL и promote: если за время ожидания в `main` появился новый commit, выпуск устаревшего кандидата отказывает.
-- Секреты передаются только в `env` конкретных шагов; `npm ci`, `vercel build` и job-level `env` их не видят. `checkout` — `persist-credentials: false`. `.vercel/.env.*` удаляются сразу после сборки, `.vercel/` — в конце job; артефакты не публикуются.
+- Секреты передаются только в `env` конкретных шагов; `npm ci`, `vercel build` и job-level `env` их не видят. Vercel CLI берёт `VERCEL_TOKEN` из окружения шага (`vercel pull`, `deploy`, `curl`, `promote`); в аргументы командной строки токен не передаётся. `checkout` — `persist-credentials: false`. `.vercel/.env.*` удаляются сразу после сборки, `.vercel/` — в конце job; артефакты не публикуются.
 - Smoke: `GET /` → `200`, HTML с `<title>B1 Kompass</title>` и «Continue as guest», `Cache-Control … no-store`; `GET /practice` без cookie → `307` на `/` того же deployment. POST, Guest и Attempt не создаются. `vercel curl` берёт существующий bypass проекта; вывод CLI не печатается.
 - История миграций доказывает только **зарегистрированные** миграции. Ручные DDL вне миграций и полную runtime-совместимость она не гарантирует. Breaking SQL идёт отдельным review по схеме expand → deploy → contract: SQL выпуска обязан работать и со старой опубликованной версией, потому что до promote она продолжает обслуживать сайт.
 - Workflow не использует account-wide `SUPABASE_ACCESS_TOKEN` и привязку CLI к проекту; запрещены сброс базы, правка истории миграций, `config push` и `--include-all`. Supabase CLI — `2.122.0` из `npm ci` (не v3).
@@ -170,7 +170,7 @@ Merge PR #56 сам отключает автопубликацию `main` (`ver
 **Vercel**
 
 1. Project → Settings → General: Root Directory `apps/web`; Production env `APP_ORIGIN=https://b1-kompass.vercel.app` (подтвердить).
-2. Deployment Protection: Vercel Authentication включена. **Protection Bypass for Automation** → создать один секрет (имя, например, `release-smoke`) заранее, чтобы `vercel curl` не создал неизвестный постоянный секрет. Значение никуда не копировать (ни в GitHub, ни в документ). Отзыв: там же Revoke/Regenerate; после регенерации проверить следующий stage.
+2. Deployment Protection: Vercel Authentication включена с охватом, который защищает и production deployment URL: **Standard Protection** (`prod_deployment_urls_and_all_previews` / `all_except_custom_domains`) или All Deployments (`all`). Режим «Only Preview Deployments» (`preview`) оставляет staged-кандидата публичным — gate отказывает (`vercel-authentication-disabled`), так же как при выключенной защите (`ssoProtection: null`). **Protection Bypass for Automation** → создать один секрет (имя, например, `release-smoke`) заранее, чтобы `vercel curl` не создал неизвестный постоянный секрет. Значение никуда не копировать (ни в GitHub, ни в документ). Отзыв: там же Revoke/Regenerate; после регенерации проверить следующий stage.
 3. Account Settings → Tokens: отдельный токен для CI, scope — команда проекта, ограниченный срок (например, 90 дней); записать дату ротации. Тот же токен положить в оба Environment.
 
 **Supabase**
@@ -179,6 +179,18 @@ Merge PR #56 сам отключает автопубликацию `main` (`ver
 - **Backup до первого SQL через CD** — с компьютера владельца, не из CI (бесплатный план не гарантирует автоматический backup): `npx supabase db dump --db-url "$SUPABASE_DB_URL" -f private/backup-<дата>-schema.sql` и `npx supabase db dump --db-url "$SUPABASE_DB_URL" --data-only -f private/backup-<дата>-data.sql`; восстановление проверить на локальной Supabase (`npm run db:start`, затем `psql` в локальную базу). Файлы остаются в `private/`.
 
 **Проверка настроек без выпуска:** `gh api repos/strakhovdenya/b1-kompass/environments/production` (reviewer, `prevent_self_review: false`, `custom_branch_policies: true`), `gh api repos/strakhovdenya/b1-kompass/environments/production/deployment-branch-policies` (одно правило `main`), то же для `release-prepare`; `gh secret list` (на уровне repo CD-секретов нет), `gh secret list --env production`, `gh variable list`. Первый запуск workflow сам повторяет эти проверки в preflight, до секретов.
+
+### Что подтверждено до первого запуска
+
+| Условие | Документация / исходный код CLI `65.11.0` | Реальная проверка |
+| --- | --- | --- |
+| CLI из корня монорепозитория при Root Directory `apps/web` | `vercel build`: `workPath = join(cwd, settings.rootDirectory)`, вывод в `<корень>/.vercel/output` | ✅ локально 2026-11-05: `vercel build --prod` из корня отдельного worktree с локальным `.vercel/project.json` (`rootDirectory: apps/web`) выполнил `installCommand` из `apps/web/vercel.json`, `next build` и записал `.vercel/output` (target `production`). `vercel deploy --prebuilt` из корня на Vercel ⏳ не запускался |
+| `vercel build --prod` без `VERCEL_TOKEN` | build не обращается к API | ✅ та же локальная сборка: без `VERCEL_TOKEN` и с пустым `--global-config`. В GitHub Actions ⏳ не запускалась |
+| `VERCEL_TOKEN` из окружения | `index.js`: `--token`, иначе `process.env.VERCEL_TOKEN` | ⏳ на Vercel не проверено (нужен токен) |
+| Формат `protectionBypass` | CLI сам ищет запись `scope === "automation-bypass"` (`vercel curl`) | ⏳ ответ API реального проекта не читался |
+| Vercel Authentication | выключенная защита хранится как `ssoProtection: null`; `preview` не защищает production deployment URL | ⏳ настройка проекта не читалась |
+
+**Повторный запуск без новых миграций безопасен:** история до push равна файлам (префикс полной длины, pending: none), `db push` сообщает, что база актуальна, и ничего не применяет, история после push совпадает; promote делается только для нового staged-кандидата того же HEAD. Повтор после частично применённых миграций — только после разбора (см. «Отказы и восстановление»).
 
 ### Первый cutover (порядок)
 
@@ -209,8 +221,8 @@ Merge PR #56 сам отключает автопубликацию `main` (`ver
 
 | # | Состояние | Статус |
 | --- | --- | --- |
-| 1 | Код CD и PR #56 (`release-production.yml`, `gate.mjs`, `vercel.json`, документы) | ✅ в PR, не смержен |
-| 2 | CI `Quality` на PR head, включая release gate tests | ⏳ отмечается по результату CI PR #56 |
+| 1 | Код CD (`release-production.yml`, `gate.mjs`, `vercel.json`, документы) | ✅ в PR #57, не смержен. После merge Issue #56 закрывается автоматически (`Closes #56`) — это завершение кода, а не приёмка CD |
+| 2 | CI `Quality` на PR head, включая release gate tests | ✅ PR #57 (`Quality` success); повторяется на каждом push ветки |
 | 3 | Настройки GitHub (ruleset, Environments, reviewer, secrets, vars) и Vercel (bypass, токен, `APP_ORIGIN`) | ⏳ владельцем не подтверждены |
 | 4 | Проверка CD с approval (run с Reject, run с Approve) | ⏳ не выполнялась |
 | 5 | Первый подтверждённый Production release через CD | ⏳ не выполнялся; Production остаётся на `dpl_5mKAg5KA84Pe915sjd4XVmjKrv5p` до первого выпуска |

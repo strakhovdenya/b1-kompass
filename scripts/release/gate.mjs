@@ -192,6 +192,22 @@ const countAutomationBypass = (project) =>
     (entry) => entry?.scope === 'automation-bypass',
   ).length;
 
+// Vercel Authentication is on when ssoProtection is an object (Vercel stores
+// null when it is off) that is not marked disabled and whose deploymentType
+// also protects production deployment URLs, i.e. the staged candidate.
+// `preview` protects previews only and leaves the candidate public.
+const PROTECTED_DEPLOYMENT_TYPES = [
+  'all',
+  'all_except_custom_domains',
+  'prod_deployment_urls_and_all_previews',
+];
+
+const isVercelAuthenticationOn = (sso) =>
+  typeof sso === 'object' &&
+  sso !== null &&
+  sso.enabled !== false &&
+  PROTECTED_DEPLOYMENT_TYPES.includes(sso.deploymentType);
+
 // `vercel curl` creates a new bypass secret when the project has none. The
 // owner creates it in advance; without one the gate refuses before curl.
 // The secret values are counted, never returned.
@@ -204,7 +220,9 @@ export const checkVercelProject = (projectApi, { projectId, orgId }) => {
   if (project.rootDirectory !== ROOT_DIRECTORY) {
     reasons.push('vercel-root-directory-mismatch');
   }
-  if (!project.ssoProtection) reasons.push('vercel-authentication-disabled');
+  if (!isVercelAuthenticationOn(project.ssoProtection)) {
+    reasons.push('vercel-authentication-disabled');
+  }
   if (countAutomationBypass(project) < 1) {
     reasons.push('automation-bypass-missing');
   }
@@ -635,9 +653,11 @@ const parseHeaders = (text) => {
 };
 
 // GET through `vercel curl`: the CLI adds x-vercel-protection-bypass from
-// the owner's existing project secret. Neither its stdout nor its stderr is
-// printed, because a failing CLI could echo request headers.
+// the owner's existing project secret. The CLI reads VERCEL_TOKEN from the
+// inherited step environment, never from an argument. Neither its stdout nor
+// its stderr is printed, because a failing CLI could echo request headers.
 const curlDeployment = (dir, name, pathname, deploymentUrl) => {
+  need('VERCEL_TOKEN');
   const headerFile = path.join(dir, `${name}.headers`);
   const bodyFile = path.join(dir, `${name}.body`);
   const curlArgs = ['-sS', '--max-time', '30', '-X', 'GET'];
@@ -646,8 +666,6 @@ const curlDeployment = (dir, name, pathname, deploymentUrl) => {
     pathname,
     '--deployment',
     deploymentUrl,
-    '--token',
-    need('VERCEL_TOKEN'),
     '--',
     ...curlArgs,
     '-D',

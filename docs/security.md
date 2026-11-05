@@ -134,9 +134,9 @@
   - `release-prepare` — `VERCEL_TOKEN` (staged deployment и smoke);
   - `production` — `VERCEL_TOKEN` и `SUPABASE_DB_URL`. Этот Environment требует approval владельца (`strakhovdenya`, self-review разрешён), поэтому ни один шаг с `SUPABASE_DB_URL` и `vercel promote` не выполняется до подтверждения.
   - Оба Environment разрешены только ветке `main`; preflight без секретов проверяет это через GitHub API и отказывает при отсутствии Environment, лишней ветке, другом reviewer или ошибке API.
-- Секрет попадает только в `env` конкретного шага, которому он нужен; `npm ci`, сборка и job-level `env` его не видят; `checkout` без сохранённых учётных данных. Gate не печатает URL базы, токены и значения bypass, `vercel curl` выполняется без вывода; `.vercel/` удаляется, артефакты не публикуются.
+- Секрет попадает только в `env` конкретного шага, которому он нужен (Vercel CLI читает `VERCEL_TOKEN` из окружения, не из аргументов); `npm ci`, сборка и job-level `env` его не видят; `checkout` без сохранённых учётных данных. Gate не печатает URL базы, токены и значения bypass, `vercel curl` выполняется без вывода; `.vercel/` удаляется, артефакты не публикуются.
 - Supabase: используется узкая строка подключения Session pooler проверенного проекта (`postgres.<project>`, `*.pooler.supabase.com:5432`, TLS), а не account-wide `SUPABASE_ACCESS_TOKEN`. Запрещены сброс базы, правка истории миграций, `config push`, `--include-all`.
-- Vercel: Vercel Authentication не отключается. Protection Bypass for Automation создаёт и отзывает владелец в Vercel; в GitHub он не хранится, `vercel curl` берёт его через API для smoke-GET. Gate отказывает, если bypass не создан заранее (иначе CLI создал бы новый постоянный секрет).
+- Vercel: Vercel Authentication не отключается; gate требует `ssoProtection` с охватом production deployment URL (не `null`, не `enabled: false`, не только `preview`). Protection Bypass for Automation создаёт и отзывает владелец в Vercel; в GitHub он не хранится, `vercel curl` берёт его через API для smoke-GET. Gate отказывает, если bypass не создан заранее (иначе CLI создал бы новый постоянный секрет).
 
 ## Статус проверок
 
