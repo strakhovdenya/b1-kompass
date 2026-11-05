@@ -3,6 +3,7 @@ import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { readAnswers, readAttempts, readSessionByToken } from './support/db';
 import { ANSWER_URL, LESEN_URL, enterAndStart } from './support/guest-browser';
+import { goToStep } from './support/release';
 
 // The synthetic full set: lesen-1..5 Teil 1, 6..10 Teil 2 (nine options),
 // 11..16 Teil 3 (the long text), 17..19 Teil 4, 20..25 Teil 5 (gap marks).
@@ -28,8 +29,7 @@ const optionIn = (cardLocator: Locator, optionId: string): Locator =>
 const statusOf = (cardLocator: Locator) =>
   cardLocator.getByTestId('save-status');
 
-const goTo = (page: Page, number: number) =>
-  page.getByTestId(`go-to-question-${number}`).click();
+const goTo = goToStep;
 
 const openGuest = async (browser: Browser) => {
   const context = await browser.newContext({ viewport: WIDE });

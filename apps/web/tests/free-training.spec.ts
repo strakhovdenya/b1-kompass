@@ -551,25 +551,33 @@ test('free navigation and locale preserve answers progress and audio', async ({
   const before = await snapshotOf(page);
 
   await goToLesen(page);
+  // Lesen pauses the recording where it was; the element stays mounted.
+  await expect(page.getByTestId('audio-player')).toBeHidden();
+  const onLesen = await snapshotOf(page);
+  expect(onLesen).toMatchObject({ paused: true, marker: 'listener' });
+  expect(onLesen.currentTime).toBeGreaterThanOrEqual(before.currentTime);
   await optionIn(card(page, 'lesen-1'), fullKeyOf('lesen-1')).check();
   await expectStatus(card(page, 'lesen-1'), 'saved');
   await goToHoeren(page);
   const back = await snapshotOf(page);
-  expect(back).toMatchObject({ paused: false, marker: 'listener' });
-  const expected = before.currentTime + (back.nowSeconds - before.nowSeconds);
-  expect(Math.abs(back.currentTime - expected)).toBeLessThanOrEqual(
-    REVISION_TOLERANCE_SECONDS,
+  // Back in Hören the recording waits at the same place for a click.
+  expect(back).toMatchObject({ paused: true, marker: 'listener' });
+  expect(Math.abs(back.currentTime - onLesen.currentTime)).toBeLessThanOrEqual(
+    PAUSED_TOLERANCE_SECONDS,
   );
   await expect(page.getByTestId('audio-element')).toHaveCount(1);
   await expect(
     optionIn(card(page, 'hoeren-1'), fullKeyOf('hoeren-1')),
   ).toBeChecked();
 
+  await page.getByTestId('audio-toggle').click();
+  await expect.poll(async () => (await snapshotOf(page)).paused).toBe(false);
+  const resumed = await snapshotOf(page);
   await page.getByRole('button', { name: 'Русский' }).click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   const russian = await snapshotOf(page);
   expect(russian).toMatchObject({ paused: false, marker: 'listener' });
-  const later = back.currentTime + (russian.nowSeconds - back.nowSeconds);
+  const later = resumed.currentTime + (russian.nowSeconds - resumed.nowSeconds);
   expect(Math.abs(russian.currentTime - later)).toBeLessThanOrEqual(
     REVISION_TOLERANCE_SECONDS,
   );

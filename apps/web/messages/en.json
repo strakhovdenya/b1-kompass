@@ -12,11 +12,15 @@
   },
   "locale": {
     "label": "Interface language",
-    "en": "English",
-    "ru": "Русский"
+    "en": "EN, English",
+    "ru": "RU, Русский",
+    "short": {
+      "en": "EN",
+      "ru": "RU"
+    }
   },
   "practice": {
-    "partial": "Part of the exam: {skill} Teil {teil}, task {number}. Short practice — no official level is shown.",
+    "partial": "Part of the exam: {skill} Teil {teil}",
     "skill": {
       "hoeren": "Hören",
       "lesen": "Lesen"
@@ -77,7 +81,7 @@
     "sharedSetError": "This set of questions does not match the material and cannot be shown."
   },
   "lesen": {
-    "intro": "Lesen, parts 1 to 5: {count, plural, one {# task} other {# tasks}}, one answer each. Every task is shown beside its own text. On a narrow screen switch between the text and the task; your answer and your place in the text are kept.",
+    "intro": "Lesen, parts 1 to 5: {count, plural, one {# task} other {# tasks}}, one answer each. On a narrow screen switch between the text and the task; your answer and your place in the text are kept.",
     "showText": "Text",
     "showQuestions": "Task",
     "textRegion": "Reading text",
@@ -86,10 +90,12 @@
   "set": {
     "navigation": "Questions",
     "position": "Question {current} of {total}",
-    "goTo": "{count, plural, one {Go to question {number}} other {Go to questions {number}}}",
+    "goTo": "{count, plural, one {Go to question {number}} other {Go to questions {number}}}, {state, select, answered {answered} partial {partly answered} other {not answered}}",
     "previous": "Previous",
     "next": "Next",
-    "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped."
+    "answered": "Answered: {answered} of {total}. Unanswered questions count as skipped.",
+    "allQuestions": "All questions ({current})",
+    "teil": "Teil {teil}"
   },
   "results": {
     "title": "Result",
@@ -152,10 +158,6 @@
   },
   "dictionary": {
     "toggle": "Word translator",
-    "stateOn": "On",
-    "stateOff": "Off",
-    "hint": "Hover over a German word, select it or tap it to see its meaning. Choose an answer with its round button.",
-    "off": "The translator is off. Answers can be chosen by clicking their text.",
     "translateSelection": "Translate selected word",
     "selectOneWord": "Select one German word in the task or text first.",
     "close": "Close translation",
@@ -183,6 +185,8 @@
       "google": "Google Translate"
     },
     "sourceTranslation": "Translation:",
-    "sourceSynonyms": "Synonyms:"
+    "sourceSynonyms": "Synonyms:",
+    "tooltipOn": "Word translator is on: tap a German word",
+    "tooltipOff": "Word translator is off"
   }
 }

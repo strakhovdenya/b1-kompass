@@ -30,18 +30,43 @@ const RootLayout = async ({ children }: { children: ReactNode }) => {
           <NextIntlClientProvider>
             <ThemeRegistry>
               <AppBar position="static" elevation={0}>
-                <Toolbar sx={{ gap: 2, flexWrap: 'wrap', py: 1 }}>
-                  <Typography component="p" variant="h6" sx={{ flexGrow: 1 }}>
+                <Toolbar
+                  sx={{
+                    gap: 1,
+                    flexWrap: 'nowrap',
+                    px: { xs: 1.5, sm: 3 },
+                    py: 0.5,
+                  }}
+                >
+                  <Typography
+                    component="p"
+                    variant="h6"
+                    noWrap
+                    sx={{ flexGrow: 1, minWidth: 0 }}
+                  >
                     {t('name')}
                   </Typography>
+                  {/* Empty except on a training page, which portals its
+                      translator switch here. */}
+                  <Box id="training-header-slot" sx={{ display: 'contents' }} />
                   {guest ? (
-                    <Box sx={{ bgcolor: 'common.white', borderRadius: 1 }}>
+                    <Box
+                      sx={{
+                        bgcolor: 'common.white',
+                        borderRadius: 1,
+                        flexShrink: 0,
+                      }}
+                    >
                       <LocaleSwitcher changeLocale={setLocaleAction} />
                     </Box>
                   ) : null}
                 </Toolbar>
               </AppBar>
-              <Container component="main" maxWidth="md" sx={{ py: 4 }}>
+              <Container
+                component="main"
+                maxWidth="md"
+                sx={{ py: { xs: 1.5, sm: 4 }, px: { xs: 1.5, sm: 3 } }}
+              >
                 {children}
               </Container>
             </ThemeRegistry>

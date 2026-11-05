@@ -125,6 +125,24 @@ describe('LesenScreen', () => {
     expect(marked).toContain('data-testid="reading-text"');
   });
 
+  it('uses the shared navigator with the reading typography', () => {
+    const html = render({
+      questions: [question('lesen-1', 1, 't1'), question('lesen-2', 2, 't1')],
+      texts: [text('t1', 'Erster Absatz.')],
+      selections: { 'lesen-2': 'a' },
+    });
+    expect(html.match(/data-testid="navigator-toggle"/g)).toHaveLength(1);
+    expect(html).toContain('data-testid="go-to-question-1"');
+    expect(html).toMatch(
+      /<button[^>]*aria-current="step"[^>]*data-testid="go-to-question-1"|data-testid="go-to-question-1"[^>]*aria-current="step"/,
+    );
+    expect(html).toMatch(
+      /data-testid="go-to-question-2"[^>]*data-progress="answered"|data-progress="answered"[^>]*data-testid="go-to-question-2"/,
+    );
+    expect(html).toContain('Question 1 of 2');
+    expect(html).toMatch(/<p[^>]*data-paragraph="0"/);
+  });
+
   it('reading text is rendered as plain text', () => {
     const body = '<script>window.hacked = 1</script>\n<b>fett</b>';
     const html = render({

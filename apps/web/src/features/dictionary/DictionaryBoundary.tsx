@@ -7,8 +7,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocale, useTranslations } from 'next-intl';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -16,13 +18,12 @@ import ClickAwayListener from '@mui/material/ClickAwayListener';
 import Drawer from '@mui/material/Drawer';
 import Paper from '@mui/material/Paper';
 import Popper from '@mui/material/Popper';
-import Stack from '@mui/material/Stack';
-import ToggleButton from '@mui/material/ToggleButton';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { isLocale } from '@b1k/domain';
 import { requestDictionaryEntry } from './client';
 import { DictionaryCard } from './DictionaryCard';
+import { DictionaryHeaderToggle } from './DictionaryHeaderToggle';
 import { wordAtPoint, wordOfCurrentSelection, zoneOf } from './dom';
 import type { WordHit } from './dom';
 import type { DictionaryEntry, PartState } from './entry';
@@ -39,8 +40,46 @@ import { useDictionarySetting } from './settings';
 //   on it and closes on Escape, a click outside or the close button;
 // - phone: a tap on a word or the selection of one word opens a bottom
 //   sheet (a persistent Drawer, no scroll lock); the system selection stays;
-// - keyboard and screen readers: one button translates the selected word,
-//   focus moves into the card and returns to the button on close.
+// - keyboard and screen readers: one button translates the selected word. It
+//   is the first control inside the boundary, shown only while it has the
+//   focus; focus moves into the card and returns to the button on close.
+// The on/off switch is a single icon in the page header: the boundary
+// renders it through a portal into the empty slot of the server header, so
+// the state, the lookup and the card have one owner.
+
+export const HEADER_SLOT_ID = 'training-header-slot';
+
+const subscribeNothing = () => () => undefined;
+const findHeaderSlot = () => document.getElementById(HEADER_SLOT_ID);
+const noHeaderSlot = () => null;
+
+// Hidden on screen, available to a screen reader and to the keyboard; it
+// shows itself in the flow while it holds the focus.
+const SKIP_ACTION_SX = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  minWidth: 0,
+  minHeight: 0,
+  m: '-1px',
+  p: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  bgcolor: 'background.paper',
+  '&:focus': {
+    position: 'static',
+    width: 'auto',
+    height: 'auto',
+    minHeight: 44,
+    m: 0,
+    mb: 1,
+    px: 2,
+    overflow: 'visible',
+    clip: 'auto',
+    whiteSpace: 'normal',
+  },
+} as const;
 
 export const HOVER_DELAY_MS = 500;
 const SELECTION_DELAY_MS = 600;
@@ -96,6 +135,11 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
   const [state, setState] = useState<LookupState>(CLOSED);
   const [opened, setOpened] = useState<Opened | null>(null);
   const [notice, setNotice] = useState(false);
+  const slot = useSyncExternalStore(
+    subscribeNothing,
+    findHeaderSlot,
+    noHeaderSlot,
+  );
   const isCoarse = useMediaQuery('(pointer: coarse)', { noSsr: true });
   const titleId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -272,11 +316,16 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
   const isOpen = opened !== null;
   useEffect(() => {
     if (!isOpen) return;
+    // The card is the topmost layer: it takes the Escape in the capture phase,
+    // so a list of tasks open below it stays open.
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
     };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
+    document.addEventListener('keydown', handleKey, true);
+    return () => document.removeEventListener('keydown', handleKey, true);
   }, [isOpen, close]);
 
   const translateSelection = () => {
@@ -314,65 +363,43 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
 
   return (
     <DictionaryActiveContext.Provider value={enabled}>
-      <Stack spacing={2}>
-        <Paper
-          variant="outlined"
-          data-testid="dictionary-bar"
-          data-enabled={enabled}
-          sx={{ px: 2, py: 1 }}
-        >
-          <Stack
-            direction="row"
-            useFlexGap
-            sx={{ alignItems: 'center', flexWrap: 'wrap', columnGap: 2 }}
-          >
-            {/* A pressed button, not a checkbox: the page's only checked
-                inputs stay the answers. */}
-            <ToggleButton
-              value="dictionary"
+      {slot
+        ? createPortal(
+            <DictionaryHeaderToggle
+              isOn={enabled}
+              onToggle={() => changeEnabled(!enabled)}
+            />,
+            slot,
+          )
+        : null}
+      <Box ref={rootRef} data-testid="dictionary-boundary">
+        {enabled ? (
+          <>
+            <Button
+              ref={buttonRef}
               size="small"
-              color="primary"
-              selected={enabled}
-              data-testid="dictionary-toggle"
-              onChange={() => changeEnabled(!enabled)}
-              sx={{ minHeight: 40, textTransform: 'none', gap: 1 }}
+              variant="outlined"
+              data-testid="dictionary-translate-selection"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={translateSelection}
+              sx={SKIP_ACTION_SX}
             >
-              {t('toggle')}
-              <Box component="span" sx={{ fontWeight: 700 }}>
-                {enabled ? t('stateOn') : t('stateOff')}
-              </Box>
-            </ToggleButton>
-            {enabled ? (
-              <Button
-                ref={buttonRef}
-                size="small"
-                variant="outlined"
-                data-testid="dictionary-translate-selection"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={translateSelection}
-                sx={{ minHeight: 40 }}
+              {t('translateSelection')}
+            </Button>
+            {notice ? (
+              <Typography
+                role="status"
+                variant="body2"
+                data-testid="dictionary-selection-notice"
+                sx={{ mb: 1 }}
               >
-                {t('translateSelection')}
-              </Button>
+                {t('selectOneWord')}
+              </Typography>
             ) : null}
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            {enabled ? t('hint') : t('off')}
-          </Typography>
-          {notice ? (
-            <Typography
-              role="status"
-              variant="body2"
-              data-testid="dictionary-selection-notice"
-            >
-              {t('selectOneWord')}
-            </Typography>
-          ) : null}
-        </Paper>
-        <Box ref={rootRef} data-testid="dictionary-boundary">
-          {children}
-        </Box>
-      </Stack>
+          </>
+        ) : null}
+        {children}
+      </Box>
       {card && anchor && opened?.presentation === 'popper' ? (
         <Popper
           open

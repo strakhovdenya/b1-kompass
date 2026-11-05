@@ -62,6 +62,7 @@ import {
   expectAccessibleScreen,
   expectEnlargedText,
   expectUsableLayout,
+  goToStep,
   openGuestPage,
   tabTo,
 } from './support/release';
@@ -70,6 +71,9 @@ import type { ViewportSize } from './support/release';
 // The release route of a guest on the synthetic full set (20 Hören, 25 Lesen,
 // key in FULL_PILOT): the same pages, server actions and database functions
 // as for every visitor. Every step is compared with the re-read database.
+
+// From this width the navigator shows its grid; below it, behind a button.
+const MD_BREAKPOINT_PX = 900;
 
 const { keys } = FULL_PILOT;
 const HOUR_MS = 60 * 60 * 1000;
@@ -157,6 +161,10 @@ const keyboardJourney = async (page: Page, viewport: ViewportSize) => {
 
   await expectUsableLayout(page, `${screen} hoeren 1`);
   await answerByKeyboard(page, 'hoeren-1', keyOf('hoeren-1'), screen);
+  // A phone keeps the list of tasks closed behind its own button.
+  if (viewport.width < MD_BREAKPOINT_PX) {
+    await activate(page, 'navigator-toggle', 'Enter', screen);
+  }
   await activate(page, 'go-to-question-18', 'Enter', screen);
   await expect(card(page, 'hoeren-18')).toBeVisible();
   await expectUsableLayout(page, `${screen} hoeren 18-20`);
@@ -236,6 +244,9 @@ test('release failures never fake saved state', async ({ browser }) => {
     });
 
     await context.unroute(SIGN_URL);
+    // The recording belongs to Hören: its retry is reached there.
+    await page.getByTestId('block-link-hoeren').click();
+    await page.waitForURL(HOEREN_URL);
     await tabTo(page, status.getByRole('button'), 'audio retry');
     await page.keyboard.press('Enter');
     await expect(status).toHaveAttribute('data-status', 'ready');
@@ -974,6 +985,11 @@ test('keyboard reaches and activates every release action', async ({
   );
   await activate(page, 'set-previous', 'Space', screen);
   await expect(card(page, 'hoeren-1')).toBeVisible();
+  await activate(page, 'navigator-toggle', 'Enter', screen);
+  await expect(page.getByTestId('navigator-toggle')).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
   await activate(page, 'go-to-question-10', 'Enter', screen);
   await expect(card(page, 'hoeren-10')).toBeVisible();
   await expect(card(page, 'hoeren-11')).toBeVisible();
@@ -1054,7 +1070,7 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
     await expectStatus(card(page, questionId), 'saved');
   };
   const goTo = async (number: number, questionId: string) => {
-    await page.getByTestId(`go-to-question-${number}`).click();
+    await goToStep(page, number);
     await expect(card(page, questionId)).toBeVisible();
   };
 

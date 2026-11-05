@@ -162,6 +162,7 @@ export const TrainingShell = ({
               variant={block === current ? 'contained' : 'outlined'}
               aria-current={block === current ? 'page' : undefined}
               data-testid={`block-link-${block}`}
+              sx={{ minHeight: 44 }}
             >
               {t(block)}
             </Button>
@@ -197,7 +198,7 @@ export const TrainingShell = ({
   return (
     <TrainingContext.Provider value={state}>
       <Stack
-        spacing={3}
+        spacing={{ xs: 1.5, sm: 3 }}
         data-testid="training-shell"
         data-attempt-id={attemptId}
         data-submission={submission.phase}
@@ -206,6 +207,7 @@ export const TrainingShell = ({
         {trackIds.map((trackId, trackIndex) => (
           <AudioPlayer
             key={trackId}
+            isActive={current === 'hoeren'}
             resolveAudio={() => resolveAudio({ attemptId, trackId })}
             initialPosition={
               trackIndex === 0 ? (initialProgress?.positionSeconds ?? 0) : 0
@@ -219,9 +221,11 @@ export const TrainingShell = ({
           />
         ))}
         {/* The dictionary wraps only the block page: the recording, the
-            answers and the submission keep their own lifecycle. */}
+            answers and the submission keep their own lifecycle. Its switch
+            is portalled to the header; the recording belongs to Hören and
+            is paused and hidden on Lesen. */}
         <DictionaryBoundary>{children}</DictionaryBoundary>
-        <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
+        <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 3 } }}>
           <AttemptSubmissionControls
             phase={submission.phase}
             confirmation={submission.confirmation}

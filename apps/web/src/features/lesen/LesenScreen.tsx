@@ -11,6 +11,8 @@ import Typography from '@mui/material/Typography';
 import type { ExamQuestion, ExamText, Selections } from '@b1k/domain';
 import { GermanText } from '../dictionary/GermanText';
 import { QuestionCard } from '../practice/QuestionCard';
+import { QuestionNavigator } from '../practice/QuestionNavigator';
+import type { NavigatorStep } from '../practice/QuestionNavigator';
 import { useTraining } from '../training/TrainingContext';
 
 // The reading position: the paragraph of a text the guest has read up to.
@@ -246,6 +248,18 @@ export const LesenScreen = ({
     Object.hasOwn(selections, item.id),
   ).length;
 
+  const navigatorSteps: NavigatorStep[] = lesen.map((item) => ({
+    key: item.id,
+    label: `${item.number}`,
+    number: item.number,
+    count: 1,
+    teil: item.teil,
+    progress:
+      Object.hasOwn(pending, item.id) || Object.hasOwn(selections, item.id)
+        ? 'answered'
+        : 'empty',
+  }));
+
   const choice = Object.hasOwn(pending, question.id)
     ? pending[question.id]
     : undefined;
@@ -255,37 +269,16 @@ export const LesenScreen = ({
     : 0;
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={{ xs: 1.5, sm: 2 }}>
       <Typography variant="body2" color="text.secondary">
         {t('intro', { count: total })}
       </Typography>
-      <nav aria-label={tSet('navigation')}>
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          sx={{ alignItems: 'center', flexWrap: 'wrap' }}
-        >
-          <Typography data-testid="set-position" sx={{ mr: 1 }}>
-            {tSet('position', { current: index + 1, total })}
-          </Typography>
-          {lesen.map((item, itemIndex) => (
-            <Button
-              key={item.id}
-              size="small"
-              variant={itemIndex === index ? 'contained' : 'outlined'}
-              aria-current={itemIndex === index ? 'step' : undefined}
-              aria-label={tSet('goTo', { number: item.number, count: 1 })}
-              data-testid={`go-to-question-${item.number}`}
-              disabled={isSaving}
-              onClick={() => setIndex(itemIndex)}
-              sx={{ minWidth: 40 }}
-            >
-              {item.number}
-            </Button>
-          ))}
-        </Stack>
-      </nav>
+      <QuestionNavigator
+        steps={navigatorSteps}
+        index={index}
+        isDisabled={isSaving}
+        onSelect={setIndex}
+      />
       {text ? (
         <>
           <Stack
@@ -300,6 +293,7 @@ export const LesenScreen = ({
                 aria-pressed={view === item}
                 data-testid={`lesen-view-${item}`}
                 onClick={() => setView(item)}
+                sx={{ flex: 1, minHeight: 44 }}
               >
                 {t(item === 'text' ? 'showText' : 'showQuestions')}
               </Button>
@@ -308,8 +302,8 @@ export const LesenScreen = ({
           <Box
             sx={{
               display: { xs: 'block', md: 'grid' },
-              gridTemplateColumns: { md: '1fr 1fr' },
-              gap: 2,
+              gridTemplateColumns: { md: 'minmax(0, 1.15fr) minmax(0, 1fr)' },
+              gap: { xs: 1.5, md: 2 },
               alignItems: 'start',
             }}
           >
@@ -323,7 +317,8 @@ export const LesenScreen = ({
               data-text-id={text.id}
               data-anchor={shownAnchor}
               sx={{
-                p: { xs: 2, sm: 3 },
+                p: { xs: 1.5, sm: 3 },
+                minWidth: 0,
                 display: {
                   xs: view === 'text' ? 'block' : 'none',
                   md: 'block',
@@ -334,13 +329,20 @@ export const LesenScreen = ({
                 maxHeight: { md: 'calc(100vh - 32px)' },
               }}
             >
-              <Typography component="h2" variant="h6" lang="de" gutterBottom>
+              <Typography
+                component="h2"
+                variant="readingTitle"
+                lang="de"
+                gutterBottom
+              >
                 <GermanText>{text.title}</GermanText>
               </Typography>
               <Stack spacing={2} lang="de">
                 {paragraphs.map((paragraph, paragraphIndex) => (
                   <Typography
                     key={paragraphIndex}
+                    component="p"
+                    variant="lesenBody"
                     data-paragraph={paragraphIndex}
                     data-testid={`reading-paragraph-${paragraphIndex}`}
                     sx={{ whiteSpace: 'pre-wrap' }}

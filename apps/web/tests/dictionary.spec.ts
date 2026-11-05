@@ -381,10 +381,8 @@ test('translator toggle persists and disables lookups', async ({ browser }) => {
   await goToLesen(page);
   await expect(toggleOf(page)).toHaveAttribute('aria-pressed', 'true');
   await setTranslator(page, false);
-  await expect(page.getByTestId('dictionary-bar')).toHaveAttribute(
-    'data-enabled',
-    'false',
-  );
+  await expect(toggleOf(page)).toHaveAttribute('data-enabled', 'false');
+  await expect(page.getByTestId('dictionary-bar')).toHaveCount(0);
 
   await page.reload();
   await expect(page.getByTestId('reading-text')).toBeVisible();
@@ -516,7 +514,9 @@ test('blocks translator when disabled', async ({ browser }) => {
   await page.keyboard.press('Escape');
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
   const button = page.getByTestId('dictionary-translate-selection');
-  await button.click();
+  // The action is shown only while it has the focus: the keyboard reaches it.
+  await button.focus();
+  await page.keyboard.press('Enter');
   await expect(page.getByTestId('dictionary-selection-notice')).toBeVisible();
   await paragraph.evaluate((element) => {
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
@@ -844,8 +844,13 @@ test('dictionary preserves audio and Lesen reading anchor', async ({
   expect(JSON.stringify(await readProgress(attemptId))).toContain(
     `"paragraph":${PARAGRAPH}`,
   );
-  // The recording still plays across the block change.
-  expect((await snapshotOf(page)).paused).toBe(false);
+  // Lesen paused the recording at its place; the element and the marker of
+  // the guest survived the dictionary and the block change.
+  const onLesen = await snapshotOf(page);
+  expect(onLesen.paused).toBe(true);
+  expect(onLesen.isConnected).toBe(true);
+  expect(onLesen.marker).toBe('dictionary');
+  expect(onLesen.currentTime).toBeGreaterThanOrEqual(after.currentTime);
   await context.close();
 });
 

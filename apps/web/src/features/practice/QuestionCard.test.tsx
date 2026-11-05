@@ -80,4 +80,23 @@ describe('QuestionCard', () => {
     expect(html).toContain('data-status="saved"');
     expect(html).toMatch(/value="b"[^>]*checked|checked[^>]*value="b"/);
   });
+
+  it('shows the short part caption without the level note', () => {
+    const html = render(null);
+    expect(html).toContain('Part of the exam: Hören Teil 1');
+    expect(html).not.toContain('no official level');
+    expect(html).not.toContain('task 1.');
+  });
+
+  it('uses the learning typography and a letter beside each radio', () => {
+    const html = render('a');
+    // The task is a heading in German; the options are labelled rows.
+    expect(html).toMatch(/<h2[^>]*lang="de"/);
+    expect(labelTexts(html)).toContain('b Antwort');
+    expect(labelTexts(html)).toContain(
+      'a &lt;script&gt;alert(2)&lt;/script&gt;',
+    );
+    // Only the chosen option is checked.
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+  });
 });
