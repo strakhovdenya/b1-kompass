@@ -5,8 +5,8 @@ import type { ServerDeps } from '../db';
 // It asks the database gate for the current confirmed revision: a draft
 // head, a missing profile or a mismatch with the version or its recording
 // give null, never an older confirmed revision. Creating and confirming a
-// profile belong only to the owner tool (scripts/manage-timing-profile.ts);
-// no HTTP route and no runtime role can do either.
+// profile belong only to the owner tool under scripts/; no HTTP route and
+// no runtime role can do either.
 // The profile is exam configuration, not guest data, like the published
 // version itself: a guest-facing caller checks its session as for any other
 // operation before it acts on the value. This read only informs; the timed start of #43 calls the same gate inside
