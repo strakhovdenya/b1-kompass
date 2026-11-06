@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server';
 import Alert from '@mui/material/Alert';
 import { ModeSelection } from '../../../features/training/ModeSelection';
 import { readExamChoice } from '../../../server/attempts/read';
+import { replaceGuestAction } from '../../../server/next/actions';
 import { getCurrentGuest, getServerDeps } from '../../../server/next/request';
 
 export const dynamic = 'force-dynamic';
@@ -37,6 +38,7 @@ const ChoicePage = async ({ params }: ChoicePageProps) => {
       hoerenCount={choice.hoerenCount}
       lesenCount={choice.lesenCount}
       activeAttemptId={choice.activeAttemptId}
+      replaceGuest={replaceGuestAction}
     />
   );
 };

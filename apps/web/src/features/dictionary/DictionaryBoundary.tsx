@@ -38,8 +38,9 @@ import { useDictionarySetting } from './settings';
 // - desktop: a non-modal Popper beside the word after a 500 ms hover, a
 //   double click or the selection of one word; it stays while the pointer is
 //   on it and closes on Escape, a click outside or the close button;
-// - phone: a tap on a word or the selection of one word opens a bottom
-//   sheet (a persistent Drawer, no scroll lock); the system selection stays;
+// - phone: holding a finger still on a word for 1500 ms opens a bottom sheet
+//   (a persistent Drawer, no scroll lock); a tap, a scroll or a moving finger
+//   never opens it, and the system selection stays;
 // - keyboard and screen readers: one button translates the selected word. It
 //   is the first control inside the boundary, shown only while it has the
 //   focus; focus moves into the card and returns to the button on close.
@@ -82,7 +83,12 @@ const SKIP_ACTION_SX = {
 } as const;
 
 export const HOVER_DELAY_MS = 500;
-const SELECTION_DELAY_MS = 600;
+// A finger must rest on one word this long before the sheet opens, and may
+// drift this far (CSS pixels) while it does.
+export const LONG_PRESS_MS = 1500;
+const LONG_PRESS_TOLERANCE_PX = 10;
+// How long after a release the click it may produce is still swallowed.
+const CLICK_AFTER_RELEASE_MS = 400;
 const MAX_REMEMBERED = 200;
 
 type Presentation = 'popper' | 'sheet';
@@ -238,25 +244,59 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
 
   useEffect(() => () => controllerRef.current?.close(), []);
 
-  // The pointer and selection listeners exist only while the translator is
-  // on. They are native listeners of the boundary, so events inside the
-  // card (a portal) never start a new lookup.
+  // The pointer listeners exist only while the translator is on. They are
+  // native listeners of the boundary, so events inside the card (a portal)
+  // never start a new lookup.
   useEffect(() => {
     const root = rootRef.current;
     if (!enabled || !root) return;
     let hoverTimer = 0;
-    let selectionTimer = 0;
+    let pressTimer = 0;
+    let press: { x: number; y: number } | null = null;
+    let isClickSuppressed = false;
+    let suppressTimer = 0;
     let pointerType = 'mouse';
 
     const clearHover = () => window.clearTimeout(hoverTimer);
 
+    const cancelPress = () => {
+      window.clearTimeout(pressTimer);
+      press = null;
+    };
+
+    // Touch and pen: a pending long press on the word under the finger.
+    // Nothing is prevented here, so the native scroll stays untouched.
     const handlePointerDown = (event: PointerEvent) => {
       pointerType = event.pointerType;
       clearHover();
+      cancelPress();
+      isClickSuppressed = false;
+      if (event.pointerType === 'mouse' || !event.isPrimary) return;
+      if (!zoneOf(event.target as Node, root)) return;
+      const start = { x: event.clientX, y: event.clientY };
+      press = start;
+      pressTimer = window.setTimeout(() => {
+        if (press !== start) return;
+        press = null;
+        const hit = wordAtPoint(start.x, start.y, root);
+        if (!hit) return;
+        // The click that may follow the release must not act on the word.
+        isClickSuppressed = true;
+        openWord(hit, 'sheet', null);
+      }, LONG_PRESS_MS);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (event.pointerType !== 'mouse' || event.buttons !== 0) return;
+      if (event.pointerType !== 'mouse') {
+        if (!press) return;
+        const moved = Math.hypot(
+          event.clientX - press.x,
+          event.clientY - press.y,
+        );
+        if (moved > LONG_PRESS_TOLERANCE_PX) cancelPress();
+        return;
+      }
+      if (event.buttons !== 0) return;
       clearHover();
       if (!zoneOf(event.target as Node, root)) return;
       const { clientX, clientY } = event;
@@ -276,40 +316,46 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       }, 0);
     };
 
-    const handleClick = (event: MouseEvent) => {
-      if (pointerType === 'mouse') return;
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed) return;
-      const hit = wordAtPoint(event.clientX, event.clientY, root);
-      if (hit) openWord(hit, 'sheet', null);
+    // The click of a release follows it at once; a flag left over from a
+    // release without a click must not swallow a later keyboard click.
+    const handlePointerRelease = () => {
+      cancelPress();
+      window.clearTimeout(suppressTimer);
+      suppressTimer = window.setTimeout(() => {
+        isClickSuppressed = false;
+      }, CLICK_AFTER_RELEASE_MS);
     };
 
-    // A word selected on a touch screen (long press) opens the sheet once
-    // the selection has settled.
-    const handleSelectionChange = () => {
-      if (pointerType === 'mouse') return;
-      window.clearTimeout(selectionTimer);
-      selectionTimer = window.setTimeout(() => {
-        const hit = wordOfCurrentSelection(root);
-        if (hit) openWord(hit, 'sheet', null);
-      }, SELECTION_DELAY_MS);
+    // After a long press the release must neither open the word a second
+    // time nor choose the answer of the label the word sits in.
+    const handleClickCapture = (event: MouseEvent) => {
+      if (!isClickSuppressed) return;
+      isClickSuppressed = false;
+      event.preventDefault();
+      event.stopPropagation();
     };
 
     root.addEventListener('pointerdown', handlePointerDown);
     root.addEventListener('pointermove', handlePointerMove);
     root.addEventListener('pointerleave', clearHover);
     root.addEventListener('mouseup', handleMouseUp);
-    root.addEventListener('click', handleClick);
-    document.addEventListener('selectionchange', handleSelectionChange);
+    root.addEventListener('click', handleClickCapture, true);
+    document.addEventListener('pointerup', handlePointerRelease);
+    document.addEventListener('pointercancel', handlePointerRelease);
+    // A scroll of the page or of any inner box ends the wait.
+    document.addEventListener('scroll', cancelPress, true);
     return () => {
       clearHover();
-      window.clearTimeout(selectionTimer);
+      cancelPress();
+      window.clearTimeout(suppressTimer);
       root.removeEventListener('pointerdown', handlePointerDown);
       root.removeEventListener('pointermove', handlePointerMove);
       root.removeEventListener('pointerleave', clearHover);
       root.removeEventListener('mouseup', handleMouseUp);
-      root.removeEventListener('click', handleClick);
-      document.removeEventListener('selectionchange', handleSelectionChange);
+      root.removeEventListener('click', handleClickCapture, true);
+      document.removeEventListener('pointerup', handlePointerRelease);
+      document.removeEventListener('pointercancel', handlePointerRelease);
+      document.removeEventListener('scroll', cancelPress, true);
     };
   }, [enabled, openWord]);
 

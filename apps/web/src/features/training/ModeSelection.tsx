@@ -15,6 +15,9 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { AttemptMode, AttemptSelection } from '@b1k/domain';
 import { attemptPath, requestStart } from './attempt-client';
+import type { ReplaceGuest, StartRequest } from './attempt-client';
+import { GuestReplacementDialog } from './GuestReplacementDialog';
+import type { ReplacementProblem } from './GuestReplacementDialog';
 
 interface ModeSelectionProps {
   examSlug: string;
@@ -24,6 +27,7 @@ interface ModeSelectionProps {
   hoerenCount: number;
   lesenCount: number;
   activeAttemptId: string | null;
+  replaceGuest: ReplaceGuest;
 }
 
 type StartStatus =
@@ -33,7 +37,8 @@ type StartStatus =
   | 'conflict'
   | 'changed'
   | 'not-enabled'
-  | 'guest-too-short';
+  | 'guest-too-short'
+  | 'replacement-not-needed';
 
 // The free training and one timed block are enabled; the full exam is shown
 // as coming, without a way to start it. The time of a block is set by the
@@ -73,6 +78,7 @@ export const ModeSelection = ({
   hoerenCount,
   lesenCount,
   activeAttemptId,
+  replaceGuest,
 }: ModeSelectionProps) => {
   const t = useTranslations('choice');
   const router = useRouter();
@@ -81,6 +87,10 @@ export const ModeSelection = ({
   const [mode, setMode] = useState<AttemptMode>('training');
   const [selection, setSelection] = useState<AttemptSelection>('all');
   const commandId = useRef<string | null>(null);
+  const startRef = useRef<HTMLButtonElement | null>(null);
+  const [isDialogOpen, setDialogOpen] = useState(false);
+  const [isReplacing, setReplacing] = useState(false);
+  const [problem, setProblem] = useState<ReplacementProblem>(null);
   const counts: Readonly<Record<AttemptSelection, number>> = {
     all: questionCount,
     hoeren: hoerenCount,
@@ -106,10 +116,9 @@ export const ModeSelection = ({
     }
   };
 
-  const start = async () => {
+  const startRequest = (): StartRequest => {
     commandId.current ??= crypto.randomUUID();
-    setStatus('starting');
-    const result = await requestStart({
+    return {
       commandId: commandId.current,
       examSlug,
       mode,
@@ -117,7 +126,12 @@ export const ModeSelection = ({
       selection,
       sourceAttemptId: null,
       expectedVersionId: versionId,
-    });
+    };
+  };
+
+  const start = async () => {
+    setStatus('starting');
+    const result = await requestStart(startRequest());
     if (result.ok && result.result.outcome === 'accepted') {
       router.push(attemptPath(examSlug, result.result.attemptId));
       return;
@@ -144,9 +158,65 @@ export const ModeSelection = ({
     }
     if (result.failure === 'guest-too-short') {
       setStatus('guest-too-short');
+      setProblem(null);
+      setDialogOpen(true);
       return;
     }
     setStatus(result.failure === 'not-enabled' ? 'not-enabled' : 'error');
+  };
+
+  // The consent was given: the server checks the refusal again and only then
+  // creates the new guest and its cookie. The chosen block is started by a
+  // separate request afterwards, with a new commandId, under the new cookie.
+  const replace = async () => {
+    setReplacing(true);
+    setProblem(null);
+    let answer;
+    try {
+      answer = await replaceGuest({ consent: true, start: startRequest() });
+    } catch {
+      setReplacing(false);
+      setProblem('error');
+      return;
+    }
+    setReplacing(false);
+    if (answer.status === 'replaced') {
+      setDialogOpen(false);
+      commandId.current = null;
+      router.refresh();
+      await start();
+      return;
+    }
+    if (answer.status === 'rate-limited') {
+      setProblem('busy');
+      return;
+    }
+    setDialogOpen(false);
+    if (answer.status === 'not-needed') {
+      setStatus('replacement-not-needed');
+      return;
+    }
+    if (answer.status === 'conflict') {
+      commandId.current = null;
+      setConflictId(answer.attemptId);
+      setStatus('conflict');
+      return;
+    }
+    if (answer.failure === 'session-invalid') {
+      router.push('/');
+      return;
+    }
+    if (answer.failure === 'not-found') {
+      commandId.current = null;
+      setStatus('changed');
+      router.refresh();
+      return;
+    }
+    if (answer.failure === 'not-enabled') {
+      setStatus('not-enabled');
+      return;
+    }
+    setStatus('error');
   };
 
   const continueId = conflictId ?? activeAttemptId;
@@ -234,6 +304,7 @@ export const ModeSelection = ({
         <Button
           variant="contained"
           size="large"
+          ref={startRef}
           data-testid="start-attempt"
           disabled={isStarting}
           onClick={() => void start()}
@@ -259,10 +330,34 @@ export const ModeSelection = ({
             role="alert"
             data-testid="start-guest-too-short"
           >
-            {t('guestTooShort')}
+            <Stack spacing={1} sx={{ alignItems: 'flex-start' }}>
+              {t('guestTooShort')}
+              <Button
+                size="small"
+                color="inherit"
+                variant="outlined"
+                data-testid="guest-replacement-open"
+                onClick={() => setDialogOpen(true)}
+              >
+                {t('replaceOpen')}
+              </Button>
+            </Stack>
+          </Alert>
+        ) : null}
+        {status === 'replacement-not-needed' ? (
+          <Alert severity="info" data-testid="replacement-not-needed">
+            {t('replaceNotNeeded')}
           </Alert>
         ) : null}
       </Stack>
+      <GuestReplacementDialog
+        open={isDialogOpen}
+        isWorking={isReplacing || isStarting}
+        problem={problem}
+        onConfirm={() => void replace()}
+        onCancel={() => setDialogOpen(false)}
+        onExited={() => startRef.current?.focus()}
+      />
     </Stack>
   );
 };

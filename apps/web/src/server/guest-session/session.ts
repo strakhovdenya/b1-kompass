@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { DEFAULT_LOCALE, isGuestActive, isLocale } from '@b1k/domain';
-import type { Locale } from '@b1k/domain';
+import type { CommandResult, Locale, RunTechnicalFailure } from '@b1k/domain';
 import { ruleViolation } from '../db';
 import type { ServerDeps } from '../db';
+import type { TimedStartVerdict } from '../attempts/start';
 
 export interface GuestContext {
   sessionId: string;
@@ -101,4 +102,40 @@ export const setGuestLocale = async (
     .select('id');
   if (error) throw new Error('Guest locale was not saved', { cause: error });
   return data.length === 1;
+};
+
+export type ReplaceGuestResult =
+  | { status: 'created'; created: CreatedGuest }
+  | { status: 'rate-limited' }
+  // The current guest can still finish the block: nothing was created.
+  | { status: 'not-needed' }
+  // An active attempt of the exam holds the slot: no replacement helps.
+  | { status: 'conflict'; attemptId: string }
+  | { status: 'refused'; failure: RunTechnicalFailure };
+
+// The explicit replacement of a guest that is too short for a timed block.
+// `check` is the read-only preflight of the very start the guest asked for,
+// run now; only its own guest-too-short answer allows a new session, so an
+// active attempt, a draft profile, a changed version or a sufficient reserve
+// never rotate anything. The old session is left as it is: its term is not
+// extended, its data is not moved, and the new session goes through the same
+// rate-limited creation as every guest. Nothing is written before it. The
+// window between the check and the cookie write is not closed atomically.
+export const replaceGuestSession = async (
+  deps: ServerDeps,
+  perMinute: number,
+  check: () => Promise<CommandResult<TimedStartVerdict>>,
+): Promise<ReplaceGuestResult> => {
+  const verdict = await check();
+  if (!verdict.ok) {
+    if (verdict.failure !== 'guest-too-short') {
+      return { status: 'refused', failure: verdict.failure };
+    }
+    const result = await createGuestSession(deps, perMinute);
+    return result.status === 'created' ? result : { status: 'rate-limited' };
+  }
+  if (verdict.result.outcome === 'conflict') {
+    return { status: 'conflict', attemptId: verdict.result.attemptId };
+  }
+  return { status: 'not-needed' };
 };
