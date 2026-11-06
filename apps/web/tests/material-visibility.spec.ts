@@ -17,7 +17,12 @@ import {
   prepareExamAudio,
   resolveAttemptAudio,
 } from '../src/server/audio/audio';
-import { beginLesen } from '../src/server/attempts/read';
+import {
+  hasLesenOpened,
+  toLifecycleState,
+  visibleSkillsOf,
+} from '../src/server/attempts/projection';
+import { beginLesen, readAttemptRun } from '../src/server/attempts/read';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import {
@@ -294,6 +299,33 @@ test('lesen becomes visible only after its trusted phase starts', async ({
       expect(sent.lesenFinalUrl).not.toContain('/lesen');
     }
   }
+
+  // A submission whose result is not stored yet (submitted) shows only
+  // what was opened before it: an early submission in Hören or in the
+  // transition never reveals Lesen; only a completed review shows all.
+  const early = await newGuest(depsNow());
+  const opened = examAgo(early, exam, H + 10);
+  const read = await readAttemptRun(depsNow(), early.guest, opened.attemptId);
+  if (read.status !== 'ready') throw new Error('run is not readable');
+  const at = (offsetMs: number) =>
+    new Date(opened.startMs + offsetMs).toISOString();
+  const submittedAt = (offsetMs: number) => {
+    const state = toLifecycleState(
+      { ...read.view, status: 'submitted' },
+      opened.startMs + offsetMs,
+    );
+    if (!state) throw new Error('no lifecycle');
+    return visibleSkillsOf(state, hasLesenOpened(read.view, at(offsetMs)));
+  };
+  expect(submittedAt(SECOND_MS)).toEqual(['hoeren']);
+  expect(submittedAt((H + 5) * SECOND_MS)).toEqual(['hoeren']);
+  expect(submittedAt((H + T) * SECOND_MS)).toEqual(['hoeren', 'lesen']);
+  const completed = toLifecycleState(
+    { ...read.view, status: 'completed' },
+    opened.startMs + SECOND_MS,
+  );
+  if (!completed) throw new Error('no lifecycle');
+  expect(visibleSkillsOf(completed, false)).toEqual(['hoeren', 'lesen']);
 });
 
 test('full phase change refreshes layout material without exposing early lesen', async ({

@@ -37,6 +37,7 @@ import {
   parseAssignment,
   parsePinnedDurations,
   parseStoredProgress,
+  hasLesenOpened,
   toAttemptSummary,
   toLifecycleState,
   toPracticeState,
@@ -276,14 +277,16 @@ export const readAttemptPage = async (
     versionId: version.id,
     questionIds: read.view.questionIds,
   };
-  // Only the visible phase of an open exam is projected; a closed attempt
-  // and its review name the whole assignment.
+  // Only the visible phase of an open exam is projected, and of a closed
+  // one only what was opened before it closed; the review of a completed
+  // attempt names the whole assignment.
   const visible = {
     ...read.view,
     questionIds: visibleQuestionIds(
       read.view.questionIds,
       version.content,
       state,
+      hasLesenOpened(read.view, run.submissionAcceptedAt),
     ),
   };
   const review =
@@ -378,7 +381,12 @@ const runStatus = async (
   const all = onlyAssigned(questionIds, counted);
   // The answers of the visible tasks only, as for the page; the numbers of
   // the whole assignment come with the summary.
-  const visibleIds = visibleQuestionIds(questionIds, content, state);
+  const visibleIds = visibleQuestionIds(
+    questionIds,
+    content,
+    state,
+    hasLesenOpened(read.view, run.submissionAcceptedAt),
+  );
   return {
     ok: true,
     result: {

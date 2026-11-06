@@ -156,14 +156,37 @@ export const toLifecycleState = (
 
 const ALL_SKILLS: readonly Skill[] = ['hoeren', 'lesen'];
 
-// The skills whose material the public projection of the run may carry. A
-// closed attempt and every free or timed run carry their whole assignment.
-// An open exam carries only its trusted phase: Hören during Hören and the
-// transition (already given, no longer answerable), Lesen only once Lesen
-// has started; an exam past its end that is not closed yet carries nothing.
-// The internal assignment of all tasks stays on the server for scoring.
-export const visibleSkillsOf = (state: LifecycleState): readonly Skill[] => {
-  if (state.mode !== 'exam' || state.status !== 'active') return ALL_SKILLS;
+// Whether the Lesen of an exam had started by the moment its run was
+// closed (submitted or closed by its deadline); never for an open run.
+export const hasLesenOpened = (
+  view: StoredLifecycle,
+  closedAt: string | null,
+): boolean => {
+  if (view.mode !== 'exam' || closedAt === null) return false;
+  const { hoerenMs = 0, transitionMs = 0 } = view.durations;
+  const lesenStartMs = view.lesenStartedAt
+    ? Date.parse(view.lesenStartedAt)
+    : Date.parse(view.acceptedAt) + hoerenMs + transitionMs;
+  return Date.parse(closedAt) >= lesenStartMs;
+};
+
+// The skills whose material the public projection of the run may carry.
+// Every free or timed run and a completed exam (its review) carry their
+// whole assignment. An open exam carries only its trusted phase: Hören
+// during Hören and the transition (already given, no longer answerable),
+// Lesen only once Lesen has started; an exam past its end that is not
+// closed yet carries nothing. A closed exam whose result is not stored yet
+// carries Lesen only if Lesen had started before it closed: an early
+// submission never reveals a Lesen that was not opened. The internal
+// assignment of all tasks stays on the server for scoring.
+export const visibleSkillsOf = (
+  state: LifecycleState,
+  isLesenOpened = false,
+): readonly Skill[] => {
+  if (state.mode !== 'exam' || state.status === 'completed') return ALL_SKILLS;
+  if (state.status !== 'active') {
+    return isLesenOpened ? ALL_SKILLS : ['hoeren'];
+  }
   if (state.phase === 'hoeren' || state.phase === 'transition') {
     return ['hoeren'];
   }
@@ -223,8 +246,9 @@ export const visibleQuestionIds = (
   questionIds: readonly string[],
   content: ExamContent,
   state: LifecycleState,
+  isLesenOpened = false,
 ): readonly string[] => {
-  const skills = visibleSkillsOf(state);
+  const skills = visibleSkillsOf(state, isLesenOpened);
   const visible = new Set(
     content.questions
       .filter((item) => skills.includes(item.skill))

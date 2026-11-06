@@ -146,16 +146,18 @@ export type AudioAccessError =
   | 'phase-closed'
   | 'unavailable';
 
-// The address; for a full exam also the server moment it was issued at and
-// how many seconds of Hören it must still cover. The free player gets the
-// plain PlayableAudio.
+// The address of a full exam with the server moment it was issued at and
+// how many seconds of Hören it must still cover: exactly the browser
+// contract PreparedAudio. The free player gets the plain PlayableAudio.
 export interface IssuedAudio extends PlayableAudio {
-  serverNow?: string;
-  coverSeconds?: number;
+  serverNow: string;
+  coverSeconds: number;
 }
 
+// The free player gets PlayableAudio, a full exam its IssuedAudio.
 export type AudioAccessResult =
-  { ok: true; audio: IssuedAudio } | { ok: false; error: AudioAccessError };
+  | { ok: true; audio: PlayableAudio | IssuedAudio }
+  | { ok: false; error: AudioAccessError };
 
 const trackIdSchema = z
   .string()
@@ -244,24 +246,43 @@ const audioWindowOf = async (
   return examWindowOf(deps, sessionId, attempt);
 };
 
-const issue = async (
+type Issued<Audio> =
+  { ok: true; audio: Audio } | { ok: false; error: 'not-found' };
+
+const signed = async (
+  deps: ServerDeps,
+  track: AudioTrackRef,
+  ttlSeconds: number,
+): Promise<Issued<PlayableAudio>> => {
+  const adapter = ADAPTERS[track.kind];
+  if (!adapter) return { ok: false, error: 'not-found' };
+  return { ok: true, audio: await adapter.resolve(deps, track, ttlSeconds) };
+};
+
+// The address of a full exam: the moment of issue on the server clock (the
+// address lives exactly its TTL from it) and the Hören it must cover.
+const issueExam = async (
+  deps: ServerDeps,
+  track: AudioTrackRef,
+  ttlSeconds: number,
+  coverSeconds: number,
+): Promise<Issued<IssuedAudio>> => {
+  const result = await signed(deps, track, ttlSeconds);
+  if (!result.ok) return result;
+  const { audio } = result;
+  const issuedMs = Date.parse(audio.expiresAt) - ttlSeconds * SECOND_MS;
+  const serverNow = new Date(issuedMs).toISOString();
+  return { ok: true, audio: { ...audio, serverNow, coverSeconds } };
+};
+
+const issue = (
   deps: ServerDeps,
   track: AudioTrackRef,
   window: AudioWindow,
-): Promise<AudioAccessResult> => {
-  const adapter = ADAPTERS[track.kind];
-  if (!adapter) return { ok: false, error: 'not-found' };
-  const audio = await adapter.resolve(deps, track, window.ttlSeconds);
-  if (window.coverSeconds === null) return { ok: true, audio };
-  // The moment of issue on the server clock: the address lives exactly its
-  // TTL from it.
-  const issuedMs = Date.parse(audio.expiresAt) - window.ttlSeconds * SECOND_MS;
-  const serverNow = new Date(issuedMs).toISOString();
-  return {
-    ok: true,
-    audio: { ...audio, serverNow, coverSeconds: window.coverSeconds },
-  };
-};
+): Promise<AudioAccessResult> =>
+  window.coverSeconds === null
+    ? signed(deps, track, window.ttlSeconds)
+    : issueExam(deps, track, window.ttlSeconds, window.coverSeconds);
 
 // Resolves the audio of the guest's own attempt, through the Server Action
 // of the free player and the HTTP route of the full exam alike: the phase
@@ -379,10 +400,12 @@ export const prepareExamAudio = async (
     if (!profile || !track || tracks.length !== 1) {
       return { ok: false, error: 'not-found' };
     }
-    return await issue(deps, track, {
-      ttlSeconds: profile.hoerenSeconds + EXAM_AUDIO_MARGIN_SECONDS,
-      coverSeconds: profile.hoerenSeconds,
-    });
+    return await issueExam(
+      deps,
+      track,
+      profile.hoerenSeconds + EXAM_AUDIO_MARGIN_SECONDS,
+      profile.hoerenSeconds,
+    );
   } catch (error) {
     console.error({ error });
     return { ok: false, error: 'unavailable' };
