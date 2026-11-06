@@ -670,6 +670,9 @@ test('late pending answer and expired cancellation cannot change result', async 
 
   // A competing request holds the row while a change of the answer and a
   // cancel arrive before the deadline; the lock is released after it.
+  // A request waits on the lock only for the last seconds before the
+  // moment: the API roles have a statement timeout of 8 seconds.
+  await waitPast(started.deadlineMs - 3 * SECOND_MS, 0);
   const lock = await holdAttemptLock(started.attemptId);
   let late: Awaited<ReturnType<typeof saveAnswer>> | null = null;
   let cancelled: Awaited<ReturnType<typeof cancelAttempt>> | null = null;

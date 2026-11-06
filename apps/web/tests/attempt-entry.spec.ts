@@ -541,6 +541,10 @@ test('attempt reader preserves stored assignment and pinned metadata', async () 
       sourceAttemptId: null,
       questionIds: stored,
       acceptedAt: '2026-11-01T10:00:00+00:00',
+      // A free training pins no timing profile and is never closed by a
+      // deadline (#43).
+      durations: {},
+      isClosedByDeadline: false,
     },
   });
   const page = await readAttemptPage(

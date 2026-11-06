@@ -920,6 +920,9 @@ const timedStartedOn = async (
   };
 };
 
+// How long before a deadline or expiry the lock tests take the lock.
+const LOCK_LEAD_MS = 3000;
+
 const pause = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
@@ -1029,6 +1032,9 @@ test('timed admission uses post lock server deadline', async () => {
 
   // A save sent before the deadline waits for the row until after it: the
   // time is read again after the lock and the save is refused.
+  // A request waits on the lock only for the last seconds before the
+  // moment: the API roles have a statement timeout of 8 seconds.
+  await waitPast(started.deadlineMs - LOCK_LEAD_MS, 0);
   const lock = await holdAttemptLock(started.attemptId);
   let late: unknown = null;
   try {
@@ -1143,6 +1149,9 @@ test('guest expiry while waiting lock is enforced by production rpc', async () =
 
   // A save and a start pass the Node check of the guest, then wait for
   // their locks until the term is over.
+  // A request waits on the lock only for the last seconds before the
+  // moment: the API roles have a statement timeout of 8 seconds.
+  await waitPast(expiresMs - LOCK_LEAD_MS, 0);
   const rowLock = await holdAttemptLock(attemptId);
   const slotLock = await holdSlotLock(sessionOf(created), pilot.examId);
   let saved: unknown = null;
