@@ -162,5 +162,62 @@ begin
 end;
 $$;
 
+-- A timed run pinned to the current confirmed timing profile of its
+-- version, as the SQL start of #43 will write it: under the slot lock, the
+-- gate m2_private.current_confirmed_profile, then attempt and run with the
+-- returned revision and snapshot. Only for the isolated test database: the
+-- production start does not pin profiles yet. No command or event is
+-- written.
+create or replace function m2_test.insert_pinned_run_at(
+  p_session_id uuid,
+  p_version_id uuid,
+  p_selection text,
+  p_question_ids jsonb,
+  p_at timestamptz
+)
+returns uuid
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_exam_id uuid;
+  v_revision_id uuid;
+  v_snapshot jsonb;
+  v_attempt_id uuid;
+begin
+  select v.exam_id into v_exam_id from public.exam_versions v
+  where v.id = p_version_id;
+  perform pg_catalog.pg_advisory_xact_lock(
+    m2_private.slot_key(p_session_id, v_exam_id)
+  );
+  select g.revision_id, g.snapshot into v_revision_id, v_snapshot
+  from m2_private.current_confirmed_profile(p_version_id) g;
+  if v_revision_id is null then
+    raise exception 'no confirmed timing profile'
+      using errcode = 'P0001', hint = 'timing_profile_unconfirmed';
+  end if;
+  insert into public.attempts (
+    guest_session_id, exam_id, exam_version_id, scope, status,
+    created_at, updated_at
+  )
+  values (
+    p_session_id, v_exam_id, p_version_id, 'short-set', 'active', p_at, p_at
+  )
+  returning id into v_attempt_id;
+  insert into public.attempt_runs (
+    attempt_id, mode, purpose, selection, source_attempt_id, assignment,
+    accepted_at, timing_profile_revision_id, timing_profile_snapshot
+  )
+  values (
+    v_attempt_id, 'timed-block', 'normal', p_selection, null,
+    pg_catalog.jsonb_build_object(
+      'versionId', p_version_id, 'questionIds', p_question_ids
+    ),
+    p_at, v_revision_id, v_snapshot
+  );
+  return v_attempt_id;
+end;
+$$;
+
 revoke all on all functions in schema m2_test
   from public, anon, authenticated, service_role;

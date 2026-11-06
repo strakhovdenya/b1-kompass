@@ -6,8 +6,15 @@ import {
 import type { PilotAudio } from '../../../../scripts/seed-pilot-question';
 import { publishExamVersion } from '../../../../scripts/lib/publish-exam-version';
 import { serviceDb } from './db';
-import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './full-exam';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  FULL_TIMING,
+  FULL_TRACK_ID,
+  ensureConfirmedTestProfile,
+} from './full-exam';
 import { PAIR_CONTENT, PAIR_EXAM, PAIR_KEYS, PAIR_TRACK_ID } from './pair-exam';
+import { sqlRunnerAs } from './sql';
 
 // The test database gets the real pilot short set through the trusted owner
 // path, with a test-only key and a synthetic recording: neither the
@@ -26,8 +33,9 @@ const TONE_HZ = 440;
 const AMPLITUDE = 3000;
 
 // A deterministic 16-bit mono PCM WAV with a quiet tone: the same bytes on
-// every run, so a repeated publication finds the same version.
-export const createTestRecording = (): PilotAudio => {
+// every run, so a repeated publication finds the same version. Another tone
+// gives another recording with its own SHA-256.
+export const createTestRecording = (toneHz: number = TONE_HZ): PilotAudio => {
   const samples = SAMPLE_RATE * TEST_AUDIO_SECONDS;
   const dataBytes = samples * 2;
   const buffer = new ArrayBuffer(44 + dataBytes);
@@ -51,7 +59,7 @@ export const createTestRecording = (): PilotAudio => {
   ascii(36, 'data');
   view.setUint32(40, dataBytes, true);
   for (let i = 0; i < samples; i++) {
-    const value = Math.sin((2 * Math.PI * TONE_HZ * i) / SAMPLE_RATE);
+    const value = Math.sin((2 * Math.PI * toneHz * i) / SAMPLE_RATE);
     view.setInt16(44 + i * 2, Math.round(value * AMPLITUDE), true);
   }
   return { contentType: 'audio/wav', bytes: new Uint8Array(buffer) };
@@ -70,12 +78,15 @@ const globalSetup = async () => {
     keys: PAIR_KEYS,
     audio: [{ trackId: PAIR_TRACK_ID, ...createTestRecording() }],
   });
-  await publishExamVersion(serviceDb, {
+  const full = await publishExamVersion(serviceDb, {
     ...FULL_EXAM,
     content: FULL_PILOT.content,
     keys: FULL_PILOT.keys,
     audio: [{ trackId: FULL_TRACK_ID, ...createTestRecording() }],
   });
+  // Only here, in the isolated test database, the test set gets a confirmed
+  // timing profile; a repeated setup creates no new revision.
+  ensureConfirmedTestProfile(sqlRunnerAs('owner'), full.versionId, FULL_TIMING);
 };
 
 export default globalSetup;
