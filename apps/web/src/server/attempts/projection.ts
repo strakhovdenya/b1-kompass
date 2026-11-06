@@ -123,7 +123,12 @@ export const parseStoredProgress = (
 // commands, the audio gate) maps them the same way.
 export type StoredLifecycle = Pick<
   AttemptRunView,
-  'mode' | 'selection' | 'status' | 'acceptedAt' | 'durations' | 'lesenStartedAt'
+  | 'mode'
+  | 'selection'
+  | 'status'
+  | 'acceptedAt'
+  | 'durations'
+  | 'lesenStartedAt'
 >;
 
 export const toLifecycleState = (

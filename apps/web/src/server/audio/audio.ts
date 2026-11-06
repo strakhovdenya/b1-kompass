@@ -3,10 +3,7 @@ import type { LifecycleState } from '@b1k/domain';
 import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import { readConfirmedTimingProfile } from '../attempts/profiles';
-import {
-  parsePinnedDurations,
-  toLifecycleState,
-} from '../attempts/projection';
+import { parsePinnedDurations, toLifecycleState } from '../attempts/projection';
 import {
   callReconcile,
   findActiveAttempt,
