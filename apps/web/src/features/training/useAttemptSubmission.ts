@@ -91,6 +91,9 @@ interface SubmissionOptions {
   summary?: AttemptSummary | null;
   // Every status the server answered, to follow its trusted phase.
   onStatus?: (view: AttemptStatusView) => void;
+  // The answers the server held for the latest page (after a refresh, for
+  // example from another tab): they count as answered too.
+  pageAnswers?: Selections;
 }
 
 export interface AttemptSubmission {
@@ -140,6 +143,7 @@ export const useAttemptSubmission = ({
   onSync,
   summary = null,
   onStatus,
+  pageAnswers,
 }: SubmissionOptions): AttemptSubmission => {
   const router = useRouter();
   const [phase, setPhase] = useState<SubmissionPhase>(
@@ -180,10 +184,13 @@ export const useAttemptSubmission = ({
         questions,
         answers,
         phaseRevision: latestRevision.current,
-        stored: storedAnswered.current,
+        stored: new Set([
+          ...storedAnswered.current,
+          ...Object.keys(pageAnswers ?? {}),
+        ]),
         summary: latestSummary.current,
       }),
-    [questions],
+    [questions, pageAnswers],
   );
 
   const learn = useCallback(

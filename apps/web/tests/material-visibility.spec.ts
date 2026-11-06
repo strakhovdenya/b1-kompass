@@ -17,6 +17,7 @@ import {
   prepareExamAudio,
   resolveAttemptAudio,
 } from '../src/server/audio/audio';
+import { beginLesen } from '../src/server/attempts/read';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import {
@@ -47,6 +48,8 @@ import {
 import {
   examRunTimes,
   installM2Fixtures,
+  psql,
+  quote,
   secondsAgoSql,
   sqlRunnerAs,
   startExamAt,
@@ -336,7 +339,18 @@ test('full phase change refreshes layout material without exposing early lesen',
   expectNoLesen(await page.content(), 'transition page');
   expect(await markOf(page, 'training-shell')).toBe('kept');
 
-  await page.getByTestId('begin-lesen').click();
+  // Another tab starts Lesen and answers in it; this page learns the new
+  // phase from its own trusted status, not from the address.
+  const other = await beginLesen(depsNow(), created.token, { attemptId });
+  expect(other).toMatchObject({ ok: true, result: { outcome: 'accepted' } });
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId,
+    questionId: 'lesen-2',
+    optionId: fullKeyOf('lesen-2'),
+    revision: 1,
+  });
+  expect(saved.ok).toBe(true);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.waitForURL(LESEN_URL);
   await expect(page.getByTestId('training-shell')).toHaveAttribute(
     'data-phase',
@@ -346,9 +360,17 @@ test('full phase change refreshes layout material without exposing early lesen',
   await expect(card(page, 'hoeren-1')).toHaveCount(0);
   expect(await markOf(page, 'training-shell')).toBe('kept');
   expect(await markOf(page, 'exam-audio-element')).toBe('kept');
+  // The answer of the other tab arrives with the refreshed page and joins
+  // the answers of the same, still mounted shell: shown, and counted by the
+  // first confirmation without a renewal.
+  await page.getByTestId('go-to-question-2').click();
+  await expect(
+    optionIn(card(page, 'lesen-2'), fullKeyOf('lesen-2')),
+  ).toBeChecked();
   await page.getByTestId('finish-attempt').click();
   const confirmation = page.getByTestId('finish-confirmation');
-  await expect(confirmation).toHaveAttribute('data-skipped', '44');
+  await expect(confirmation).toHaveAttribute('data-skipped', '43');
+  await expect(page.getByTestId('finish-renewed')).toHaveCount(0);
   await expect(confirmation).toHaveAttribute('data-unanswered-hoeren', '19');
   await expect(confirmation).toHaveAttribute('data-unopened', '0');
   await context.close();
@@ -475,6 +497,24 @@ test('closed hoeren cannot obtain fresh audio through preparation', async ({
       error: 'conflict',
     });
   }
+
+  // An exam past its end that nobody has read yet: the preparation closes
+  // it under its lock and stores its result before any new address.
+  const away = await newGuest(depsNow());
+  const ended = examAgo(away, exam, H + T + L + 5);
+  expect(
+    psql(`select status from public.attempts
+      where id = ${quote(ended.attemptId)}`),
+  ).toBe('active');
+  expect(await prepareFor(away.token)).toMatchObject({ ok: true });
+  expect(
+    psql(`select status from public.attempts
+      where id = ${quote(ended.attemptId)}`),
+  ).toBe('completed');
+  expect(
+    psql(`select count(*) from public.attempt_results
+      where attempt_id = ${quote(ended.attemptId)}`),
+  ).toBe('1');
 
   // After the end and the result: the review may play the recording again,
   // and a new preparation is possible for a new exam.

@@ -207,6 +207,7 @@ export const TrainingShell = ({
     onSync,
     summary,
     onStatus,
+    pageAnswers: initialSelections,
   });
   const { reconcile } = submission;
   const reconcileRef = useRef(reconcile);
@@ -289,9 +290,19 @@ export const TrainingShell = ({
     setBeginStatus('idle');
   }, [attemptId, observe, onSync]);
 
+  // The store keeps the answers it was opened with and every later choice
+  // of this page. A newer page (router.refresh after a phase change, or a
+  // language switch) brings the answers the server holds now, for example
+  // from another tab: they are shown too, under the choices of this page,
+  // which stay as they are with their pending saves.
+  const shownSelections = useMemo(
+    () => ({ ...initialSelections, ...selections }),
+    [initialSelections, selections],
+  );
+
   const state: TrainingState = useMemo(
     () => ({
-      selections,
+      selections: shownSelections,
       pending,
       review,
       choose,
@@ -299,7 +310,15 @@ export const TrainingShell = ({
       readProgress,
       reportProgress,
     }),
-    [selections, pending, review, choose, retry, readProgress, reportProgress],
+    [
+      shownSelections,
+      pending,
+      review,
+      choose,
+      retry,
+      readProgress,
+      reportProgress,
+    ],
   );
 
   const blocks = BLOCK_PATHS.filter(({ block }) =>
@@ -357,7 +376,7 @@ export const TrainingShell = ({
     questions,
     answers: NO_ANSWERS,
     phaseRevision,
-    stored: new Set(Object.keys(selections)),
+    stored: new Set(Object.keys(shownSelections)),
     summary: trusted.summary,
   });
   const total = trusted.summary?.totalAssigned ?? questions.length;

@@ -4,10 +4,12 @@ import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import { readConfirmedTimingProfile } from '../attempts/profiles';
 import { parsePinnedDurations, toLifecycleState } from '../attempts/projection';
+import { finalizeSubmitted } from '../attempts/reconcile';
 import {
   callReconcile,
   findActiveAttempt,
   findExamBySlug,
+  findSubmittedAttemptIds,
   readLatestVersion,
   readOwnedAttempt,
   readRun,
@@ -305,17 +307,42 @@ export type PrepareAudioError = AudioAccessError | 'conflict';
 export type PrepareAudioResult =
   { ok: true; audio: IssuedAudio } | { ok: false; error: PrepareAudioError };
 
-// Whether the active attempt of the slot is still open by the server clock;
-// an exam or block past its end is closed by the next start instead.
-const holdsSlot = async (
+// A closed attempt of the slot whose result is not stored yet: its result
+// is computed first. A closed exam gets a recording again only once it can
+// be reviewed; until then a preparation is refused like its own audio.
+const isReviewable = async (
   deps: ServerDeps,
-  active: AttemptRow,
-  atMs: number,
+  sessionId: string,
+  attemptId: string,
 ): Promise<boolean> => {
-  const run = await readRun(deps, active.id);
-  if (!run || run.mode === 'training') return true;
-  const state = lifecycleOf(active, run, atMs);
-  return state?.phase !== 'closed';
+  const [attempt, run] = await Promise.all([
+    readOwnedAttempt(deps, sessionId, attemptId),
+    readRun(deps, attemptId),
+  ]);
+  if (!attempt || !run) return false;
+  if (run.mode !== 'exam' || attempt.status === 'completed') return true;
+  const outcome = await finalizeSubmitted(deps, sessionId, attempt, run);
+  return outcome === 'completed';
+};
+
+// The slot of the exam as the database judges it: the active attempt under
+// its row lock by the database clock, which closes a run past its end, and
+// then every submitted attempt of the slot. Null when a preparation may run.
+const slotRefusal = async (
+  deps: ServerDeps,
+  sessionId: string,
+  examId: string,
+  active: AttemptRow | null,
+): Promise<PrepareAudioError | null> => {
+  if (active) {
+    const call = await callReconcile(deps, { sessionId, attemptId: active.id });
+    if (!call.ok) throw new Error('Slot was not read', { cause: call.error });
+    if (call.row.attempt_status === 'active') return 'conflict';
+  }
+  for (const id of await findSubmittedAttemptIds(deps, sessionId, examId)) {
+    if (!(await isReviewable(deps, sessionId, id))) return 'phase-closed';
+  }
+  return null;
 };
 
 // The preparation of a full exam on the choice: the one Hören recording of
@@ -342,10 +369,8 @@ export const prepareExamAudio = async (
     if (!version || version.id !== parsed.data.expectedVersionId) {
       return { ok: false, error: 'not-found' };
     }
-    const atMs = deps.clock.now().getTime();
-    if (active && (await holdsSlot(deps, active, atMs))) {
-      return { ok: false, error: 'conflict' };
-    }
+    const refusal = await slotRefusal(deps, guest.sessionId, exam.id, active);
+    if (refusal) return { ok: false, error: refusal };
     const [profile, tracks] = await Promise.all([
       readConfirmedTimingProfile(deps, version.id),
       readTracks(deps, version.id),

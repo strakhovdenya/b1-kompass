@@ -545,9 +545,18 @@ test('profile revisions retain pinned running snapshot', async () => {
   ).toThrow(/attempt_runs_training_unpinned/);
   expect(await readAttempts(otherGuest.guest.sessionId)).toEqual([]);
 
-  // Since #43 the production start of a timed block, and since #45 the
-  // start of the full exam, pins the current confirmed head with exactly its
-  // document, never the superseded first revision.
+  // The full exam is the whole set only: one skill is refused and writes
+  // nothing. Since #43 the production start of a timed block, and since #45
+  // the start of the full exam, pins the current confirmed head with exactly
+  // its document, never the superseded first revision.
+  const fresh = await newGuest(depsNow());
+  expect(
+    await startFor(depsNow(), fresh.token, exam.slug, {
+      mode: 'exam',
+      selection: 'hoeren',
+    }),
+  ).toEqual({ ok: false, failure: 'invalid-input' });
+  expect(await readAttempts(fresh.guest.sessionId)).toEqual([]);
   const runs: [string, string][] = [
     ['timed-block', 'hoeren'],
     ['timed-block', 'lesen'],
