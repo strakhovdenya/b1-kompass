@@ -90,17 +90,17 @@ const fail = <Outcome>(
 });
 
 interface Prepared {
-  exam: ExamRow;
   version: VersionRow;
   assignment: AttemptAssignment;
 }
 
+// The requested version of the exam and the assignment the start would get
+// from it; null for another exam's or an unknown version.
 const prepare = async (
   deps: ServerDeps,
+  exam: ExamRow,
   input: StartInput,
 ): Promise<Prepared | null> => {
-  const exam = await findExamBySlug(deps, input.examSlug);
-  if (!exam) return null;
   const version = await readVersionOfExam(
     deps,
     exam.id,
@@ -114,14 +114,14 @@ const prepare = async (
     selection: input.selection,
   });
   if (!built.ok) return null;
-  return { exam, version, assignment: built.assignment };
+  return { version, assignment: built.assignment };
 };
 
 // What a timed start would meet now, by the same order as the SQL start:
-// a known commandId, an active attempt of the exam, the confirmed profile of
-// the version, the reserve of the guest. It only reads: no guest, attempt,
-// command or event is written, and its answer is advisory; the SQL start
-// checks all of it again after its locks.
+// a known commandId, an active attempt of the exam, the version and its
+// confirmed profile, the reserve of the guest. It only reads: no guest,
+// attempt, command or event is written, and its answer is advisory; the SQL
+// start checks all of it again after its locks.
 export type TimedStartVerdict =
   | {
       readonly outcome: 'admissible';
@@ -144,15 +144,19 @@ const isPastDeadline = async (
   return state?.phase === 'closed';
 };
 
-const judgeTimed = async (
+type SlotVerdict = Extract<TimedStartVerdict, { attemptId: string }>;
+
+// The first two steps: a known commandId, then an active attempt that holds
+// the slot. Null when neither answers.
+const judgeSlot = async (
   deps: ServerDeps,
   guest: GuestContext,
   input: StartInput,
-  prepared: Prepared,
-): Promise<CommandResult<TimedStartVerdict>> => {
+  exam: ExamRow,
+): Promise<CommandResult<SlotVerdict | null>> => {
   const [known, active] = await Promise.all([
     findStartCommand(deps, guest.sessionId, input.commandId),
-    findActiveAttempt(deps, guest.sessionId, prepared.exam.id),
+    findActiveAttempt(deps, guest.sessionId, exam.id),
   ]);
   // The id of another command is refused by the SQL start as well.
   if (known && known.kind !== 'start') return fail('invalid-input');
@@ -167,7 +171,18 @@ const judgeTimed = async (
   if (active && !(await isPastDeadline(deps, guest, active.id))) {
     return { ok: true, result: { outcome: 'conflict', attemptId: active.id } };
   }
-  const profile = await readConfirmedTimingProfile(deps, prepared.version.id);
+  return { ok: true, result: null };
+};
+
+// The last two steps for a free slot: the confirmed profile of the version,
+// then the reserve of the guest.
+const judgeTerms = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  input: StartInput,
+  version: VersionRow,
+): Promise<CommandResult<TimedStartVerdict>> => {
+  const profile = await readConfirmedTimingProfile(deps, version.id);
   if (!profile) return fail('not-enabled');
   const durationSeconds =
     input.selection === 'hoeren' ? profile.hoerenSeconds : profile.lesenSeconds;
@@ -185,18 +200,94 @@ const judgeTimed = async (
   };
 };
 
+interface Judged {
+  verdict: TimedStartVerdict;
+  prepared: Prepared | null;
+}
+
+// The whole order: replay, active attempt, version, profile, reserve. A
+// replay or a conflict answers before the version is read.
+const judgeTimed = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  input: StartInput,
+  exam: ExamRow,
+): Promise<CommandResult<Judged>> => {
+  const slot = await judgeSlot(deps, guest, input, exam);
+  if (!slot.ok) return fail(slot.failure);
+  if (slot.result) {
+    return { ok: true, result: { verdict: slot.result, prepared: null } };
+  }
+  const prepared = await prepare(deps, exam, input);
+  if (!prepared) return fail('not-found');
+  const terms = await judgeTerms(deps, guest, input, prepared.version);
+  if (!terms.ok) return fail(terms.failure);
+  return { ok: true, result: { verdict: terms.result, prepared } };
+};
+
+// The answer of a start: the attempt it names with its actual state.
+const outcomeOf = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attemptId: string,
+  outcome: StartOutcome['outcome'],
+): Promise<StartAttemptResult> => {
+  const read = await readAttemptRun(deps, guest, attemptId);
+  if (read.status !== 'ready') return fail('unavailable');
+  const state = toLifecycleState(read.view, deps.clock.now().getTime());
+  if (!state) return fail('unavailable');
+  return { ok: true, result: { outcome, attemptId, state } };
+};
+
+interface Ready {
+  prepared: Prepared | null;
+  // A replay or a conflict found before the version was read.
+  slot: SlotVerdict | null;
+}
+
+// A timed start passes the whole order before its SQL call; the SQL start
+// checks it again after its locks.
+const readyFor = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  input: StartInput,
+  exam: ExamRow,
+): Promise<CommandResult<Ready>> => {
+  if (!isTimed(input)) {
+    const prepared = await prepare(deps, exam, input);
+    return { ok: true, result: { prepared, slot: null } };
+  }
+  const judged = await judgeTimed(deps, guest, input, exam);
+  if (!judged.ok) return fail(judged.failure);
+  const { verdict } = judged.result;
+  if (verdict.outcome === 'admissible') {
+    return {
+      ok: true,
+      result: { prepared: judged.result.prepared, slot: null },
+    };
+  }
+  const prepared = await prepare(deps, exam, input);
+  return { ok: true, result: { prepared, slot: verdict } };
+};
+
 const runStart = async (
   deps: ServerDeps,
   guest: GuestContext,
   input: StartInput,
 ): Promise<StartAttemptResult> => {
-  const prepared = await prepare(deps, input);
-  if (!prepared) return fail('not-found');
-  if (isTimed(input)) {
-    const verdict = await judgeTimed(deps, guest, input, prepared);
-    if (!verdict.ok) return fail(verdict.failure);
+  const exam = await findExamBySlug(deps, input.examSlug);
+  if (!exam) return fail('not-found');
+  const ready = await readyFor(deps, guest, input, exam);
+  if (!ready.ok) return fail(ready.failure);
+  const { prepared, slot } = ready.result;
+  // A replay or a conflict answers before the version, as in SQL: the
+  // requested version is not needed to name the attempt of the slot.
+  if (!prepared && slot) {
+    const outcome = slot.outcome === 'conflict' ? 'conflict' : 'accepted';
+    return outcomeOf(deps, guest, slot.attemptId, outcome);
   }
-  const { exam, version, assignment } = prepared;
+  if (!prepared) return fail('not-found');
+  const { version, assignment } = prepared;
   const call = await callStart(deps, {
     sessionId: guest.sessionId,
     examId: exam.id,
@@ -227,12 +318,8 @@ const runStart = async (
   for (const closedId of closedIds) {
     await finalizeClosedRun(deps, guest, closedId);
   }
-  const read = await readAttemptRun(deps, guest, row.attempt_id);
-  if (read.status !== 'ready') return fail('unavailable');
-  const state = toLifecycleState(read.view, deps.clock.now().getTime());
-  if (!state) return fail('unavailable');
   const outcome = row.outcome === 'conflict' ? 'conflict' : 'accepted';
-  return { ok: true, result: { outcome, attemptId: row.attempt_id, state } };
+  return outcomeOf(deps, guest, row.attempt_id, outcome);
 };
 
 // An explicit start of one attempt. The same commandId returns the attempt
@@ -275,9 +362,11 @@ export const preflightTimedStart = async (
     if (!isTimed(parsed.data)) return fail('invalid-input');
     const refused = checkEnabled(parsed.data);
     if (refused) return fail(refused);
-    const prepared = await prepare(deps, parsed.data);
-    if (!prepared) return fail('not-found');
-    return await judgeTimed(deps, guest, parsed.data, prepared);
+    const exam = await findExamBySlug(deps, parsed.data.examSlug);
+    if (!exam) return fail('not-found');
+    const judged = await judgeTimed(deps, guest, parsed.data, exam);
+    if (!judged.ok) return fail(judged.failure);
+    return { ok: true, result: judged.result.verdict };
   } catch (error) {
     console.error({ error });
     return fail('unavailable');

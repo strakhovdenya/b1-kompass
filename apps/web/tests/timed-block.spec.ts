@@ -20,6 +20,7 @@ import {
 } from '../src/server/attempts/attempts';
 import { readConfirmedTimingProfile } from '../src/server/attempts/profiles';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
+import { PILOT_EXAM_SLUG } from '../src/server/material/published';
 import {
   hashGuestToken,
   resolveGuestSession,
@@ -808,6 +809,29 @@ test('reserve boundary ownership and expired replay are guarded', async ({
   const free = await startFor(depsNow(), busy.token, FULL_EXAM.slug);
   if (!free.ok) throw new Error('free start failed');
   expect(await timedStart(busy.token, FULL_EXAM.slug)).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: free.result.attemptId },
+  });
+  // The active attempt answers before the version: a version of another
+  // exam does not turn the conflict into not-found, for the start and the
+  // preflight alike.
+  const foreignVersion = await latestVersionOf(PILOT_EXAM_SLUG);
+  if (!foreignVersion) throw new Error('pilot is missing');
+  expect(
+    await timedStart(busy.token, FULL_EXAM.slug, 'hoeren', {
+      expectedVersionId: foreignVersion.versionId,
+    }),
+  ).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: free.result.attemptId },
+  });
+  expect(
+    await preflightTimedStart(depsNow(), busy.token, {
+      ...body,
+      commandId: randomUUID(),
+      expectedVersionId: foreignVersion.versionId,
+    }),
+  ).toEqual({
     ok: true,
     result: { outcome: 'conflict', attemptId: free.result.attemptId },
   });
