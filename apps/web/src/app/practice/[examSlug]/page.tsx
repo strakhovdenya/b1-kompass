@@ -38,6 +38,7 @@ const ChoicePage = async ({ params }: ChoicePageProps) => {
       hoerenCount={choice.hoerenCount}
       lesenCount={choice.lesenCount}
       activeAttemptId={choice.activeAttemptId}
+      examTiming={choice.examTiming}
       replaceGuest={replaceGuestAction}
     />
   );

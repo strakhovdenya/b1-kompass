@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import { TrainingShell } from './TrainingShell';
-import type { TimedClock } from './attempt-client';
+import type { AttemptSummary, TimedClock } from './attempt-client';
 
 const ATTEMPT_ID = '00000000-0000-4000-8000-000000000000';
 
@@ -89,6 +89,7 @@ describe('TrainingShell', () => {
       deadlineMs: DEADLINE_MS,
       serverNowMs: DEADLINE_MS - 25 * 60_000,
       skill: 'hoeren',
+      phase: 'hoeren',
     });
     const timer = /<div[^>]*role="timer"[^>]*>/.exec(html)?.[0] ?? '';
     expect(timer).toContain('data-testid="attempt-timer"');
@@ -115,6 +116,7 @@ describe('TrainingShell', () => {
       deadlineMs: DEADLINE_MS,
       serverNowMs: DEADLINE_MS - 1000,
       skill: 'lesen',
+      phase: 'lesen',
     });
     expect(pending).not.toContain('role="timer"');
     expect(pending).toContain('data-testid="submission-accepted"');
@@ -192,5 +194,135 @@ describe('TrainingShell', () => {
     expect(html).not.toContain('data-testid="dictionary-bar"');
     expect(html.match(/data-testid="review-item"/g)).toHaveLength(1);
     expect(html).toContain('data-question-id="lesen-1"');
+  });
+
+  describe('a full exam', () => {
+    const lesenOnly = [question('lesen-1', 1, 'lesen')];
+
+    // The server's numbers after Hören closed and Lesen started: 2 Hören
+    // tasks, one answered in time; 25 Lesen tasks, none answered yet.
+    const lesenSummary: AttemptSummary = {
+      totalAssigned: 27,
+      skills: {
+        hoeren: { assigned: 2, answered: 1, state: 'closed' },
+        lesen: { assigned: 25, answered: 0, state: 'open' },
+      },
+    };
+
+    const renderExam = (
+      shown: typeof questions,
+      phase: 'hoeren' | 'transition' | 'lesen',
+      summary: AttemptSummary,
+      selections: Record<string, string>,
+    ) =>
+      renderToStaticMarkup(
+        <NextIntlClientProvider locale="en" messages={messages}>
+          <TrainingShell
+            examSlug="test-exam"
+            attemptId={ATTEMPT_ID}
+            questions={shown}
+            trackIds={phase === 'lesen' ? [] : ['track-1']}
+            initialSelections={selections}
+            initialRevisions={{}}
+            initialReview={null}
+            initialProgress={null}
+            isResultPending={false}
+            phaseRevision={phase === 'lesen' ? 2 : 0}
+            timer={{
+              deadlineMs: DEADLINE_MS,
+              serverNowMs: DEADLINE_MS - 60_000,
+              skill: phase === 'hoeren' ? 'hoeren' : 'lesen',
+              phase,
+            }}
+            mode="exam"
+            phase={phase}
+            summary={summary}
+            examStartedAtMs={DEADLINE_MS - 30 * 60_000}
+            resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
+          >
+            <p>block page</p>
+          </TrainingShell>
+        </NextIntlClientProvider>,
+      );
+
+    it('counts the whole assignment and keeps answers across a phase change', () => {
+      // Hören open: the shell knows only Hören, Lesen is a number.
+      const hoeren = renderExam(
+        [question('hoeren-1', 1, 'hoeren'), question('hoeren-2', 2, 'hoeren')],
+        'hoeren',
+        {
+          totalAssigned: 27,
+          skills: {
+            hoeren: { assigned: 2, answered: 1, state: 'open' },
+            lesen: { assigned: 25, answered: 0, state: 'unopened' },
+          },
+        },
+        { 'hoeren-1': 'a' },
+      );
+      expect(hoeren).toContain('Answered in total: 1 of 27.');
+      expect(hoeren).toContain('data-mode="exam"');
+      expect(hoeren).toContain('data-phase="hoeren"');
+      expect(hoeren).not.toContain('lesen-1');
+
+      // After the server moved to Lesen the same shell gets Lesen material:
+      // the closed Hören counts by the server's numbers, the answer the
+      // page holds is not dropped, and no Hören task is shown again.
+      const lesen = renderExam(lesenOnly, 'lesen', lesenSummary, {
+        'hoeren-1': 'a',
+        'lesen-1': 'a',
+      });
+      expect(lesen).toContain('Answered in total: 2 of 27.');
+      expect(lesen).toContain('data-phase="lesen"');
+      expect(lesen).toContain('block page');
+    });
+
+    it('has one exam recording without pause or seek, inactive outside Hören', () => {
+      const hoeren = renderExam(
+        [question('hoeren-1', 1, 'hoeren')],
+        'hoeren',
+        lesenSummary,
+        {},
+      );
+      expect(hoeren).toContain('data-mode="exam"');
+      // The element itself belongs to the exam layout, never to the shell.
+      expect(hoeren).not.toContain('data-testid="audio-element"');
+      expect(hoeren).not.toContain('data-testid="audio-toggle"');
+      expect(hoeren).not.toContain('data-testid="audio-back"');
+      expect(hoeren).not.toContain('aria-label="Position in the recording"');
+      expect(hoeren).toContain('data-testid="audio-status"');
+      expect(hoeren.match(/data-testid="audio-player"/g)).toHaveLength(1);
+
+      const pause = renderExam(
+        [question('hoeren-1', 1, 'hoeren')],
+        'transition',
+        lesenSummary,
+        {},
+      );
+      const player = /<section[^>]*data-testid="audio-player"[^>]*>/.exec(
+        pause,
+      );
+      expect(player?.[0]).toContain('hidden=""');
+    });
+
+    it('shows the transition instead of the page, with no clock of a skill', () => {
+      const html = renderExam(
+        [question('hoeren-1', 1, 'hoeren')],
+        'transition',
+        {
+          totalAssigned: 27,
+          skills: {
+            hoeren: { assigned: 2, answered: 0, state: 'closed' },
+            lesen: { assigned: 25, answered: 0, state: 'unopened' },
+          },
+        },
+        {},
+      );
+      expect(html).toContain('data-testid="transition-screen"');
+      expect(html).toContain('data-testid="begin-lesen"');
+      expect(html).toContain('role="timer"');
+      expect(html).not.toContain('data-testid="attempt-timer"');
+      expect(html).not.toContain('block page');
+      expect(html).toContain('Answered in total: 0 of 27.');
+    });
   });
 });

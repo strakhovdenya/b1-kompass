@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -14,8 +14,13 @@ import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { AttemptMode, AttemptSelection } from '@b1k/domain';
-import { attemptPath, requestStart } from './attempt-client';
-import type { ReplaceGuest, StartRequest } from './attempt-client';
+import {
+  attemptPath,
+  requestPrepareAudio,
+  requestStart,
+} from './attempt-client';
+import type { ExamTiming, ReplaceGuest, StartRequest } from './attempt-client';
+import { useExamAudio } from './ExamAudioSession';
 import { GuestReplacementDialog } from './GuestReplacementDialog';
 import type { ReplacementProblem } from './GuestReplacementDialog';
 
@@ -27,8 +32,22 @@ interface ModeSelectionProps {
   hoerenCount: number;
   lesenCount: number;
   activeAttemptId: string | null;
+  // The confirmed durations of the full exam; null while it cannot start.
+  examTiming?: ExamTiming | null;
   replaceGuest: ReplaceGuest;
 }
+
+// A prepared address must still cover the whole Hören, with this margin,
+// when the exam starts; earlier it is renewed in the background.
+const FRESH_MARGIN_MS = 15_000;
+
+type PrepareStatus = 'idle' | 'preparing' | 'failed' | 'conflict';
+
+// What the choice shows of the prepared recording of a full exam.
+type ExamAudioState =
+  'preparing' | 'loading' | 'ready' | 'stale' | 'error' | 'conflict';
+
+const MINUTE_SECONDS = 60;
 
 type StartStatus =
   | 'idle'
@@ -40,24 +59,23 @@ type StartStatus =
   | 'guest-too-short'
   | 'replacement-not-needed';
 
-// The free training and one timed block are enabled; the full exam is shown
-// as coming, without a way to start it. The time of a block is set by the
-// server from the confirmed profile of the exam, never chosen here.
-const MODES: readonly { mode: AttemptMode; isEnabled: boolean }[] = [
-  { mode: 'training', isEnabled: true },
-  { mode: 'timed-block', isEnabled: true },
-  { mode: 'exam', isEnabled: false },
-];
+// The free training, one timed block and the full exam. The full exam is
+// offered once its profile is confirmed. The times are set by the server
+// from the confirmed profile of the exam, never chosen here.
+const MODES: readonly AttemptMode[] = ['training', 'timed-block', 'exam'];
 
 const DETAIL_KEYS: Readonly<Record<AttemptMode, string>> = {
   training: 'trainingDetail',
   'timed-block': 'timedBlockDetail',
-  exam: 'comingSoon',
+  exam: 'examDetail',
 };
 
-// A timed block is one skill: the whole set is not offered for it.
-const isOffered = (mode: AttemptMode, selection: AttemptSelection): boolean =>
-  mode !== 'timed-block' || selection !== 'all';
+// A timed block is one skill: the whole set is not offered for it. The full
+// exam is always the whole set.
+const isOffered = (mode: AttemptMode, selection: AttemptSelection): boolean => {
+  if (mode === 'exam') return selection === 'all';
+  return mode !== 'timed-block' || selection !== 'all';
+};
 
 const MODE_KEYS: Readonly<Record<AttemptMode, string>> = {
   training: 'training',
@@ -78,10 +96,12 @@ export const ModeSelection = ({
   hoerenCount,
   lesenCount,
   activeAttemptId,
+  examTiming = null,
   replaceGuest,
 }: ModeSelectionProps) => {
   const t = useTranslations('choice');
   const router = useRouter();
+  const audio = useExamAudio();
   const [status, setStatus] = useState<StartStatus>('idle');
   const [conflictId, setConflictId] = useState<string | null>(null);
   const [mode, setMode] = useState<AttemptMode>('training');
@@ -106,11 +126,97 @@ export const ModeSelection = ({
     setSelection(value);
   };
 
+  const isEnabled = (value: AttemptMode): boolean =>
+    value !== 'exam' || examTiming !== null;
+
+  // The preparation of the full exam: the one recording, before any
+  // attempt. The address must cover the whole Hören when the exam starts;
+  // shortly before it no longer does, it is renewed in the background while
+  // no exam time runs, and the start waits for the new one to be playable.
+  const [prepare, setPrepare] = useState<PrepareStatus>('idle');
+  const [coverMs, setCoverMs] = useState(0);
+  // The prepared address no longer covers the whole Hören.
+  const [isStale, setIsStale] = useState(false);
+  const { source, load, dispose } = audio;
+  const isOwnSource = source !== null && source.attemptId === null;
+
+  const prepareAudio = useCallback(async () => {
+    setPrepare('preparing');
+    const result = await requestPrepareAudio({
+      examSlug,
+      expectedVersionId: versionId,
+    });
+    if (result.ok) {
+      const { url, expiresAt, serverNow, coverSeconds } = result.audio;
+      setCoverMs(coverSeconds * 1000);
+      load(url, expiresAt, serverNow);
+      setIsStale(false);
+      setPrepare('idle');
+      return;
+    }
+    if (result.error === 'session-invalid') {
+      router.push('/');
+      return;
+    }
+    if (result.error === 'not-found') {
+      setStatus('changed');
+      router.refresh();
+    }
+    setPrepare(result.error === 'conflict' ? 'conflict' : 'failed');
+  }, [examSlug, versionId, load, router]);
+
+  const isExam = mode === 'exam';
+  const expiresAtLocalMs = isOwnSource ? source.expiresAtLocalMs : null;
+  // No renewal while a start is in flight: it would replace the address
+  // the click has just started playing.
+  const isStartPending = status === 'starting';
+  useEffect(() => {
+    if (!isExam || isStartPending || expiresAtLocalMs === null) {
+      return undefined;
+    }
+    const delayMs =
+      expiresAtLocalMs - coverMs - FRESH_MARGIN_MS - performance.now();
+    const renew = setTimeout(
+      () => {
+        setIsStale(true);
+        void prepareAudio();
+      },
+      Math.max(0, delayMs),
+    );
+    return () => clearTimeout(renew);
+  }, [isExam, isStartPending, expiresAtLocalMs, coverMs, prepareAudio]);
+
+  // Checked again inside the click by the monotonic clock of the page.
+  const isFreshNow = (): boolean =>
+    isOwnSource &&
+    source.expiresAtLocalMs - performance.now() >= coverMs + FRESH_MARGIN_MS;
+
+  const examAudioState = (): ExamAudioState => {
+    if (prepare === 'preparing') return 'preparing';
+    if (prepare === 'conflict') return 'conflict';
+    if (prepare === 'failed' || audio.status === 'error') return 'error';
+    if (audio.status !== 'ready' || !isOwnSource) return 'loading';
+    return isStale ? 'stale' : 'ready';
+  };
+  const examState = isExam ? examAudioState() : null;
+
   const chooseMode = (value: AttemptMode) => {
     commandId.current = null;
     setConflictId(null);
     setStatus('idle');
     setMode(value);
+    if (value === 'exam') {
+      setSelection('all');
+      // An address of an attempt is not a preparation: the exam starts
+      // with its own.
+      if (!isOwnSource) {
+        dispose();
+        void prepareAudio();
+      }
+      return;
+    }
+    // A recording prepared for the exam is not kept for another mode.
+    dispose();
     if (!isOffered(value, selection)) {
       setSelection(hoerenCount > 0 ? 'hoeren' : 'lesen');
     }
@@ -133,9 +239,18 @@ export const ModeSelection = ({
     setStatus('starting');
     const result = await requestStart(startRequest());
     if (result.ok && result.result.outcome === 'accepted') {
-      router.push(attemptPath(examSlug, result.result.attemptId));
+      // The exam layout stays mounted above the attempt: the attempt opens
+      // at the top of the page, not scrolled to its own segment.
+      window.scrollTo({ top: 0 });
+      router.push(attemptPath(examSlug, result.result.attemptId), {
+        scroll: false,
+      });
       return;
     }
+    // A refused, failed or lost start leaves no sound: the exam has not
+    // begun for this page. A retry with the same commandId plays again.
+    audio.stop();
+    audio.setActive(false);
     if (result.ok) {
       commandId.current = null;
       setConflictId(result.result.attemptId);
@@ -171,6 +286,9 @@ export const ModeSelection = ({
   const replace = async () => {
     setReplacing(true);
     setProblem(null);
+    // The recording prepared for the old guest is let go before its cookie
+    // is replaced; the new guest prepares its own.
+    audio.dispose();
     let answer;
     try {
       answer = await replaceGuest({ consent: true, start: startRequest() });
@@ -184,6 +302,13 @@ export const ModeSelection = ({
       setDialogOpen(false);
       commandId.current = null;
       router.refresh();
+      // Sound needs the guest's own click: the exam is prepared again and
+      // started by the button; a timed block starts right away.
+      if (isExam) {
+        setStatus('idle');
+        void prepareAudio();
+        return;
+      }
       await start();
       return;
     }
@@ -222,6 +347,33 @@ export const ModeSelection = ({
   const continueId = conflictId ?? activeAttemptId;
   const isStarting = status === 'starting';
 
+  const detailOf = (item: AttemptMode): string => {
+    if (item !== 'exam') return t(DETAIL_KEYS[item]);
+    if (!examTiming) return t('comingSoon');
+    return t('examDetail', {
+      hoeren: Math.round(examTiming.hoerenSeconds / MINUTE_SECONDS),
+      transition: examTiming.transitionSeconds,
+      lesen: Math.round(examTiming.lesenSeconds / MINUTE_SECONDS),
+    });
+  };
+
+  // The explicit start. For the full exam the recording starts inside this
+  // click, before any await, and the start goes to the server beside it; a
+  // stale or unprepared recording starts nothing and is prepared again.
+  const onStart = () => {
+    if (isExam) {
+      if (examAudioState() !== 'ready' || !isFreshNow()) {
+        setIsStale(true);
+        void prepareAudio();
+        return;
+      }
+      audio.setActive(true);
+      audio.play();
+    }
+    void start();
+  };
+  const isStartBlocked = isStarting || (isExam && examState !== 'ready');
+
   return (
     <Stack spacing={3} data-testid="mode-selection" data-exam-slug={examSlug}>
       <Typography component="h1" variant="h5" lang="de">
@@ -252,23 +404,23 @@ export const ModeSelection = ({
           value={mode}
           onChange={(_event, value) => {
             const picked = MODES.find(
-              (item) => item.isEnabled && item.mode === value,
+              (item) => isEnabled(item) && item === value,
             );
-            if (picked) chooseMode(picked.mode);
+            if (picked) chooseMode(picked);
           }}
         >
           {MODES.map((item) => (
             <FormControlLabel
-              key={item.mode}
-              value={item.mode}
-              disabled={!item.isEnabled || isStarting}
+              key={item}
+              value={item}
+              disabled={!isEnabled(item) || isStarting}
               control={<Radio />}
-              data-testid={`mode-option-${item.mode}`}
+              data-testid={`mode-option-${item}`}
               label={
                 <Stack sx={{ py: 0.5 }}>
-                  <Typography>{t(`mode.${MODE_KEYS[item.mode]}`)}</Typography>
+                  <Typography>{t(`mode.${MODE_KEYS[item]}`)}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {t(DETAIL_KEYS[item.mode])}
+                    {detailOf(item)}
                   </Typography>
                 </Stack>
               }
@@ -301,15 +453,38 @@ export const ModeSelection = ({
         </RadioGroup>
       </FormControl>
       <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
+        {examState ? (
+          <Stack
+            spacing={1}
+            sx={{ alignItems: 'flex-start' }}
+            role="status"
+            data-testid="exam-audio-status"
+            data-status={examState}
+          >
+            <Typography variant="body2" color="text.secondary">
+              {t(`examAudio.${examState}`)}
+            </Typography>
+            {examState === 'error' ? (
+              <Button
+                size="small"
+                variant="outlined"
+                data-testid="exam-audio-retry"
+                onClick={() => void prepareAudio()}
+              >
+                {t('examAudioRetry')}
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
         <Button
           variant="contained"
           size="large"
           ref={startRef}
           data-testid="start-attempt"
-          disabled={isStarting}
-          onClick={() => void start()}
+          disabled={isStartBlocked}
+          onClick={onStart}
         >
-          {isStarting ? t('starting') : t('start')}
+          {isStarting ? t('starting') : t(isExam ? 'startExam' : 'start')}
         </Button>
         <div role="status" data-testid="start-status" data-status={status}>
           {status === 'conflict' ? (

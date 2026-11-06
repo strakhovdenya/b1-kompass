@@ -264,3 +264,44 @@ export const waitersBehind = (lock: AttemptLock, fn: string): number =>
       where a.pid = q.pid and a.wait_event_type = 'Lock'
         and a.query like ${quote(`%${fn}%`)}`),
   );
+
+// A moment of the database clock the given seconds ago, rounded down to
+// whole milliseconds like the production start, as SQL text.
+export const secondsAgoSql = (seconds: number): string =>
+  `pg_catalog.date_trunc('milliseconds', clock_timestamp()
+    - make_interval(secs => ${seconds}))`;
+
+export interface ExamTarget {
+  examId: string;
+  versionId: string;
+}
+
+// A full exam started through the same admission kernel as the production
+// start, at an explicit moment (#45): the slot lock, the pinned confirmed
+// profile and the guest reserve are judged at that moment. Returns the new
+// attempt id; a refusal throws with its hint.
+export const startExamAt = (
+  sessionId: string,
+  exam: ExamTarget,
+  questionIds: readonly string[],
+  atSql: string,
+): string =>
+  psql(`select attempt_id from m2_test.start_attempt_at(
+    ${quote(sessionId)}, ${quote(exam.examId)}, gen_random_uuid(),
+    'exam', 'normal', 'all', null, ${quote(exam.versionId)}, 'full-exam',
+    ${quote(JSON.stringify(questionIds))}::jsonb, ${atSql})`);
+
+// The phase of a run by the private SQL rule at an explicit moment.
+export const runPhaseAt = (attemptId: string, atSql: string): string =>
+  psql(`select m2_private.run_phase(r, ${atSql})
+    from public.attempt_runs r where r.attempt_id = ${quote(attemptId)}`);
+
+export interface ExamRunTimes {
+  acceptedAt: string;
+  lesenStartedAt: string | null;
+}
+
+export const examRunTimes = (attemptId: string): ExamRunTimes =>
+  psqlJson<ExamRunTimes>(`select json_build_object(
+      'acceptedAt', accepted_at, 'lesenStartedAt', lesen_started_at)
+    from public.attempt_runs where attempt_id = ${quote(attemptId)}`);

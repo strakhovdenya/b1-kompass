@@ -141,6 +141,24 @@ export const saveResponse = (
   return privateJson(result, SAVE_ERROR_STATUS[result.error] ?? 500);
 };
 
+// The HTTP status of an audio answer. A refusal by the phase of the exam or
+// by an open attempt of the slot is a conflict with the state, not a fault.
+const AUDIO_ERROR_STATUS: Readonly<Record<string, number>> = {
+  'invalid-input': 400,
+  'session-invalid': 401,
+  'not-found': 404,
+  'phase-closed': 409,
+  conflict: 409,
+  unavailable: 503,
+};
+
+export const audioResponse = (
+  result: { ok: true } | { ok: false; error: string },
+): Response => {
+  if (result.ok) return privateJson(result);
+  return privateJson(result, AUDIO_ERROR_STATUS[result.error] ?? 500);
+};
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 

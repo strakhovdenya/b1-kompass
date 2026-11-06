@@ -16,6 +16,7 @@ import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import type { GuestContext } from '../guest-session/session';
 import { readConfirmedTimingProfile } from './profiles';
+import type { ConfirmedTimingProfile } from './profiles';
 import { readAttemptRun } from './read';
 import { toLifecycleState } from './projection';
 import {
@@ -33,7 +34,8 @@ export type StartAttemptResult = CommandResult<StartOutcome>;
 
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-// The guest session must outlive a timed block by this reserve.
+// The guest session must outlive a timed block, or the whole timeline of
+// the exam, by this reserve.
 export const GUEST_RESERVE_SECONDS = 300;
 
 const SECOND_MS = 1000;
@@ -54,18 +56,39 @@ const startInput = z.strictObject({
 type StartInput = z.infer<typeof startInput>;
 
 // The capabilities are switched on in order: the free training of the whole
-// set or of one skill, and one timed block of Hören or Lesen. The full exam
-// and the repeat of errors answer not-enabled before anything is written. The
-// tasks are assigned from the pinned version, never taken from the client.
+// set or of one skill, one timed block of Hören or Lesen and the full exam
+// of the whole set. The repeat of errors answers not-enabled before anything
+// is written. The tasks are assigned from the pinned version, never taken
+// from the client.
 const isNormal = (input: StartInput): boolean =>
   input.purpose === 'normal' && input.sourceAttemptId === null;
 
-const isTimed = (input: StartInput): boolean => input.mode === 'timed-block';
+// A timed block and the full exam pin a confirmed profile and need the
+// reserve of the guest.
+const isTimed = (input: StartInput): boolean => input.mode !== 'training';
 
 const checkEnabled = (input: StartInput): RunTechnicalFailure | null => {
-  if (!isNormal(input) || input.mode === 'exam') return 'not-enabled';
-  if (isTimed(input) && input.selection === 'all') return 'invalid-input';
+  if (!isNormal(input)) return 'not-enabled';
+  const isWhole = input.selection === 'all';
+  if (input.mode === 'timed-block' && isWhole) return 'invalid-input';
+  if (input.mode === 'exam' && !isWhole) return 'invalid-input';
   return null;
+};
+
+// The time the run may last by its pinned profile: one block, or Hören, the
+// whole transition and Lesen of the exam.
+const durationOf = (
+  input: StartInput,
+  profile: ConfirmedTimingProfile,
+): number => {
+  if (input.mode === 'exam') {
+    return (
+      profile.hoerenSeconds + profile.transitionSeconds + profile.lesenSeconds
+    );
+  }
+  return input.selection === 'hoeren'
+    ? profile.hoerenSeconds
+    : profile.lesenSeconds;
 };
 
 const RULE_FAILURES: Readonly<Record<string, RunTechnicalFailure>> = {
@@ -184,8 +207,7 @@ const judgeTerms = async (
 ): Promise<CommandResult<TimedStartVerdict>> => {
   const profile = await readConfirmedTimingProfile(deps, version.id);
   if (!profile) return fail('not-enabled');
-  const durationSeconds =
-    input.selection === 'hoeren' ? profile.hoerenSeconds : profile.lesenSeconds;
+  const durationSeconds = durationOf(input, profile);
   const requiredMs =
     deps.clock.now().getTime() +
     (durationSeconds + GUEST_RESERVE_SECONDS) * SECOND_MS;

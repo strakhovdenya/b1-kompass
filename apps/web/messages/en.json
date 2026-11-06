@@ -67,7 +67,18 @@
       "working": "Starting…",
       "busy": "Too many new sessions right now. Please try again in a minute.",
       "error": "The session was not replaced. Please try again."
-    }
+    },
+    "examDetail": "The whole exam against the clock: Hören ({hoeren} min), a pause of up to {transition} s, then Lesen with its full time ({lesen} min). The recording plays once, without pause or rewind. The time runs on the server.",
+    "startExam": "Start exam",
+    "examAudio": {
+      "preparing": "Preparing the recording…",
+      "loading": "Loading the recording…",
+      "ready": "The recording is ready. The exam and the recording start together with this button.",
+      "stale": "Renewing the recording before the start…",
+      "error": "The recording could not be prepared. The exam cannot start without it.",
+      "conflict": "A training of this exam is already in progress. Continue it first."
+    },
+    "examAudioRetry": "Prepare again"
   },
   "save": {
     "idle": "Choose one answer.",
@@ -87,7 +98,9 @@
     "loading": "Loading the recording…",
     "ready": "The recording is ready. Play it as often as you like.",
     "error": "The recording could not be loaded. You can still answer, and your answers are saved.",
-    "retry": "Load again"
+    "retry": "Load again",
+    "examReady": "The recording plays once, in step with the exam time, without pause or rewind.",
+    "examPlay": "Play the recording"
   },
   "hoeren": {
     "intro": "Hören, {isRange, select, true {parts {first} to {last}} other {part {first}}}: {count, plural, one {# question} other {# questions}}, one answer each.{hasPairs, select, true { In part 3 the two questions of one conversation are shown together.} other {}}{hasSharedSet, select, true { In part 4 the whole list of statements a–f stays visible for all three questions.} other {}} You can change an answer at any time while the recording keeps playing.",
@@ -171,7 +184,8 @@
     "cancelError": "The attempt was not cancelled. Please try again.",
     "cancelUncertain": "The connection was lost while cancelling. Send the same cancel again.",
     "expired": "Time is up. Only the answers saved before the end of the time count.",
-    "expiredUnsaved": "{unsaved, plural, one {# choice was} other {# choices were}} not saved in time and {unsaved, plural, one {does} other {do}} not count."
+    "expiredUnsaved": "{unsaved, plural, one {# choice was} other {# choices were}} not saved in time and {unsaved, plural, one {does} other {do}} not count.",
+    "confirmUnopened": "{count, plural, one {# Lesen task has} other {# Lesen tasks have}} not started yet and will count as skipped."
   },
   "timer": {
     "label": "Time left for {skill}: {time}",
@@ -214,5 +228,13 @@
     "sourceSynonyms": "Synonyms:",
     "tooltipOn": "Word translator is on: tap a German word",
     "tooltipOff": "Word translator is off"
+  },
+  "transition": {
+    "title": "Hören is over",
+    "body": "Your Hören answers are final. Lesen starts by itself when this pause ends, or now if you are ready. Lesen always gets its full time.",
+    "timer": "Lesen starts in {time}",
+    "begin": "Start Lesen now",
+    "beginning": "Starting Lesen…",
+    "error": "Lesen could not be started. Please try again; it also starts by itself when the pause ends."
   }
 }

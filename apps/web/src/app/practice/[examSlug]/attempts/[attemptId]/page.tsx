@@ -29,7 +29,16 @@ const HoerenPage = async ({ params }: HoerenPageProps) => {
   // The layout shows the refusal; the page renders nothing of its own.
   if (opened.status !== 'ready') return null;
 
-  const { practice } = opened;
+  const { practice, state } = opened;
+  // An open full exam follows its trusted phase: in Lesen its work is at the
+  // Lesen address; in the transition the shell shows the pause and this
+  // page sends no material of its own.
+  if (state.mode === 'exam' && state.status === 'active') {
+    if (state.phase === 'lesen') {
+      redirect(attemptLesenPath(practice.examSlug, practice.attemptId));
+    }
+    if (state.phase !== 'hoeren') return null;
+  }
   // A Lesen-only attempt has no Hören block: its work is at the Lesen address.
   const hasHoeren = practice.questions.some((item) => item.skill === 'hoeren');
   const hasLesen = practice.questions.some((item) => item.skill === 'lesen');

@@ -53,6 +53,8 @@ export interface RunRow {
   legacyCompleted: boolean;
   // The timing profile pinned at the start of a timed run; null otherwise.
   timingSnapshot: unknown;
+  // The explicit early start of Lesen of an exam; null otherwise.
+  lesenStartedAt: string | null;
 }
 
 export interface StoredAnswers {
@@ -83,6 +85,7 @@ interface RunRecord {
   submit_command_id: string | null;
   legacy_completed: boolean;
   timing_profile_snapshot: unknown;
+  lesen_started_at: string | null;
 }
 
 const ATTEMPT_COLUMNS =
@@ -90,7 +93,7 @@ const ATTEMPT_COLUMNS =
 const RUN_COLUMNS = [
   'mode, purpose, selection, source_attempt_id, assignment, accepted_at',
   'cancel_reason, frozen_answers, submission_accepted_at, submit_command_id',
-  'legacy_completed, timing_profile_snapshot',
+  'legacy_completed, timing_profile_snapshot, lesen_started_at',
 ].join(', ');
 
 const toAttempt = (row: AttemptRecord): AttemptRow => ({
@@ -228,6 +231,7 @@ export const readRun = async (
     submitCommandId: data.submit_command_id,
     legacyCompleted: data.legacy_completed,
     timingSnapshot: data.timing_profile_snapshot,
+    lesenStartedAt: data.lesen_started_at,
   };
 };
 
@@ -510,6 +514,28 @@ export const callReconcile = async (
       p_attempt_id: call.attemptId,
     })
     .single<ReconcileRecord>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+export interface BeginLesenRecord {
+  outcome: 'accepted' | 'phase-not-open' | 'closed-phase';
+  attempt_status: string;
+  changed: boolean;
+}
+
+// The production early start of Lesen: row lock of the attempt, then the
+// database clock; the moment is written once, inside the transition.
+export const callBeginLesen = async (
+  deps: ServerDeps,
+  call: { sessionId: string; attemptId: string },
+): Promise<RpcResult<BeginLesenRecord>> => {
+  const { data, error } = await deps.db
+    .rpc('m2_begin_lesen', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+    })
+    .single<BeginLesenRecord>();
   if (error) return { ok: false, error };
   return { ok: true, row: data };
 };
