@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { psqlVarArgs } from '../../../../scripts/manage-timing-profile';
 import { readTestSupabaseEnv } from './env';
 
 // Direct SQL against the local, isolated test database only, through psql
@@ -52,21 +53,38 @@ const psqlArgs = (container: string, extra: string[]): string[] => [
   ...extra,
 ];
 
-// Runs a script from stdin and returns its output rows. A failing statement
-// stops the script and throws; an open transaction is rolled back when the
-// session ends.
-export const psql = (
-  sql: string,
-  target: SqlTarget = localTarget(),
-): string => {
+const runScript = (sql: string, target: SqlTarget, extra: string[]): string => {
   assertLocalTarget(target);
-  return execFileSync('docker', psqlArgs(target.container, ['-f', '-']), {
-    input: sql,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
+  return execFileSync(
+    'docker',
+    psqlArgs(target.container, [...extra, '-f', '-']),
+    { input: sql, stdio: ['pipe', 'pipe', 'pipe'] },
+  )
     .toString()
     .trim();
 };
+
+// Runs a script from stdin and returns its output rows. A failing statement
+// stops the script and throws; an open transaction is rolled back when the
+// session ends.
+export const psql = (sql: string, target: SqlTarget = localTarget()): string =>
+  runScript(sql, target, []);
+
+// The database roles a test runs a script as: the owner/DDL role of the
+// container, or an API role switched to with SET ROLE.
+export type TestSqlRole = 'owner' | 'service_role' | 'anon' | 'authenticated';
+
+// The SqlRunner of scripts/manage-timing-profile.ts for the isolated test
+// database: its psql variables (:'name', quoted by psql) and verbose errors,
+// run as the given role. Every call checks the local target first.
+export const sqlRunnerAs =
+  (role: TestSqlRole, target: SqlTarget = localTarget()) =>
+  (sql: string, vars: Readonly<Record<string, string>>): string =>
+    runScript(role === 'owner' ? sql : `set role ${role};\n${sql}`, target, [
+      '-v',
+      'VERBOSITY=verbose',
+      ...psqlVarArgs(vars),
+    ]);
 
 // The last output line parsed as JSON: scripts end with one json select.
 export const psqlJson = <T>(sql: string): T => {

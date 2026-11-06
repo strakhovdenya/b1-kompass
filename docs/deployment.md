@@ -32,6 +32,7 @@
 | `PILOT_KEYS_FILE` | только скрипты загрузки | путь к приватному JSON с ключом, по умолчанию `private/pilot-keys.json` |
 | `PILOT_AUDIO_FILE` | только скрипты загрузки | путь к оригинальной записи у владельца (`.mp3`, `.wav`, `.m4a` или `.ogg`), например `private/track-127.mp3`. Обязательна, значения по умолчанию нет |
 | `PILOT_CONTENT_FILE` | только `publish:pilot` | путь к подготовленному JSON полного пилота, по умолчанию `private/pilot-content.json` |
+| `TIMING_PROFILE_OWNER_DB_URL` | только `scripts/manage-timing-profile.ts` (#42) | строка подключения PostgreSQL владельца/DDL-роли (`postgresql://postgres:<пароль БД>@<host>:5432/postgres`, пароль из Supabase Dashboard → Database). Это не `SUPABASE_SECRET_KEY`: роль `service_role` не может исполнять подтверждение. Задаётся только в терминале владельца; в Vercel, GitHub и `.env*` в репозитории не попадает, инструмент отказывается работать при `VERCEL` |
 | `PILOT_DRAFT_FILE`, `PILOT_OUT_DIR` | только `prepare:pilot` | черновик пилота (по умолчанию `private/pilot-draft.json`) и папка результата (по умолчанию `private`) |
 
 Браузеру в M1 ключи Supabase не нужны. Шаблон для локального запуска — `apps/web/.env.example`.
@@ -136,6 +137,34 @@ SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SECRET_KEY=<secret> PILO
 ```
 
 Скрипт проверяет контракт и число заданий до записи и публикует версию общей функцией. Повтор с тем же содержимым возвращает прежнюю версию. Подробности и статус сверки с оригиналом — `docs/pilot-material.md`.
+
+### Профиль времени (#42)
+
+Длительности timed-режимов хранятся отдельно от материала: `m2_private.timing_profiles` (голова — номер текущей редакции версии) и append-only `m2_private.timing_profile_revisions`. Редакция привязана к `exam_versions.id`, к единственной дорожке версии и её `exam_version_audio.sha256`, хранит длительность записи, Hören, перехода и Lesen в секундах, отпечаток и статус `draft`/`confirmed`. Устройство и права — `docs/architecture.md` и `docs/security.md` (#42).
+
+Управляет профилем только владелец со своего компьютера, инструментом `scripts/manage-timing-profile.ts` через `psql` (нужен клиент PostgreSQL; новых npm-пакетов нет). Веб-админки и HTTP-доступа нет:
+
+```sh
+export TIMING_PROFILE_OWNER_DB_URL='postgresql://postgres:<пароль БД>@<host>:5432/postgres'
+npx tsx scripts/manage-timing-profile.ts show --exam <slug>   # версия, запись, голова, отпечаток, что вернёт gate
+npx tsx scripts/manage-timing-profile.ts draft --exam <slug> \
+  --recording-seconds <n> --hoeren-seconds <n> --transition-seconds <n> --lesen-seconds <n>
+npx tsx scripts/manage-timing-profile.ts confirm --revision-id <uuid> --fingerprint <sha256>
+```
+
+- `draft` создаёт новую редакцию `draft` (те же настройки, что у головы, ничего не меняют) и печатает её `revisionId`, `fingerprint` и готовую команду `confirm`. Сам он ничего не подтверждает.
+- `confirm` — отдельное явное действие. БД под блокировкой головы проверяет, что редакция всё ещё текущая, заново вычисляет отпечаток, сверяет запись версии и сравнивает отпечаток с переданным. Устаревший отпечаток, неактуальная редакция, сменившаяся запись или права не владельца — отказ без подтверждения (`timing_profile_fingerprint_mismatch`, `timing_profile_not_current`, `timing_profile_mismatch`, `permission_denied`).
+- Новая `draft` после подтверждения закрывает timed-старт до нового `confirm`; к старой подтверждённой редакции система не возвращается.
+
+**Процедура владельца перед подтверждением реального пилота** (не выполнена; эта задача пилот не подтверждает):
+
+1. `show --exam <slug пилота>`: версия — та, что опубликована для выпуска; в `recordings` ровно одна дорожка, её `sha256` совпадает с `sha256sum` оригинального файла у владельца (`private/…`).
+2. Прослушать запись: фактическая длительность (24 мин 54 с) и паузы между частями; проверить регламент исходного материала. Предварительные значения Hören 1500 с, Lesen 2700 с, переход 60 с **не подтверждены**; их пригодность — решение владельца.
+3. `draft` с проверенными значениями; сверить в выводе версию, `audioSha256`, все длительности и `fingerprint`.
+4. `confirm` с `revisionId` и `fingerprint` именно из шага 3. Затем `show`: `confirmedRevisionId` равен этой редакции, `headMatches = true`.
+5. Облачные права: подключаться через `TIMING_PROFILE_OWNER_DB_URL`, а не ключами Vercel; секретный ключ runtime этой операции не даёт (проверяется автотестами против локальной БД; в облаке — проверка владельца). URL не сохранять в репозитории и истории оболочки.
+
+Timed-старт выключен (`not-enabled`) до #43 при любом профиле. В автотестах `globalSetup` создаёт и подтверждает тестовый профиль только синтетического `test-full-dtz` в изолированной локальной БД; это не подтверждение пилота и не действие Production.
 
 ### Vercel
 
