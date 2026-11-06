@@ -147,9 +147,40 @@ as $$
   )
 $$;
 
+-- The tracks the published content of the version plays in Hören: those of
+-- its Hören questions and examples and of its groups (Teil 3 pairs and the
+-- Teil 4 set). Sorted and distinct.
+create function m2_private.hoeren_track_ids(p_version_id uuid)
+returns text[]
+language sql
+stable
+set search_path = ''
+as $$
+  select coalesce(
+    pg_catalog.array_agg(distinct t.track_id order by t.track_id), '{}'
+  )
+  from public.exam_versions v,
+    lateral (
+      select q.item ->> 'trackId'
+      from pg_catalog.jsonb_array_elements(v.content -> 'questions') q (item)
+      where q.item ->> 'skill' = 'hoeren'
+      union all
+      select e.item ->> 'trackId'
+      from pg_catalog.jsonb_array_elements(
+        coalesce(v.content -> 'examples', '[]'::jsonb)) e (item)
+      where e.item ->> 'skill' = 'hoeren'
+      union all
+      select g.item ->> 'trackId'
+      from pg_catalog.jsonb_array_elements(
+        coalesce(v.content -> 'groups', '[]'::jsonb)) g (item)
+    ) t (track_id)
+  where v.id = p_version_id and t.track_id is not null
+$$;
+
 -- A revision still describes its version: the stored fingerprint equals the
--- recomputed one, and the version has exactly one recording, the same track
--- with the same SHA-256. Several or no recordings fail closed.
+-- recomputed one; the version has exactly one recording, the same track
+-- with the same SHA-256; and its Hören content plays exactly that one track.
+-- Several or no recordings, or Hören tracks that disagree, fail closed.
 create function m2_private.timing_profile_matches(
   p_row m2_private.timing_profile_revisions
 )
@@ -166,6 +197,8 @@ as $$
       from public.exam_version_audio a
       where a.exam_version_id = p_row.exam_version_id
     ), false)
+    and m2_private.hoeren_track_ids(p_row.exam_version_id)
+      = array[p_row.track_id]
 $$;
 
 -- Database guards ------------------------------------------------------------------
@@ -463,6 +496,10 @@ begin
     raise exception 'the version needs exactly one recording'
       using errcode = 'P0001', hint = 'timing_profile_audio_ambiguous';
   end if;
+  if m2_private.hoeren_track_ids(p_version_id) <> array[v_track] then
+    raise exception 'the Hören content does not play exactly this recording'
+      using errcode = 'P0001', hint = 'timing_profile_track_mismatch';
+  end if;
 
   insert into m2_private.timing_profiles (exam_version_id, head_revision)
   values (p_version_id, 1)
@@ -726,6 +763,8 @@ revoke all on function m2_private.timing_profile_fingerprint_of(m2_private.timin
 revoke all on function m2_private.utc_text(timestamptz)
   from public, anon, authenticated, service_role;
 revoke all on function m2_private.timing_profile_document(m2_private.timing_profile_revisions)
+  from public, anon, authenticated, service_role;
+revoke all on function m2_private.hoeren_track_ids(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function m2_private.timing_profile_matches(m2_private.timing_profile_revisions)
   from public, anon, authenticated, service_role;

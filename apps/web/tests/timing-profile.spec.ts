@@ -24,6 +24,7 @@ import { readConfirmedTimingProfile } from '../src/server/attempts/profiles';
 import {
   createPublicClient,
   depsNow,
+  insertRawVersion,
   latestVersionOf,
   newGuest,
   readAttempts,
@@ -259,10 +260,24 @@ const isWaitingOnLock = (name: string): boolean =>
     where application_name = ${quote(name)} and wait_event_type = 'Lock'`) ===
   '1';
 
-const createSql = (versionId: string, settings: TimingSettings): string =>
-  `select m2_owner.create_timing_profile_revision(${quote(versionId)}::uuid,
+const createCall = (versionId: string, settings: TimingSettings): string =>
+  `m2_owner.create_timing_profile_revision(${quote(versionId)}::uuid,
     ${settings.recordingSeconds}, ${settings.hoerenSeconds},
-    ${settings.transitionSeconds}, ${settings.lesenSeconds});`;
+    ${settings.transitionSeconds}, ${settings.lesenSeconds})`;
+
+const createSql = (versionId: string, settings: TimingSettings): string =>
+  `select ${createCall(versionId, settings)};`;
+
+// The setup of ensureConfirmedTestProfile as one SQL statement of its own
+// session: draft, then confirm the returned revision with the fingerprint
+// the database computed (already-confirmed when nothing changed).
+const setupSql = (versionId: string, settings: TimingSettings): string =>
+  `with drafted as materialized (
+      select ${createCall(versionId, settings)} as doc)
+    select m2_owner.confirm_timing_profile_revision(
+      (doc -> 'revision' ->> 'revisionId')::uuid,
+      doc -> 'revision' ->> 'fingerprint')
+    from drafted;`;
 
 const SOURCE_ROOT = path.join(import.meta.dirname, '..', 'src');
 
@@ -630,35 +645,61 @@ test('profile setup is idempotent and isolated by exam slug', async () => {
   expect(revisionsOf(full.versionId)).toEqual(before);
   expect(gateOf(full.versionId)).toBe(head?.id);
 
-  // Two exams with their own slug, version and recording, set up together.
+  // Two exams with their own slug, version and recording are set up at the
+  // same time in separate database sessions, while test-full-dtz and the
+  // first exam are set up once more in parallel.
   const first = uniqueExam();
   const second = uniqueExam();
   const [firstVersion, secondVersion] = await Promise.all([
     publishTimed(first, 784),
     publishTimed(second, 831),
   ]);
-  const firstProfile = ensureConfirmedTestProfile(
-    owner,
-    firstVersion,
-    FULL_TIMING,
-  );
-  const secondProfile = ensureConfirmedTestProfile(
-    owner,
-    secondVersion,
-    SHORT_TIMING,
-  );
-  expect(firstProfile.audioSha256).toBe(shaOfTone(784));
-  expect(secondProfile.audioSha256).toBe(shaOfTone(831));
-  expect(firstProfile.fingerprint).not.toBe(secondProfile.fingerprint);
+  const sessions = [
+    setupSql(firstVersion, FULL_TIMING),
+    setupSql(secondVersion, SHORT_TIMING),
+    setupSql(full.versionId, FULL_TIMING),
+    setupSql(firstVersion, FULL_TIMING),
+  ].map((sql) => spawnPsql(sql));
+  const results = await Promise.all(sessions.map((session) => session.done));
+  expect(
+    results.map((result) => result.code),
+    results.map((result) => result.output).join('\n'),
+  ).toEqual([0, 0, 0, 0]);
 
+  const statusOf = (versionId: string) =>
+    revisionsOf(versionId).map((row) => [row.revision, row.status]);
+  expect(statusOf(firstVersion)).toEqual([[1, 'confirmed']]);
+  expect(statusOf(secondVersion)).toEqual([[1, 'confirmed']]);
+  expect(revisionsOf(full.versionId)).toEqual(before);
+
+  const firstHead = showTimingProfile(owner, { versionId: firstVersion }).head;
+  const secondHead = showTimingProfile(owner, {
+    versionId: secondVersion,
+  }).head;
+  if (!firstHead || !secondHead) throw new Error('profiles are missing');
+  expect(firstHead).toMatchObject({
+    audioSha256: shaOfTone(784),
+    ...FULL_TIMING,
+    status: 'confirmed',
+  });
+  expect(secondHead).toMatchObject({
+    audioSha256: shaOfTone(831),
+    ...SHORT_TIMING,
+    status: 'confirmed',
+  });
+  expect(firstHead.fingerprint).toBe(expectedFingerprint(firstHead));
+  expect(secondHead.fingerprint).toBe(expectedFingerprint(secondHead));
+  expect(firstHead.fingerprint).not.toBe(secondHead.fingerprint);
+
+  // The setup helper of global setup, repeated, adds nothing anywhere.
   const firstRows = revisionsOf(firstVersion);
   const secondRows = revisionsOf(secondVersion);
   ensureConfirmedTestProfile(owner, firstVersion, FULL_TIMING);
   ensureConfirmedTestProfile(owner, secondVersion, SHORT_TIMING);
   expect(revisionsOf(firstVersion)).toEqual(firstRows);
   expect(revisionsOf(secondVersion)).toEqual(secondRows);
-  expect(gateOf(firstVersion)).toBe(firstProfile.revisionId);
-  expect(gateOf(secondVersion)).toBe(secondProfile.revisionId);
+  expect(gateOf(firstVersion)).toBe(firstHead.revisionId);
+  expect(gateOf(secondVersion)).toBe(secondHead.revisionId);
   expect(revisionsOf(full.versionId)).toEqual(before);
 });
 
@@ -877,6 +918,43 @@ test('current draft missing and mismatched profiles refuse timed gate', async ()
     ),
   ).toBe('timing_profile_version_missing');
   expect(revisionsOf(v3)).toEqual([]);
+
+  // The one recording must be the Hören track the content plays: a version
+  // whose Hören questions name another track gets no draft, and even a
+  // forced confirmed revision for it never opens the gate.
+  const raw = await insertRawVersion({
+    slug: uniqueExam().slug,
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+  });
+  psql(`insert into public.exam_version_audio (exam_version_id, track_id,
+      kind, object_path, content_type, sha256)
+    values (${quote(raw)}, 'other-track', 'file',
+      ${quote(`audio/${otherSha}.wav`)}, 'audio/wav', ${quote(otherSha)})`);
+  expect(refusalOf(() => draft(raw, FULL_TIMING))).toBe(
+    'timing_profile_track_mismatch',
+  );
+  expect(revisionsOf(raw)).toEqual([]);
+  const forcedId = randomUUID();
+  const forcedValues = `${quote(forcedId)}, ${quote(raw)}, 1, 'other-track',
+    ${quote(otherSha)}, 60, 1500, 60, 2700`;
+  expect(
+    psqlJson<{ id: string | null }>(`begin;
+      alter table m2_private.timing_profile_revisions disable trigger user;
+      insert into m2_private.timing_profiles (exam_version_id, head_revision)
+      values (${quote(raw)}, 1);
+      insert into m2_private.timing_profile_revisions (id, exam_version_id,
+        revision, track_id, audio_sha256, recording_seconds, hoeren_seconds,
+        transition_seconds, lesen_seconds, fingerprint, status, created_at,
+        confirmed_at)
+      values (${forcedValues},
+        m2_private.timing_profile_fingerprint(${forcedValues}),
+        'confirmed', now(), now());
+      select json_build_object('id', (select g.revision_id
+        from m2_private.current_confirmed_profile(${quote(raw)}) g));
+      rollback;`).id,
+  ).toBeNull();
+  expect(revisionsOf(raw)).toEqual([]);
 });
 
 test('public roles cannot mutate timing profiles or confirmations', async () => {
@@ -902,6 +980,7 @@ test('public roles cannot mutate timing profiles or confirmations', async () => 
     'm2_private.check_timing_profile_head()',
     'm2_private.confirmed_head(uuid)',
     'm2_private.utc_text(timestamptz)',
+    'm2_private.hoeren_track_ids(uuid)',
   ];
   const reader = 'public.m2_confirmed_timing_profile(uuid)';
   const tables = [
