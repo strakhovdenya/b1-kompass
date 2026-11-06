@@ -109,6 +109,8 @@ const FAILURE_STATUS: Readonly<Record<string, number>> = {
   'session-invalid': 401,
   'not-found': 404,
   'not-enabled': 422,
+  // A refusal of the guest's term, never a server fault.
+  'guest-too-short': 422,
   unavailable: 503,
 };
 

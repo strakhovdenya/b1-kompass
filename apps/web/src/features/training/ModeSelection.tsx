@@ -27,15 +27,32 @@ interface ModeSelectionProps {
 }
 
 type StartStatus =
-  'idle' | 'starting' | 'error' | 'conflict' | 'changed' | 'not-enabled';
+  | 'idle'
+  | 'starting'
+  | 'error'
+  | 'conflict'
+  | 'changed'
+  | 'not-enabled'
+  | 'guest-too-short';
 
-// Only the free training is enabled now; the timed modes are shown as
-// coming, without a way to start them.
+// The free training and one timed block are enabled; the full exam is shown
+// as coming, without a way to start it. The time of a block is set by the
+// server from the confirmed profile of the exam, never chosen here.
 const MODES: readonly { mode: AttemptMode; isEnabled: boolean }[] = [
   { mode: 'training', isEnabled: true },
-  { mode: 'timed-block', isEnabled: false },
+  { mode: 'timed-block', isEnabled: true },
   { mode: 'exam', isEnabled: false },
 ];
+
+const DETAIL_KEYS: Readonly<Record<AttemptMode, string>> = {
+  training: 'trainingDetail',
+  'timed-block': 'timedBlockDetail',
+  exam: 'comingSoon',
+};
+
+// A timed block is one skill: the whole set is not offered for it.
+const isOffered = (mode: AttemptMode, selection: AttemptSelection): boolean =>
+  mode !== 'timed-block' || selection !== 'all';
 
 const MODE_KEYS: Readonly<Record<AttemptMode, string>> = {
   training: 'training',
@@ -61,6 +78,7 @@ export const ModeSelection = ({
   const router = useRouter();
   const [status, setStatus] = useState<StartStatus>('idle');
   const [conflictId, setConflictId] = useState<string | null>(null);
+  const [mode, setMode] = useState<AttemptMode>('training');
   const [selection, setSelection] = useState<AttemptSelection>('all');
   const commandId = useRef<string | null>(null);
   const counts: Readonly<Record<AttemptSelection, number>> = {
@@ -78,13 +96,23 @@ export const ModeSelection = ({
     setSelection(value);
   };
 
+  const chooseMode = (value: AttemptMode) => {
+    commandId.current = null;
+    setConflictId(null);
+    setStatus('idle');
+    setMode(value);
+    if (!isOffered(value, selection)) {
+      setSelection(hoerenCount > 0 ? 'hoeren' : 'lesen');
+    }
+  };
+
   const start = async () => {
     commandId.current ??= crypto.randomUUID();
     setStatus('starting');
     const result = await requestStart({
       commandId: commandId.current,
       examSlug,
-      mode: 'training',
+      mode,
       purpose: 'normal',
       selection,
       sourceAttemptId: null,
@@ -112,6 +140,10 @@ export const ModeSelection = ({
     if (result.failure === 'not-found') {
       setStatus('changed');
       router.refresh();
+      return;
+    }
+    if (result.failure === 'guest-too-short') {
+      setStatus('guest-too-short');
       return;
     }
     setStatus(result.failure === 'not-enabled' ? 'not-enabled' : 'error');
@@ -145,19 +177,28 @@ export const ModeSelection = ({
       ) : null}
       <FormControl>
         <FormLabel id="mode-label">{t('modeLabel')}</FormLabel>
-        <RadioGroup aria-labelledby="mode-label" value="training">
-          {MODES.map(({ mode, isEnabled }) => (
+        <RadioGroup
+          aria-labelledby="mode-label"
+          value={mode}
+          onChange={(_event, value) => {
+            const picked = MODES.find(
+              (item) => item.isEnabled && item.mode === value,
+            );
+            if (picked) chooseMode(picked.mode);
+          }}
+        >
+          {MODES.map((item) => (
             <FormControlLabel
-              key={mode}
-              value={mode}
-              disabled={!isEnabled}
+              key={item.mode}
+              value={item.mode}
+              disabled={!item.isEnabled || isStarting}
               control={<Radio />}
-              data-testid={`mode-option-${mode}`}
+              data-testid={`mode-option-${item.mode}`}
               label={
                 <Stack sx={{ py: 0.5 }}>
-                  <Typography>{t(`mode.${MODE_KEYS[mode]}`)}</Typography>
+                  <Typography>{t(`mode.${MODE_KEYS[item.mode]}`)}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {isEnabled ? t('trainingDetail') : t('comingSoon')}
+                    {t(DETAIL_KEYS[item.mode])}
                   </Typography>
                 </Stack>
               }
@@ -180,7 +221,9 @@ export const ModeSelection = ({
               key={item}
               value={item}
               control={<Radio />}
-              disabled={isStarting || counts[item] === 0}
+              disabled={
+                isStarting || counts[item] === 0 || !isOffered(mode, item)
+              }
               data-testid={`selection-option-${item}`}
               label={t(`selection.${item}`, { count: counts[item] })}
             />
@@ -208,6 +251,15 @@ export const ModeSelection = ({
         {status === 'error' || status === 'not-enabled' ? (
           <Alert severity="error" role="alert" data-testid="start-error">
             {status === 'error' ? t('error') : t('notEnabled')}
+          </Alert>
+        ) : null}
+        {status === 'guest-too-short' ? (
+          <Alert
+            severity="warning"
+            role="alert"
+            data-testid="start-guest-too-short"
+          >
+            {t('guestTooShort')}
           </Alert>
         ) : null}
       </Stack>

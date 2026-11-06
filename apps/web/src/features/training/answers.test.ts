@@ -4,6 +4,7 @@ import {
   hasSaving,
   hasUnsaved,
   unconfirmedAfter,
+  unsavedAtDeadline,
 } from './answers';
 
 const sent = { optionId: 'b', revision: 3 };
@@ -146,5 +147,41 @@ describe('final answers', () => {
       { questionId: 'hoeren-1', optionId: 'a', revision: 1 },
     ]);
     expect(allocations).toEqual([]);
+  });
+});
+
+describe('unsavedAtDeadline', () => {
+  it('keeps every choice the server did not accept in time as refused', () => {
+    const pending = {
+      // Saved in time: only its save answer was late.
+      'hoeren-1': { optionId: 'a', revision: 2, status: 'saving' as const },
+      // In flight at zero, never written.
+      'hoeren-2': { optionId: 'b', revision: 1, status: 'saving' as const },
+      // Failed before zero and not retried.
+      'hoeren-3': { optionId: 'c', revision: 1, status: 'error' as const },
+      // A change of an answer that the server holds in its older form.
+      'hoeren-4': { optionId: 'd', revision: 3, status: 'saving' as const },
+    };
+    const accepted = { 'hoeren-1': 'a', 'hoeren-4': 'a' };
+    const left = unsavedAtDeadline(pending, accepted);
+    expect(Object.keys(left).sort()).toEqual([
+      'hoeren-2',
+      'hoeren-3',
+      'hoeren-4',
+    ]);
+    for (const entry of Object.values(left)) {
+      expect(entry.status).toBe('refused');
+    }
+    // A refused choice is no longer part of any final answers or retry.
+    expect(hasUnsaved(left)).toBe(false);
+    expect(hasSaving(left)).toBe(false);
+    expect(left['hoeren-4']).toEqual({
+      optionId: 'd',
+      revision: 3,
+      status: 'refused',
+    });
+    // The input is not changed.
+    expect(pending['hoeren-2'].status).toBe('saving');
+    expect(unsavedAtDeadline({}, accepted)).toEqual({});
   });
 });

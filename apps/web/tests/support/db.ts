@@ -374,6 +374,7 @@ const SUBMISSION_ERRORS = {
   'not-found': 'attempt-not-found',
   unavailable: 'unavailable',
   'not-enabled': 'unavailable',
+  'guest-too-short': 'unavailable',
 } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

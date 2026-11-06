@@ -40,7 +40,10 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
     );
   }
 
-  const { practice, resultPending, phaseRevision } = opened;
+  // A timed run comes with its deadline and the database moment of this
+  // read: the shell shows the server's remaining time, a refresh never
+  // starts a new one.
+  const { practice, resultPending, phaseRevision, timer } = opened;
   return (
     <TrainingShell
       key={practice.attemptId}
@@ -54,6 +57,7 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
       initialProgress={practice.progress}
       isResultPending={resultPending}
       phaseRevision={phaseRevision}
+      timer={timer}
       resolveAudio={resolveAudioAction}
     >
       {children}

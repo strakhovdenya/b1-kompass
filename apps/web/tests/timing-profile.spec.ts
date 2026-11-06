@@ -545,17 +545,36 @@ test('profile revisions retain pinned running snapshot', async () => {
   ).toThrow(/attempt_runs_training_unpinned/);
   expect(await readAttempts(otherGuest.guest.sessionId)).toEqual([]);
 
-  // The production start still answers not-enabled for every timed mode.
+  // The full exam stays not-enabled and writes nothing. Since #43 the
+  // production start of a timed block pins the current confirmed head with
+  // exactly its document, never the superseded first revision.
   const fresh = await newGuest(depsNow());
-  for (const overrides of [
-    { mode: 'timed-block', selection: 'hoeren' },
-    { mode: 'timed-block', selection: 'lesen' },
-    { mode: 'exam', selection: 'all' },
-  ]) {
-    const result = await startFor(depsNow(), fresh.token, exam.slug, overrides);
-    expect(result).toEqual({ ok: false, failure: 'not-enabled' });
-  }
+  expect(
+    await startFor(depsNow(), fresh.token, exam.slug, {
+      mode: 'exam',
+      selection: 'all',
+    }),
+  ).toEqual({ ok: false, failure: 'not-enabled' });
   expect(await readAttempts(fresh.guest.sessionId)).toEqual([]);
+  for (const selection of ['hoeren', 'lesen']) {
+    const timedGuest = await newGuest(depsNow());
+    const timed = await startFor(depsNow(), timedGuest.token, exam.slug, {
+      mode: 'timed-block',
+      selection,
+    });
+    expect(timed).toMatchObject({ ok: true, result: { outcome: 'accepted' } });
+    if (!timed.ok) throw new Error('timed start failed');
+    const run = pinnedRunOf(timed.result.attemptId);
+    expect(run.mode).toBe('timed-block');
+    expect(run.revisionId).toBe(second.revisionId);
+    expect(run.revisionId).not.toBe(first.revisionId);
+    expect(run.snapshot).toMatchObject({
+      revisionId: second.revisionId,
+      status: 'confirmed',
+      hoerenSeconds: 9,
+    });
+  }
+  expect(pinnedRunOf(attemptId)).toEqual(pinned);
 });
 
 test('trusted profile gate and free start are independent', async () => {
@@ -575,17 +594,36 @@ test('trusted profile gate and free start are independent', async () => {
   expect(gateOf(versionId)).toBeNull();
   expect(await readConfirmedTimingProfile(depsNow(), versionId)).toBeNull();
 
-  // Timed starts stay not-enabled until #43, with or without a confirmed
-  // profile, and write nothing.
+  // Without a confirmed profile a timed start stays not-enabled and writes
+  // nothing; with one (test-full-dtz) it is accepted and pinned to the head
+  // the gate returns.
   const timedGuest = await newGuest(depsNow());
-  for (const slug of [exam.slug, FULL_EXAM.slug]) {
-    const timed = await startFor(depsNow(), timedGuest.token, slug, {
+  expect(
+    await startFor(depsNow(), timedGuest.token, exam.slug, {
       mode: 'timed-block',
       selection: 'hoeren',
-    });
-    expect(timed).toEqual({ ok: false, failure: 'not-enabled' });
-  }
+    }),
+  ).toEqual({ ok: false, failure: 'not-enabled' });
   expect(await readAttempts(timedGuest.guest.sessionId)).toEqual([]);
+  const fullHead = await latestVersionOf(FULL_EXAM.slug);
+  if (!fullHead) throw new Error('full set is missing');
+  const timedFull = await startFor(
+    depsNow(),
+    timedGuest.token,
+    FULL_EXAM.slug,
+    {
+      mode: 'timed-block',
+      selection: 'hoeren',
+    },
+  );
+  expect(timedFull).toMatchObject({
+    ok: true,
+    result: { outcome: 'accepted' },
+  });
+  if (!timedFull.ok) throw new Error('timed start failed');
+  expect(pinnedRunOf(timedFull.result.attemptId).revisionId).toBe(
+    gateOf(fullHead.versionId),
+  );
 
   // The gate returns the confirmed profile of test-full-dtz to the trusted
   // server, read-only.

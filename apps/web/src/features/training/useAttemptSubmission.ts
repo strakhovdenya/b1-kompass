@@ -4,6 +4,8 @@ import { useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ExamQuestion, Selections } from '@b1k/domain';
 import { isUnsaved } from './answers';
+import { syncOf } from './exam-clock';
+import type { ClockSync } from './exam-clock';
 import type { AnswerStore } from './answers';
 import {
   choicePath,
@@ -27,6 +29,9 @@ import type {
 // a server action. Once a command is sent, the answers are locked until the
 // server answers; a lost answer keeps them locked and the same command can
 // be sent again. The answers themselves stay in the one answer store.
+// Every status read also reports the server clock, so the timer of a timed
+// run follows the server; a run its deadline closed shows which choices were
+// not saved in time.
 export type SubmissionPhase =
   | 'idle'
   | 'confirming'
@@ -39,7 +44,8 @@ export type SubmissionPhase =
   | 'cancel-confirming'
   | 'cancelling'
   | 'cancel-uncertain'
-  | 'cancel-failed';
+  | 'cancel-failed'
+  | 'expired';
 
 export interface SubmitConfirmation {
   phaseRevision: number;
@@ -57,9 +63,16 @@ export interface CancelSummary {
 
 export type ResultCheck = 'idle' | 'checking' | 'not-ready';
 
+// The deadline closed the run: the choices the server did not accept in
+// time, and whether the result is already stored.
+export interface Expiry {
+  unsaved: number;
+  isResultReady: boolean;
+}
+
 export type SubmissionStore = Pick<
   AnswerStore,
-  'lock' | 'unlock' | 'readFinalAnswers' | 'readPending' | 'settle'
+  'lock' | 'unlock' | 'readFinalAnswers' | 'readPending' | 'settle' | 'expire'
 >;
 
 interface SubmissionOptions {
@@ -71,6 +84,8 @@ interface SubmissionOptions {
   store: SubmissionStore;
   // Called once the attempt is closed: nothing else is saved for it.
   onClosed: () => void;
+  // Each reading of the server clock that came with a status.
+  onSync?: (sync: ClockSync) => void;
 }
 
 export interface AttemptSubmission {
@@ -80,6 +95,7 @@ export interface AttemptSubmission {
   isRenewed: boolean;
   cancelSummary: CancelSummary | null;
   resultCheck: ResultCheck;
+  expiry: Expiry | null;
   submit: () => void;
   confirmSubmit: () => void;
   resendSubmit: () => void;
@@ -88,6 +104,9 @@ export interface AttemptSubmission {
   confirmCancel: () => void;
   resendCancel: () => void;
   dismiss: () => void;
+  // Reads the server state on its own fetch, beside any save in flight. A
+  // closed run is shown as closed; an open one only renews the clock.
+  reconcile: () => Promise<void>;
 }
 
 const confirmationOf = (
@@ -126,6 +145,7 @@ export const useAttemptSubmission = ({
   isResultPending,
   store,
   onClosed,
+  onSync,
 }: SubmissionOptions): AttemptSubmission => {
   const router = useRouter();
   const [phase, setPhase] = useState<SubmissionPhase>(
@@ -139,6 +159,9 @@ export const useAttemptSubmission = ({
     null,
   );
   const [resultCheck, setResultCheck] = useState<ResultCheck>('idle');
+  const [expiry, setExpiry] = useState<Expiry | null>(null);
+  // Closed for this page: no further reconciliation changes the screen.
+  const isClosed = useRef(isResultPending);
   // The command in flight, sent again unchanged after a lost answer.
   const submitCommand = useRef<SubmitRequest | null>(null);
   const cancelCommand = useRef<CancelRequest | null>(null);
@@ -152,8 +175,21 @@ export const useAttemptSubmission = ({
     [questions, phaseRevision],
   );
 
+  // Every status is read on its own fetch and reports the server clock: the
+  // moment is placed in the middle of the round trip.
+  const readStatus = useCallback(async (): Promise<StatusClientResult> => {
+    const sentMs = performance.now();
+    const status = await requestStatus(attemptId);
+    if (status.ok && onSync) {
+      const serverNowMs = Date.parse(status.result.serverNow);
+      onSync(syncOf(serverNowMs, sentMs, performance.now()));
+    }
+    return status;
+  }, [attemptId, onSync]);
+
   const close = useCallback(
     (next: 'accepted' | 'completed', accepted: Selections | null) => {
+      isClosed.current = true;
       onClosed();
       if (accepted) store.settle(accepted);
       else store.lock();
@@ -161,6 +197,23 @@ export const useAttemptSubmission = ({
       if (next === 'completed') router.refresh();
     },
     [onClosed, store, router],
+  );
+
+  // The deadline closed the run with the answers accepted in time: they are
+  // final, every other choice stays visible as not saved, and the result is
+  // opened by the guest, so the unsaved choices can be seen first.
+  const expire = useCallback(
+    (view: AttemptStatusView) => {
+      isClosed.current = true;
+      onClosed();
+      const unsaved = store.expire(view.answers);
+      setExpiry({ unsaved, isResultReady: view.outcome === 'result-ready' });
+      setConfirmation(null);
+      setCancelSummary(null);
+      setResultCheck('idle');
+      setPhase('expired');
+    },
+    [onClosed, store],
   );
 
   // The attempt is no longer open for this command: show what it is now.
@@ -172,8 +225,12 @@ export const useAttemptSubmission = ({
         return;
       }
       const view: AttemptStatusView = status.result;
-      if (view.outcome === 'result-ready') close('completed', view.answers);
-      else if (view.outcome === 'result-pending') {
+      const isFinished =
+        view.outcome === 'result-ready' || view.outcome === 'result-pending';
+      if (isFinished && view.isClosedByDeadline) expire(view);
+      else if (view.outcome === 'result-ready') {
+        close('completed', view.answers);
+      } else if (view.outcome === 'result-pending') {
         close('accepted', view.answers);
       } else if (view.outcome === 'cancelled') {
         onClosed();
@@ -184,13 +241,13 @@ export const useAttemptSubmission = ({
         setPhase(otherwise);
       }
     },
-    [close, examSlug, onClosed, router, store],
+    [close, examSlug, expire, onClosed, router, store],
   );
 
   // The server refused the confirmation: its stored answers are read again
   // and a new confirmation is asked for; nothing is sent without it.
   const renewConfirmation = useCallback(async () => {
-    const status = await requestStatus(attemptId);
+    const status = await readStatus();
     if (status.ok && status.result.outcome !== 'active') {
       follow(status, 'failed');
       return;
@@ -201,7 +258,7 @@ export const useAttemptSubmission = ({
     setConfirmation(confirmationNow(store.readFinalAnswers()));
     setIsRenewed(true);
     setPhase('confirming');
-  }, [attemptId, confirmationNow, follow, store]);
+  }, [readStatus, confirmationNow, follow, store]);
 
   const settleSubmit = useCallback(
     async (result: SubmitClientResult) => {
@@ -226,11 +283,16 @@ export const useAttemptSubmission = ({
         await renewConfirmation();
         return;
       }
-      const status = await requestStatus(attemptId);
-      if (outcome === 'conflict') follow(status, 'failed');
-      else close('accepted', status.ok ? status.result.answers : null);
+      const status = await readStatus();
+      // closed-phase: the deadline closed the run before this submission.
+      // The run is closed even when its status could not be read: the
+      // answers stay locked and the result is asked for again.
+      if (outcome === 'closed-phase' && !status.ok) close('accepted', null);
+      else if (outcome === 'conflict' || outcome === 'closed-phase') {
+        follow(status, 'failed');
+      } else close('accepted', status.ok ? status.result.answers : null);
     },
-    [attemptId, close, follow, renewConfirmation, store],
+    [readStatus, close, follow, renewConfirmation, store],
   );
 
   const send = useCallback(
@@ -288,17 +350,17 @@ export const useAttemptSubmission = ({
 
   const checkResult = useCallback(async () => {
     setResultCheck('checking');
-    const status = await requestStatus(attemptId);
+    const status = await readStatus();
     if (status.ok && status.result.outcome === 'result-ready') {
       close('completed', status.result.answers);
       return;
     }
     setResultCheck('not-ready');
-  }, [attemptId, close]);
+  }, [readStatus, close]);
 
   const loadCancelSummary = useCallback(async () => {
     setPhase('cancel-loading');
-    const status = await requestStatus(attemptId);
+    const status = await readStatus();
     if (!status.ok || status.result.outcome !== 'active') {
       follow(status, 'cancel-failed');
       return;
@@ -309,7 +371,7 @@ export const useAttemptSubmission = ({
       unsaved: countUnsaved(store),
     });
     setPhase('cancel-confirming');
-  }, [attemptId, follow, store]);
+  }, [readStatus, follow, store]);
 
   const cancel = useCallback(() => {
     setIsRenewed(false);
@@ -341,9 +403,9 @@ export const useAttemptSubmission = ({
         await loadCancelSummary();
         return;
       }
-      follow(await requestStatus(attemptId), 'cancel-failed');
+      follow(await readStatus(), 'cancel-failed');
     },
-    [attemptId, examSlug, follow, loadCancelSummary, onClosed, router, store],
+    [examSlug, follow, loadCancelSummary, onClosed, readStatus, router, store],
   );
 
   const sendCancel = useCallback(
@@ -370,6 +432,13 @@ export const useAttemptSubmission = ({
     if (request) void sendCancel(request);
   }, [sendCancel]);
 
+  const reconcile = useCallback(async () => {
+    if (isClosed.current) return;
+    const status = await readStatus();
+    if (isClosed.current || !status.ok) return;
+    if (status.result.outcome !== 'active') follow(status, 'idle');
+  }, [follow, readStatus]);
+
   const dismiss = useCallback(() => {
     store.unlock();
     setConfirmation(null);
@@ -384,6 +453,7 @@ export const useAttemptSubmission = ({
     isRenewed,
     cancelSummary,
     resultCheck,
+    expiry,
     submit,
     confirmSubmit,
     resendSubmit,
@@ -392,5 +462,6 @@ export const useAttemptSubmission = ({
     confirmCancel,
     resendCancel,
     dismiss,
+    reconcile,
   };
 };

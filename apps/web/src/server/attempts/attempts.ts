@@ -24,8 +24,8 @@ export {
   readExamChoice,
 } from './read';
 export type { AttemptPageResult, ExamChoice, RunReadResult } from './read';
-export { startAttempt } from './start';
-export type { StartAttemptResult } from './start';
+export { preflightTimedStart, startAttempt } from './start';
+export type { StartAttemptResult, TimedStartVerdict } from './start';
 export { submitAttempt } from './submit';
 export type { SubmitAttemptResult } from './submit';
 export { cancelAttempt } from './cancel';
@@ -53,12 +53,15 @@ const RULE_ERRORS: Readonly<Record<string, SaveAnswerError>> = {
   question_not_assigned: 'option-not-allowed',
   option_not_allowed: 'option-not-allowed',
   revision_invalid: 'invalid-input',
+  // The deadline of a timed run is reached: nothing is written any more.
+  phase_closed: 'attempt-not-found',
 };
 
 const PROGRESS_RULE_ERRORS: Readonly<Record<string, SaveProgressError>> = {
   guest_session_invalid: 'session-invalid',
   attempt_not_found: 'attempt-not-found',
   progress_not_allowed: 'progress-not-allowed',
+  phase_closed: 'attempt-not-found',
 };
 
 export const saveProgress = async (

@@ -15,8 +15,11 @@ interface AttemptRoute {
   params: Promise<{ attemptId: string }>;
 }
 
-// The status of the guest's own attempt. POST, because reading may complete
-// a submitted attempt; it never waits for any other request. Origin, method,
+// The status of the guest's own attempt. POST, because reading may close a
+// timed run at its deadline and complete a submitted attempt. It is its own
+// request, never queued behind a save; only an open timed run is locked, so
+// it may wait for a save that holds that row and then judges the deadline
+// by the database clock read after the lock. Origin, method,
 // type and size are checked before the session; the guest comes only from
 // the httpOnly cookie and the attempt only from the address.
 export const POST = async (

@@ -11,7 +11,7 @@ import type { GuestContext } from '../guest-session/session';
 import { toLifecycleState } from './projection';
 import { readAttemptRun } from './read';
 import { callCancel } from './repository';
-import { RULE_FAILURES, confirmationSchema } from './submit';
+import { RULE_FAILURES, confirmationSchema, finalizeClosedRun } from './submit';
 
 export type CancelAttemptResult = CommandResult<CancelOutcome>;
 
@@ -48,6 +48,11 @@ const runCancel = async (
     throw new Error('Attempt was not cancelled', { cause: call.error });
   }
   const { attemptId } = input;
+  // At or after the deadline of a timed run the cancel is refused: the run is
+  // closed with its answers accepted in time, which get their result.
+  if (call.row.outcome === 'closed-phase') {
+    await finalizeClosedRun(deps, guest, attemptId);
+  }
   const read = await readAttemptRun(deps, guest, attemptId);
   if (read.status !== 'ready') return fail('unavailable');
   const state = toLifecycleState(read.view, deps.clock.now().getTime());

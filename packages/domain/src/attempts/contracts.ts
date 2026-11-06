@@ -91,13 +91,16 @@ export type AdmissionResult =
 
 // Public command DTOs. Each command lists only the business outcomes that
 // apply to it; technical failures travel in a separate channel and never
-// share a variant with a business outcome.
+// share a variant with a business outcome. 'guest-too-short' refuses a timed
+// start whose guest session would end before the block plus its reserve;
+// the policy of that reserve belongs to the trusted server, not here.
 export type RunTechnicalFailure =
   | 'invalid-input'
   | 'session-invalid'
   | 'not-found'
   | 'unavailable'
-  | 'not-enabled';
+  | 'not-enabled'
+  | 'guest-too-short';
 
 export type CommandResult<Outcome> =
   { ok: true; result: Outcome } | { ok: false; failure: RunTechnicalFailure };

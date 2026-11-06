@@ -8,6 +8,7 @@ import type {
   ExamGroup,
   ExamQuestion,
   ExamText,
+  LifecycleDurations,
   LifecycleState,
   Selections,
 } from '@b1k/domain';
@@ -48,7 +49,36 @@ export interface AttemptRunView {
   sourceAttemptId: string | null;
   questionIds: readonly string[];
   acceptedAt: string;
+  // The durations of the pinned timing profile; empty for a free training.
+  durations: LifecycleDurations;
+  // The run was closed by its deadline, not by a submission of the guest.
+  isClosedByDeadline: boolean;
 }
+
+const SECONDS_MS = 1000;
+
+const pinnedSchema = z.object({
+  hoerenSeconds: z.int().positive(),
+  transitionSeconds: z.int().positive(),
+  lesenSeconds: z.int().positive(),
+});
+
+// The durations of the timing snapshot pinned at the start, in
+// milliseconds. A run without a pin has none; a pin that does not parse is
+// not trusted (null), so its deadline is never guessed.
+export const parsePinnedDurations = (
+  stored: unknown,
+): LifecycleDurations | null => {
+  if (stored === null || stored === undefined) return {};
+  const parsed = pinnedSchema.safeParse(stored);
+  if (!parsed.success) return null;
+  const { hoerenSeconds, transitionSeconds, lesenSeconds } = parsed.data;
+  return {
+    hoerenMs: hoerenSeconds * SECONDS_MS,
+    transitionMs: transitionSeconds * SECONDS_MS,
+    lesenMs: lesenSeconds * SECONDS_MS,
+  };
+};
 
 const assignmentSchema = z.object({
   versionId: z.uuid(),
@@ -78,8 +108,10 @@ export const parseStoredProgress = (
   return parsed.success ? parsed.data : null;
 };
 
-// The public lifecycle snapshot of the run. The moment is never earlier
-// than the start, whichever clock read it.
+// The public lifecycle snapshot of the run at atMs: for a timed run the
+// moment the database reported, so its deadline and remaining time are the
+// server's. The moment is never earlier than the start, whichever clock read
+// it. A closed timed run is closed whatever the moment.
 export const toLifecycleState = (
   view: AttemptRunView,
   atMs: number,
@@ -91,7 +123,7 @@ export const toLifecycleState = (
       selection: view.selection,
       status: view.status,
       startedAtMs,
-      durations: {},
+      durations: view.durations,
       closedSkills: [],
       lesenStartedAtMs: null,
     },

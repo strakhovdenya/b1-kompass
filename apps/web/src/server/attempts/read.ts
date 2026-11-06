@@ -1,14 +1,22 @@
 import { z } from 'zod';
-import type { AttemptProgress, CommandResult, Selections } from '@b1k/domain';
+import type {
+  AttemptProgress,
+  CommandResult,
+  LifecycleState,
+  Selections,
+} from '@b1k/domain';
 import type {
   AttemptStatusOutcome,
   AttemptStatusView,
+  TimedClock,
 } from '../../features/training/attempt-client';
 import { listVersionTrackIds } from '../audio/audio';
+import { ruleViolation } from '../db';
 import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import type { GuestContext } from '../guest-session/session';
 import {
+  callReconcile,
   findActiveAttempt,
   findExamById,
   findExamBySlug,
@@ -21,6 +29,7 @@ import {
 import type { AttemptRow, RunRow } from './repository';
 import {
   parseAssignment,
+  parsePinnedDurations,
   parseStoredProgress,
   toLifecycleState,
   toPracticeState,
@@ -46,6 +55,7 @@ const toView = (
   examSlug: string,
   run: RunRow,
   questionIds: readonly string[],
+  durations: AttemptRunView['durations'],
 ): AttemptRunView => ({
   attemptId: attempt.id,
   examId: attempt.examId,
@@ -59,7 +69,21 @@ const toView = (
   sourceAttemptId: run.sourceAttemptId,
   questionIds,
   acceptedAt: run.acceptedAt,
+  durations,
+  isClosedByDeadline:
+    run.mode !== 'training' &&
+    run.frozenAnswers !== null &&
+    run.submitCommandId === null,
 });
+
+// A timed run needs its pinned profile: without one its deadline is unknown
+// and the run is not opened. A free training never carries one.
+const durationsOf = (run: RunRow): AttemptRunView['durations'] | null => {
+  const durations = parsePinnedDurations(run.timingSnapshot);
+  if (!durations) return null;
+  const isPinned = Object.keys(durations).length > 0;
+  return isPinned === (run.mode !== 'training') ? durations : null;
+};
 
 const viewOf = (
   attempt: AttemptRow,
@@ -68,8 +92,12 @@ const viewOf = (
 ): RunReadResult => {
   if (!run) return { status: 'incompatible' };
   const questionIds = parseAssignment(run.assignment, attempt.examVersionId);
-  if (!questionIds) return { status: 'incompatible' };
-  return { status: 'ready', view: toView(attempt, examSlug, run, questionIds) };
+  const durations = durationsOf(run);
+  if (!questionIds || !durations) return { status: 'incompatible' };
+  return {
+    status: 'ready',
+    view: toView(attempt, examSlug, run, questionIds, durations),
+  };
 };
 
 // The stored assignment, mode, purpose, scope and pinned version of the
@@ -87,6 +115,49 @@ export const readAttemptRun = async (
   ]);
   if (!exam) return { status: 'not-found' };
   return viewOf(attempt, exam.slug, run);
+};
+
+interface Synced {
+  attempt: AttemptRow;
+  run: RunRow | null;
+  // The moment the state is judged at: the database clock read after the
+  // row lock for an open timed attempt, the server clock otherwise.
+  atMs: number;
+}
+
+// An open timed attempt is judged by the database: under its row lock the
+// clock is read and an expired run is closed with the answers accepted in
+// time. Null when the guest session ended meanwhile. A free training or a
+// closed attempt is not locked and never waits.
+const synced = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attempt: AttemptRow,
+  run: RunRow | null,
+): Promise<Synced | null> => {
+  const isOpenTimed =
+    attempt.status === 'active' && run !== null && run.mode !== 'training';
+  if (!isOpenTimed) return { attempt, run, atMs: deps.clock.now().getTime() };
+  const call = await callReconcile(deps, {
+    sessionId: guest.sessionId,
+    attemptId: attempt.id,
+  });
+  if (!call.ok) {
+    if (ruleViolation(call.error) === 'guest_session_invalid') return null;
+    throw new Error('Attempt was not reconciled', { cause: call.error });
+  }
+  const atMs = Date.parse(call.row.server_now);
+  // Unchanged since the first read: nothing to read again. A run closed by
+  // this call or meanwhile by another request is read after the lock.
+  const isUnchanged =
+    !call.row.closed && call.row.attempt_status === attempt.status;
+  if (isUnchanged) return { attempt, run, atMs };
+  const [closed, closedRun] = await Promise.all([
+    readOwnedAttempt(deps, guest.sessionId, attempt.id),
+    readRun(deps, attempt.id),
+  ]);
+  if (!closed) return null;
+  return { attempt: closed, run: closedRun, atMs };
 };
 
 // The guest's own attempt after reconciliation: a submitted attempt is
@@ -117,6 +188,19 @@ const countedSelections = (
   return reviewedSelections(run, stored);
 };
 
+// The clock of an open timed run: its deadline and the database moment of
+// this read. None for a free training or a closed run.
+const timerOf = (
+  state: LifecycleState,
+  serverNowMs: number,
+): TimedClock | null => {
+  const [skill] = state.openSkills;
+  if (state.mode !== 'timed-block' || !skill || state.deadlineMs === null) {
+    return null;
+  }
+  return { deadlineMs: state.deadlineMs, serverNowMs, skill };
+};
+
 export type AttemptPageResult =
   | {
       status: 'ready';
@@ -124,6 +208,7 @@ export type AttemptPageResult =
       // The submission is accepted, its result is not stored yet.
       resultPending: boolean;
       phaseRevision: number;
+      timer: TimedClock | null;
     }
   | { status: 'not-found' }
   | { status: 'incompatible' };
@@ -149,8 +234,10 @@ export const readAttemptPage = async (
     return { status: 'not-found' };
   }
   if (owned.status === 'cancelled') return { status: 'not-found' };
-  const run = ownRun;
-  const attempt = await reconciled(deps, guest, owned, run);
+  const sync = await synced(deps, guest, owned, ownRun);
+  if (!sync) return { status: 'not-found' };
+  const { run, atMs } = sync;
+  const attempt = await reconciled(deps, guest, sync.attempt, run);
   if (!attempt) return { status: 'not-found' };
   const read = viewOf(attempt, exam.slug, run);
   if (read.status !== 'ready' || !run) return { status: 'incompatible' };
@@ -160,7 +247,7 @@ export const readAttemptPage = async (
     listVersionTrackIds(deps, attempt.examVersionId),
   ]);
   const selections = countedSelections(attempt, run, stored.selections);
-  const state = toLifecycleState(read.view, deps.clock.now().getTime());
+  const state = toLifecycleState(read.view, atMs);
   if (!version || !selections || !state) return { status: 'incompatible' };
   const material = { format: exam.format, content: version.content };
   const target = {
@@ -187,6 +274,7 @@ export const readAttemptPage = async (
     practice,
     resultPending: attempt.status === 'submitted',
     phaseRevision: state.phaseRevision,
+    timer: timerOf(state, atMs),
   };
 };
 
@@ -223,12 +311,15 @@ const runStatus = async (
 ): Promise<CommandResult<AttemptStatusView>> => {
   const owned = await readOwnedAttempt(deps, guest.sessionId, attemptId);
   if (!owned) return { ok: false, failure: 'not-found' };
-  const [exam, run] = await Promise.all([
+  const [exam, ownRun] = await Promise.all([
     findExamById(deps, owned.examId),
     readRun(deps, owned.id),
   ]);
   if (!exam) return { ok: false, failure: 'not-found' };
-  const attempt = await reconciled(deps, guest, owned, run);
+  const sync = await synced(deps, guest, owned, ownRun);
+  if (!sync) return { ok: false, failure: 'session-invalid' };
+  const { run, atMs } = sync;
+  const attempt = await reconciled(deps, guest, sync.attempt, run);
   if (!attempt) return { ok: false, failure: 'not-found' };
   const read = viewOf(attempt, exam.slug, run);
   if (read.status !== 'ready' || !run) {
@@ -236,7 +327,7 @@ const runStatus = async (
   }
   const stored = await readStoredAnswers(deps, attempt.id);
   const counted = countedSelections(attempt, run, stored.selections);
-  const state = toLifecycleState(read.view, deps.clock.now().getTime());
+  const state = toLifecycleState(read.view, atMs);
   const outcome = STATUS_OUTCOMES[attempt.status];
   if (!counted || !state || !outcome) {
     return { ok: false, failure: 'unavailable' };
@@ -252,6 +343,8 @@ const runStatus = async (
       answers,
       skipped: countSkipped(questionIds, answers),
       submittedAt: run.submissionAcceptedAt,
+      serverNow: new Date(atMs).toISOString(),
+      isClosedByDeadline: read.view.isClosedByDeadline,
     },
   };
 };
