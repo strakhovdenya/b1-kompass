@@ -145,6 +145,8 @@ export const AttemptSubmissionControls = ({
         data-skipped={confirmation.skipped}
         data-unanswered-hoeren={confirmation.unanswered.hoeren}
         data-unanswered-lesen={confirmation.unanswered.lesen}
+        data-unopened={confirmation.unopened ?? 0}
+        data-total={total}
       >
         <Typography id="finish-confirm-title" fontWeight={600}>
           {t('confirmTitle')}
@@ -160,6 +162,11 @@ export const AttemptSubmissionControls = ({
             lesen: confirmation.unanswered.lesen,
           })}
         </Typography>
+        {confirmation.unopened ? (
+          <Typography data-testid="finish-unopened">
+            {t('confirmUnopened', { count: confirmation.unopened })}
+          </Typography>
+        ) : null}
         <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
           <Button
             variant="contained"

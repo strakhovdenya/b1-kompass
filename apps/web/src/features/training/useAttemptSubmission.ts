@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ExamQuestion, Selections } from '@b1k/domain';
 import { isUnsaved } from './answers';
@@ -9,17 +9,20 @@ import type { ClockSync } from './exam-clock';
 import type { AnswerStore } from './answers';
 import {
   choicePath,
+  confirmationOf,
   requestCancel,
   requestStatus,
   requestSubmit,
 } from './attempt-client';
 import type {
   AttemptStatusView,
+  AttemptSummary,
   CancelClientResult,
   CancelRequest,
   FinalAnswer,
   StatusClientResult,
   SubmitClientResult,
+  SubmitConfirmation,
   SubmitRequest,
 } from './attempt-client';
 
@@ -47,11 +50,8 @@ export type SubmissionPhase =
   | 'cancel-failed'
   | 'expired';
 
-export interface SubmitConfirmation {
-  phaseRevision: number;
-  skipped: number;
-  unanswered: { hoeren: number; lesen: number };
-}
+export type { ConfirmationInput, SubmitConfirmation } from './attempt-client';
+export { confirmationOf } from './attempt-client';
 
 // The cancel is confirmed with the server's own answers: what it holds is
 // kept, the choices it has not stored are lost.
@@ -86,6 +86,11 @@ interface SubmissionOptions {
   onClosed: () => void;
   // Each reading of the server clock that came with a status.
   onSync?: (sync: ClockSync) => void;
+  // The server's numbers of the whole assignment from the page; every
+  // status renews them.
+  summary?: AttemptSummary | null;
+  // Every status the server answered, to follow its trusted phase.
+  onStatus?: (view: AttemptStatusView) => void;
 }
 
 export interface AttemptSubmission {
@@ -107,23 +112,10 @@ export interface AttemptSubmission {
   // Reads the server state on its own fetch, beside any save in flight. A
   // closed run is shown as closed; an open one only renews the clock.
   reconcile: () => Promise<void>;
+  // Takes a status another command answered with (begin-lesen) as if it
+  // had been read.
+  observe: (view: AttemptStatusView) => void;
 }
-
-const confirmationOf = (
-  questions: readonly ExamQuestion[],
-  answers: readonly FinalAnswer[],
-  phaseRevision: number,
-  stored: ReadonlySet<string>,
-): SubmitConfirmation => {
-  const answered = new Set(stored);
-  for (const answer of answers) answered.add(answer.questionId);
-  const unanswered = { hoeren: 0, lesen: 0 };
-  for (const question of questions) {
-    if (!answered.has(question.id)) unanswered[question.skill] += 1;
-  }
-  const skipped = unanswered.hoeren + unanswered.lesen;
-  return { phaseRevision, skipped, unanswered };
-};
 
 const isSameConfirmation = (
   left: SubmitConfirmation,
@@ -146,6 +138,8 @@ export const useAttemptSubmission = ({
   store,
   onClosed,
   onSync,
+  summary = null,
+  onStatus,
 }: SubmissionOptions): AttemptSubmission => {
   const router = useRouter();
   const [phase, setPhase] = useState<SubmissionPhase>(
@@ -168,11 +162,37 @@ export const useAttemptSubmission = ({
   // Tasks the server reported as answered, for example from another tab:
   // the effective answers of a submission include them.
   const storedAnswered = useRef<ReadonlySet<string>>(new Set());
+  // The latest phase revision and numbers the server reported: a renewed
+  // confirmation names the phase of now, so a phase change never repeats
+  // the same stale confirmation.
+  const latestRevision = useRef(phaseRevision);
+  const latestSummary = useRef(summary);
+  useEffect(() => {
+    latestRevision.current = phaseRevision;
+  }, [phaseRevision]);
+  useEffect(() => {
+    latestSummary.current = summary;
+  }, [summary]);
 
   const confirmationNow = useCallback(
     (answers: readonly FinalAnswer[]) =>
-      confirmationOf(questions, answers, phaseRevision, storedAnswered.current),
-    [questions, phaseRevision],
+      confirmationOf({
+        questions,
+        answers,
+        phaseRevision: latestRevision.current,
+        stored: storedAnswered.current,
+        summary: latestSummary.current,
+      }),
+    [questions],
+  );
+
+  const learn = useCallback(
+    (view: AttemptStatusView) => {
+      latestRevision.current = view.state.phaseRevision;
+      latestSummary.current = view.summary;
+      onStatus?.(view);
+    },
+    [onStatus],
   );
 
   // Every status is read on its own fetch and reports the server clock: the
@@ -180,12 +200,13 @@ export const useAttemptSubmission = ({
   const readStatus = useCallback(async (): Promise<StatusClientResult> => {
     const sentMs = performance.now();
     const status = await requestStatus(attemptId);
-    if (status.ok && onSync) {
+    if (status.ok) {
       const serverNowMs = Date.parse(status.result.serverNow);
-      onSync(syncOf(serverNowMs, sentMs, performance.now()));
+      onSync?.(syncOf(serverNowMs, sentMs, performance.now()));
+      learn(status.result);
     }
     return status;
-  }, [attemptId, onSync]);
+  }, [attemptId, onSync, learn]);
 
   const close = useCallback(
     (next: 'accepted' | 'completed', accepted: Selections | null) => {
@@ -439,6 +460,15 @@ export const useAttemptSubmission = ({
     if (status.result.outcome !== 'active') follow(status, 'idle');
   }, [follow, readStatus]);
 
+  const observe = useCallback(
+    (view: AttemptStatusView) => {
+      if (isClosed.current) return;
+      learn(view);
+      if (view.outcome !== 'active') follow({ ok: true, result: view }, 'idle');
+    },
+    [follow, learn],
+  );
+
   const dismiss = useCallback(() => {
     store.unlock();
     setConfirmation(null);
@@ -463,5 +493,6 @@ export const useAttemptSubmission = ({
     resendCancel,
     dismiss,
     reconcile,
+    observe,
   };
 };

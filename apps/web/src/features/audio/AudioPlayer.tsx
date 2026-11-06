@@ -26,7 +26,7 @@ export interface PlayableAudio {
 export type AudioAccess =
   { ok: true; audio: PlayableAudio } | { ok: false; error: string };
 
-type PlayerStatus = 'loading' | 'ready' | 'error';
+export type PlayerStatus = 'loading' | 'ready' | 'error';
 
 interface AudioPlayerProps {
   resolveAudio: () => Promise<AudioAccess>;
@@ -57,7 +57,7 @@ const VISUALLY_HIDDEN = {
 
 const SKIP_BACK_SECONDS = 5;
 
-const formatTime = (seconds: number): string => {
+export const formatTime = (seconds: number): string => {
   const total = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
   const minutes = Math.floor(total / 60);
   const rest = String(total % 60).padStart(2, '0');
@@ -322,9 +322,17 @@ export const AudioPlayer = ({
 interface AudioStatusLineProps {
   status: PlayerStatus;
   onRetry: () => void;
+  // The announcement of a ready recording; the free one by default.
+  readyLabel?: string;
 }
 
-const AudioStatusLine = ({ status, onRetry }: AudioStatusLineProps) => {
+// The one status line of a recording: loading and error stay visible, ready
+// is announced. Shared by the free player and the full exam.
+export const AudioStatusLine = ({
+  status,
+  onRetry,
+  readyLabel,
+}: AudioStatusLineProps) => {
   const t = useTranslations('audio');
   if (status === 'error') {
     return (
@@ -355,7 +363,7 @@ const AudioStatusLine = ({ status, onRetry }: AudioStatusLineProps) => {
       data-status={status}
       sx={status === 'ready' ? VISUALLY_HIDDEN : { pb: 0.5 }}
     >
-      {status === 'loading' ? t('loading') : t('ready')}
+      {status === 'loading' ? t('loading') : (readyLabel ?? t('ready'))}
     </Typography>
   );
 };

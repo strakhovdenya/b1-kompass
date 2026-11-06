@@ -27,7 +27,15 @@ const LesenPage = async ({ params }: LesenPageProps) => {
   );
   if (opened.status !== 'ready') return null;
 
-  const { practice } = opened;
+  const { practice, state } = opened;
+  // Before the Lesen phase of an open full exam this address has nothing:
+  // the projection holds no Lesen task or text, and the guest is sent to the
+  // phase that is open.
+  const isEarly =
+    state.mode === 'exam' &&
+    state.status === 'active' &&
+    state.phase !== 'lesen';
+  if (isEarly) redirect(attemptPath(practice.examSlug, practice.attemptId));
   const hasLesen = practice.questions.some((item) => item.skill === 'lesen');
   if (!hasLesen) redirect(attemptPath(practice.examSlug, practice.attemptId));
   // A completed attempt shows its review from the shell at this address.

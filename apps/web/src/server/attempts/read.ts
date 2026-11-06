@@ -1,13 +1,17 @@
 import { z } from 'zod';
 import type {
   AttemptProgress,
+  BeginLesenOutcome,
   CommandResult,
   LifecycleState,
+  RunTechnicalFailure,
   Selections,
 } from '@b1k/domain';
 import type {
   AttemptStatusOutcome,
   AttemptStatusView,
+  AttemptSummary,
+  ExamTiming,
   TimedClock,
 } from '../../features/training/attempt-client';
 import { listVersionTrackIds } from '../audio/audio';
@@ -15,7 +19,9 @@ import { ruleViolation } from '../db';
 import type { ServerDeps } from '../db';
 import { resolveGuestSession } from '../guest-session/session';
 import type { GuestContext } from '../guest-session/session';
+import { readConfirmedTimingProfile } from './profiles';
 import {
+  callBeginLesen,
   callReconcile,
   findActiveAttempt,
   findExamById,
@@ -31,8 +37,10 @@ import {
   parseAssignment,
   parsePinnedDurations,
   parseStoredProgress,
+  toAttemptSummary,
   toLifecycleState,
   toPracticeState,
+  visibleQuestionIds,
 } from './projection';
 import type { AttemptRunView, PracticeState } from './projection';
 import { finalizeSubmitted, parseFrozen } from './reconcile';
@@ -74,6 +82,8 @@ const toView = (
     run.mode !== 'training' &&
     run.frozenAnswers !== null &&
     run.submitCommandId === null,
+  // Only an exam has a start of Lesen; other views keep their contract.
+  ...(run.mode === 'exam' ? { lesenStartedAt: run.lesenStartedAt } : {}),
 });
 
 // A timed run needs its pinned profile: without one its deadline is unknown
@@ -149,8 +159,12 @@ const synced = async (
   const atMs = Date.parse(call.row.server_now);
   // Unchanged since the first read: nothing to read again. A run closed by
   // this call or meanwhile by another request is read after the lock.
+  // An exam may have started Lesen early meanwhile without any change of
+  // its status: its run is always read again after the lock.
   const isUnchanged =
-    !call.row.closed && call.row.attempt_status === attempt.status;
+    !call.row.closed &&
+    call.row.attempt_status === attempt.status &&
+    run.mode !== 'exam';
   if (isUnchanged) return { attempt, run, atMs };
   const [closed, closedRun] = await Promise.all([
     readOwnedAttempt(deps, guest.sessionId, attempt.id),
@@ -188,17 +202,20 @@ const countedSelections = (
   return reviewedSelections(run, stored);
 };
 
-// The clock of an open timed run: its deadline and the database moment of
-// this read. None for a free training or a closed run.
+// The clock of an open timed run: the deadline of its current phase and the
+// database moment of this read. None for a free training or a closed run.
+// The transition of an exam counts down to the start of Lesen.
 const timerOf = (
   state: LifecycleState,
   serverNowMs: number,
 ): TimedClock | null => {
-  const [skill] = state.openSkills;
-  if (state.mode !== 'timed-block' || !skill || state.deadlineMs === null) {
-    return null;
+  const { phase, deadlineMs } = state;
+  if (state.mode === 'training' || deadlineMs === null) return null;
+  if (phase === 'transition') {
+    return { deadlineMs, serverNowMs, skill: 'lesen', phase };
   }
-  return { deadlineMs: state.deadlineMs, serverNowMs, skill };
+  if (phase !== 'hoeren' && phase !== 'lesen') return null;
+  return { deadlineMs, serverNowMs, skill: phase, phase };
 };
 
 export type AttemptPageResult =
@@ -209,6 +226,10 @@ export type AttemptPageResult =
       resultPending: boolean;
       phaseRevision: number;
       timer: TimedClock | null;
+      // The trusted lifecycle at the moment of this read.
+      state: LifecycleState;
+      // Numbers of the whole assignment, hidden Lesen included.
+      summary: AttemptSummary;
     }
   | { status: 'not-found' }
   | { status: 'incompatible' };
@@ -255,12 +276,22 @@ export const readAttemptPage = async (
     versionId: version.id,
     questionIds: read.view.questionIds,
   };
+  // Only the visible phase of an open exam is projected; a closed attempt
+  // and its review name the whole assignment.
+  const visible = {
+    ...read.view,
+    questionIds: visibleQuestionIds(
+      read.view.questionIds,
+      version.content,
+      state,
+    ),
+  };
   const review =
     attempt.status === 'completed'
       ? await buildReview(deps, target, material, selections)
       : null;
   const practice = toPracticeState({
-    view: read.view,
+    view: visible,
     examTitle: exam.title,
     content: version.content,
     selections,
@@ -275,6 +306,13 @@ export const readAttemptPage = async (
     resultPending: attempt.status === 'submitted',
     phaseRevision: state.phaseRevision,
     timer: timerOf(state, atMs),
+    state,
+    summary: toAttemptSummary(
+      read.view.questionIds,
+      version.content,
+      state,
+      selections,
+    ),
   };
 };
 
@@ -325,23 +363,32 @@ const runStatus = async (
   if (read.status !== 'ready' || !run) {
     return { ok: false, failure: 'unavailable' };
   }
-  const stored = await readStoredAnswers(deps, attempt.id);
+  const [stored, version] = await Promise.all([
+    readStoredAnswers(deps, attempt.id),
+    readVersionOfExam(deps, exam.id, attempt.examVersionId),
+  ]);
   const counted = countedSelections(attempt, run, stored.selections);
   const state = toLifecycleState(read.view, atMs);
   const outcome = STATUS_OUTCOMES[attempt.status];
-  if (!counted || !state || !outcome) {
+  if (!counted || !state || !outcome || !version) {
     return { ok: false, failure: 'unavailable' };
   }
   const { questionIds } = read.view;
-  const answers = onlyAssigned(questionIds, counted);
+  const { content } = version;
+  const all = onlyAssigned(questionIds, counted);
+  // The answers of the visible tasks only, as for the page; the numbers of
+  // the whole assignment come with the summary.
+  const visibleIds = visibleQuestionIds(questionIds, content, state);
   return {
     ok: true,
     result: {
       outcome,
       attemptId: attempt.id,
       state,
-      answers,
-      skipped: countSkipped(questionIds, answers),
+      answers: onlyAssigned(visibleIds, counted),
+      skipped: countSkipped(questionIds, all),
+      summary: toAttemptSummary(questionIds, content, state, all),
+      timer: timerOf(state, atMs),
       submittedAt: run.submissionAcceptedAt,
       serverNow: new Date(atMs).toISOString(),
       isClosedByDeadline: read.view.isClosedByDeadline,
@@ -364,6 +411,70 @@ export const readAttemptStatus = async (
     const guest = await resolveGuestSession(deps, token);
     if (!guest) return { ok: false, failure: 'session-invalid' };
     return await runStatus(deps, guest, parsed.data.attemptId);
+  } catch (error) {
+    console.error({ error });
+    return { ok: false, failure: 'unavailable' };
+  }
+};
+
+const beginInput = z.strictObject({ attemptId: z.uuid() });
+
+const BEGIN_FAILURES: Readonly<Record<string, RunTechnicalFailure>> = {
+  guest_session_invalid: 'session-invalid',
+  attempt_not_found: 'not-found',
+};
+
+// The answer of begin-lesen: its outcome with the status of the attempt
+// after it, so the browser follows the trusted phase in one round trip.
+export type BeginLesenResult = CommandResult<
+  BeginLesenOutcome & { readonly status: AttemptStatusView }
+>;
+
+const runBeginLesen = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attemptId: string,
+): Promise<BeginLesenResult> => {
+  const call = await callBeginLesen(deps, {
+    sessionId: guest.sessionId,
+    attemptId,
+  });
+  if (!call.ok) {
+    const rule = ruleViolation(call.error);
+    const known = rule ? BEGIN_FAILURES[rule] : undefined;
+    if (known) return { ok: false, failure: known };
+    throw new Error('Lesen was not started', { cause: call.error });
+  }
+  // A closed exam is completed by the status read, which computes the
+  // result of a submitted attempt.
+  const status = await runStatus(deps, guest, attemptId);
+  if (!status.ok) return status;
+  const { state } = status.result;
+  const base = { attemptId, state, status: status.result };
+  if (call.row.outcome === 'accepted') {
+    return {
+      ok: true,
+      result: { ...base, outcome: 'accepted', changed: call.row.changed },
+    };
+  }
+  return { ok: true, result: { ...base, outcome: call.row.outcome } };
+};
+
+// The explicit early start of Lesen of the guest's own exam. Inside the
+// transition the database writes the moment once and Lesen gets its full
+// pinned duration; a repeat in Lesen changes nothing; Hören is not left
+// early. Without it Lesen starts at the end of the transition by itself.
+export const beginLesen = async (
+  deps: ServerDeps,
+  token: string | null | undefined,
+  input: unknown,
+): Promise<BeginLesenResult> => {
+  const parsed = beginInput.safeParse(input);
+  if (!parsed.success) return { ok: false, failure: 'invalid-input' };
+  try {
+    const guest = await resolveGuestSession(deps, token);
+    if (!guest) return { ok: false, failure: 'session-invalid' };
+    return await runBeginLesen(deps, guest, parsed.data.attemptId);
   } catch (error) {
     console.error({ error });
     return { ok: false, failure: 'unavailable' };
@@ -404,6 +515,8 @@ export interface ExamChoice {
   hoerenCount: number;
   lesenCount: number;
   activeAttemptId: string | null;
+  // The confirmed durations of the exam; null while it cannot start.
+  examTiming: ExamTiming | null;
 }
 
 // The data of the choice screen of one exam. Read only.
@@ -419,6 +532,7 @@ export const readExamChoice = async (
     findActiveAttempt(deps, guest.sessionId, exam.id),
   ]);
   if (!version) return null;
+  const profile = await readConfirmedTimingProfile(deps, version.id);
   const { questions } = version.content;
   const countOf = (skill: string): number =>
     questions.filter((question) => question.skill === skill).length;
@@ -430,5 +544,12 @@ export const readExamChoice = async (
     hoerenCount: countOf('hoeren'),
     lesenCount: countOf('lesen'),
     activeAttemptId: active ? active.id : null,
+    examTiming: profile
+      ? {
+          hoerenSeconds: profile.hoerenSeconds,
+          transitionSeconds: profile.transitionSeconds,
+          lesenSeconds: profile.lesenSeconds,
+        }
+      : null,
   };
 };

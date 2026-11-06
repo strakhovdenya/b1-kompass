@@ -623,15 +623,16 @@ test('foreign attempts and not enabled modes cannot be opened or started', async
   expect(await foreign.text()).not.toContain('question-card-hoeren-1');
   expect(await readAnswers(ownerAttempt)).toEqual({ 'hoeren-1': 'b' });
 
-  // Unknown and not yet enabled modes, over HTTP and directly. The single
-  // skills are enabled since #41 (free-training.spec.ts), one timed block of
-  // one skill since #43 (timed-block.spec.ts); a timed block of the whole
-  // set does not exist and the full exam waits for P4.
+  // Unknown, invalid and not yet enabled modes, over HTTP and directly. The
+  // single skills are enabled since #41 (free-training.spec.ts), one timed
+  // block of one skill since #43 (timed-block.spec.ts) and the full exam of
+  // the whole set since #45 (full-exam-timing.spec.ts); a timed block of the
+  // whole set and a full exam of one skill do not exist.
   const refused: [Record<string, unknown>, number, string][] = [
     [{ mode: 'speed-run' }, 400, 'invalid-input'],
     [{ mode: 'timed-block', selection: 'all' }, 400, 'invalid-input'],
-    [{ mode: 'exam' }, 422, 'not-enabled'],
-    [{ mode: 'exam', selection: 'hoeren' }, 422, 'not-enabled'],
+    [{ mode: 'exam', selection: 'hoeren' }, 400, 'invalid-input'],
+    [{ mode: 'exam', selection: 'lesen' }, 400, 'invalid-input'],
     [
       { purpose: 'error-repeat', sourceAttemptId: ownerAttempt },
       422,

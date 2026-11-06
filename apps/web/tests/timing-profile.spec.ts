@@ -545,27 +545,24 @@ test('profile revisions retain pinned running snapshot', async () => {
   ).toThrow(/attempt_runs_training_unpinned/);
   expect(await readAttempts(otherGuest.guest.sessionId)).toEqual([]);
 
-  // The full exam stays not-enabled and writes nothing. Since #43 the
-  // production start of a timed block pins the current confirmed head with
-  // exactly its document, never the superseded first revision.
-  const fresh = await newGuest(depsNow());
-  expect(
-    await startFor(depsNow(), fresh.token, exam.slug, {
-      mode: 'exam',
-      selection: 'all',
-    }),
-  ).toEqual({ ok: false, failure: 'not-enabled' });
-  expect(await readAttempts(fresh.guest.sessionId)).toEqual([]);
-  for (const selection of ['hoeren', 'lesen']) {
+  // Since #43 the production start of a timed block, and since #45 the
+  // start of the full exam, pins the current confirmed head with exactly its
+  // document, never the superseded first revision.
+  const runs: [string, string][] = [
+    ['timed-block', 'hoeren'],
+    ['timed-block', 'lesen'],
+    ['exam', 'all'],
+  ];
+  for (const [mode, selection] of runs) {
     const timedGuest = await newGuest(depsNow());
     const timed = await startFor(depsNow(), timedGuest.token, exam.slug, {
-      mode: 'timed-block',
+      mode,
       selection,
     });
     expect(timed).toMatchObject({ ok: true, result: { outcome: 'accepted' } });
     if (!timed.ok) throw new Error('timed start failed');
     const run = pinnedRunOf(timed.result.attemptId);
-    expect(run.mode).toBe('timed-block');
+    expect(run.mode).toBe(mode);
     expect(run.revisionId).toBe(second.revisionId);
     expect(run.revisionId).not.toBe(first.revisionId);
     expect(run.snapshot).toMatchObject({

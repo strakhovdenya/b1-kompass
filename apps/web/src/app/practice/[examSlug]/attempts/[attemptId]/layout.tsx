@@ -42,8 +42,10 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
 
   // A timed run comes with its deadline and the database moment of this
   // read: the shell shows the server's remaining time, a refresh never
-  // starts a new one.
-  const { practice, resultPending, phaseRevision, timer } = opened;
+  // starts a new one. A full exam comes with its trusted phase and only the
+  // material of that phase; the hidden Lesen is present only as numbers.
+  const { practice, resultPending, phaseRevision, timer, state, summary } =
+    opened;
   return (
     <TrainingShell
       key={practice.attemptId}
@@ -58,6 +60,10 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
       isResultPending={resultPending}
       phaseRevision={phaseRevision}
       timer={timer}
+      mode={state.mode}
+      phase={state.phase}
+      summary={summary}
+      examStartedAtMs={state.mode === 'exam' ? state.startedAtMs : null}
       resolveAudio={resolveAudioAction}
     >
       {children}

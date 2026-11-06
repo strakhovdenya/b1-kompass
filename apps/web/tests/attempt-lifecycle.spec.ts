@@ -1263,11 +1263,15 @@ test('timed phase gate and domain sql boundary parity are enforced', async () =>
   const latest = await latestVersionOf(FULL_EXAM.slug);
   if (!latest) throw new Error('full set is missing');
 
-  // The full exam waits for P4: refused by the server, the production RPC
-  // and the kernel, and nothing is created.
+  // The full exam (#45) is always the whole set: one skill or a short scope
+  // is refused by the server, the production RPC and the kernel, and
+  // nothing is created.
   expect(
-    await startFor(depsNow(), created.token, FULL_EXAM.slug, { mode: 'exam' }),
-  ).toEqual({ ok: false, failure: 'not-enabled' });
+    await startFor(depsNow(), created.token, FULL_EXAM.slug, {
+      mode: 'exam',
+      selection: 'hoeren',
+    }),
+  ).toEqual({ ok: false, failure: 'invalid-input' });
   const allIds = FULL_PILOT.content.questions.map((question) => question.id);
   const direct = await serviceDb.rpc('m2_start_attempt', {
     p_session_id: sessionOf(created),
@@ -1278,17 +1282,20 @@ test('timed phase gate and domain sql boundary parity are enforced', async () =>
     p_selection: 'all',
     p_source_attempt_id: null,
     p_version_id: latest.versionId,
-    p_scope: 'full-exam',
+    p_scope: 'short-set',
     p_question_ids: allIds,
   });
-  expect(direct.error?.hint).toBe('mode_not_enabled');
+  expect(direct.error?.hint).toBe('start_invalid');
+  const hoerenIds = FULL_PILOT.content.questions
+    .filter((question) => question.skill === 'hoeren')
+    .map((question) => question.id);
   expect(() =>
     psql(`select * from m2_test.start_attempt_at(
       ${quote(sessionOf(created))}, ${quote(latest.examId)},
-      gen_random_uuid(), 'exam', 'normal', 'all', null,
-      ${quote(latest.versionId)}, 'full-exam',
-      ${quote(JSON.stringify(allIds))}::jsonb, clock_timestamp())`),
-  ).toThrow(/mode_not_enabled/);
+      gen_random_uuid(), 'exam', 'normal', 'hoeren', null,
+      ${quote(latest.versionId)}, 'short-set',
+      ${quote(JSON.stringify(hoerenIds))}::jsonb, clock_timestamp())`),
+  ).toThrow(/start_invalid/);
   expect(await readAttempts(sessionOf(created))).toEqual([]);
 
   // The same boundary vectors through the domain lifecycle and the SQL

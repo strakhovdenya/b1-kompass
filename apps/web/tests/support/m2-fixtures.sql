@@ -8,8 +8,8 @@ create schema if not exists m2_test;
 revoke all on schema m2_test from public, anon, authenticated, service_role;
 
 -- The start at an explicit moment: the same locks in the same order (slot,
--- the active attempt of the slot, the profile head of a timed start), then
--- the same kernel. The OUT form follows the production start; an older
+-- the active attempt of the slot, the profile head of a timed start or an
+-- exam), then the same kernel. The OUT form follows the production start; an older
 -- installation with another OUT form is dropped first; the current form is
 -- only replaced, so concurrent callers keep the same function.
 do $$
@@ -59,7 +59,7 @@ begin
     and a.exam_id = p_exam_id
     and a.status = 'active'
   for update;
-  if p_mode = 'timed-block' then
+  if p_mode <> 'training' then
     perform 1 from m2_private.timing_profiles h
     where h.exam_version_id = p_version_id
     for share;
@@ -271,6 +271,28 @@ begin
     p_at, v_revision_id, v_snapshot
   );
   return v_attempt_id;
+end;
+$$;
+
+-- The early start of Lesen at an explicit moment (#45): the same row lock
+-- of the attempt, then the same kernel as m2_begin_lesen.
+create or replace function m2_test.begin_lesen_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_at timestamptz
+)
+returns table (outcome text, attempt_status text, changed boolean)
+language plpgsql
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return query select * from m2_private.begin_lesen(
+    p_session_id, p_attempt_id, p_at
+  );
 end;
 $$;
 

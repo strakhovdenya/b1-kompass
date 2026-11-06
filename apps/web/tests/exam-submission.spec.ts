@@ -6,13 +6,16 @@ import type {
   Page,
   Request,
 } from '@playwright/test';
+import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
   cancelAttempt,
+  readAttemptPage,
   readAttemptStatus,
   saveAnswer,
   saveProgress,
   submitAttempt,
 } from '../src/server/attempts/attempts';
+import { confirmationOf } from '../src/features/training/attempt-client';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { hashGuestToken } from '../src/server/guest-session/session';
 import {
@@ -35,9 +38,13 @@ import {
 import {
   FULL_EXAM,
   FULL_PILOT,
+  FULL_TIMING,
+  FULL_TRACK_ID,
+  ensureConfirmedTestProfile,
   fullKeyOf,
   fullWrongOf,
 } from './support/full-exam';
+import { createTestRecording } from './support/global-setup';
 import {
   ANSWER_URL,
   HOEREN_URL,
@@ -51,11 +58,15 @@ import {
 } from './support/guest-browser';
 import { snapshotSql } from './support/legacy-attempt';
 import {
+  examRunTimes,
   holdAttemptLock,
   installM2Fixtures,
   psql,
   psqlJson,
   quote,
+  secondsAgoSql,
+  sqlRunnerAs,
+  startExamAt,
   waitersBehind,
 } from './support/sql';
 
@@ -1611,4 +1622,275 @@ test('save and submit enforce real guest expiry after row lock', async () => {
   }
   expect(stateOf(guest)).toEqual(before);
   expect(statusRow(guest.attemptId)).toBe('active');
+});
+
+// --- Full exam (#45) ---------------------------------------------------------
+
+// A full exam of the synthetic set under its own slug, with the preliminary
+// profile as test data; a run is placed in its phase by starting it through
+// the admission kernel at an earlier moment.
+const EXAM_H = FULL_TIMING.hoerenSeconds;
+const EXAM_T = FULL_TIMING.transitionSeconds;
+const IN_LESEN_SECONDS = EXAM_H + EXAM_T + 10;
+
+const publishFullExam = async () => {
+  const slug = `test-submit-exam-${randomUUID().slice(0, 8)}`;
+  const outcome = await publishExamVersion(serviceDb, {
+    slug,
+    title: 'Full exam submission test',
+    format: 'DTZ',
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...createTestRecording(689) }],
+  });
+  ensureConfirmedTestProfile(
+    sqlRunnerAs('owner'),
+    outcome.versionId,
+    FULL_TIMING,
+  );
+  const latest = await latestVersionOf(slug);
+  if (!latest) throw new Error('exam is missing');
+  return { slug, ...latest };
+};
+
+const fullExamAgo = (
+  sessionId: string,
+  exam: { examId: string; versionId: string },
+  seconds: number,
+) => {
+  const attemptId = startExamAt(
+    sessionId,
+    exam,
+    ALL_IDS,
+    secondsAgoSql(seconds),
+  );
+  return {
+    attemptId,
+    startMs: Date.parse(examRunTimes(attemptId).acceptedAt),
+  };
+};
+
+// A save through the private kernel at a moment inside Hören.
+const saveInHoeren = (
+  sessionId: string,
+  attemptId: string,
+  questionId: string,
+  optionId: string,
+  atMs: number,
+) =>
+  psql(`select question_id from m2_test.save_answer_at(
+    ${quote(sessionId)}, ${quote(attemptId)}, ${quote(questionId)},
+    ${quote(optionId)}, 1, ${quote(new Date(atMs).toISOString())}::timestamptz)`);
+
+const examAnswer = (questionId: string, optionId: string, revision = 1) => ({
+  questionId,
+  optionId,
+  revision,
+});
+
+test('lesen submission preserves frozen hoeren including stale tab batch', async () => {
+  const exam = await publishFullExam();
+  const created = await newGuest(depsNow());
+  const sessionId = created.guest.sessionId;
+  const { attemptId, startMs } = fullExamAgo(sessionId, exam, IN_LESEN_SECONDS);
+  saveInHoeren(
+    sessionId,
+    attemptId,
+    'hoeren-1',
+    fullKeyOf('hoeren-1'),
+    startMs,
+  );
+  saveInHoeren(
+    sessionId,
+    attemptId,
+    'hoeren-2',
+    fullWrongOf('hoeren-2'),
+    startMs + 1000,
+  );
+  const hoerenRows = await readAnswerRows(attemptId);
+  const status = await readAttemptStatus(depsNow(), created.token, {
+    attemptId,
+  });
+  if (!status.ok) throw new Error(status.failure);
+  expect(status.result.state.phase).toBe('lesen');
+  expect(status.result.summary.skills.hoeren).toEqual({
+    assigned: 20,
+    answered: 2,
+    state: 'closed',
+  });
+
+  // A stale tab still sends other Hören choices with higher revisions and a
+  // Hören task never saved, beside the Lesen answer of this phase.
+  const submitted = await submitAttempt(depsNow(), created.token, {
+    attemptId,
+    commandId: randomUUID(),
+    answers: [
+      examAnswer('hoeren-1', fullWrongOf('hoeren-1'), 5),
+      examAnswer('hoeren-2', fullKeyOf('hoeren-2'), 5),
+      examAnswer('hoeren-3', fullKeyOf('hoeren-3')),
+      examAnswer('lesen-1', fullKeyOf('lesen-1')),
+    ],
+    confirmation: { phaseRevision: 2, skipped: TOTAL - 3 },
+  });
+  expect(submitted).toEqual({
+    ok: true,
+    result: { outcome: 'result-ready', attemptId },
+  });
+  expect((await readSubmission(attemptId)).frozen_answers).toEqual({
+    'hoeren-1': { optionId: fullKeyOf('hoeren-1'), revision: 1 },
+    'hoeren-2': { optionId: fullWrongOf('hoeren-2'), revision: 1 },
+    'lesen-1': { optionId: fullKeyOf('lesen-1'), revision: 1 },
+  });
+  const rows = await readAnswerRows(attemptId);
+  expect(rows.filter((row) => row.question_id.startsWith('hoeren'))).toEqual(
+    hoerenRows,
+  );
+  expect(rows.map((row) => row.question_id)).toEqual([
+    'hoeren-1',
+    'hoeren-2',
+    'lesen-1',
+  ]);
+  const [result] = (await readResults(attemptId)) as Record<string, unknown>[];
+  expect(result).toMatchObject({
+    max_score: TOTAL,
+    hoeren_score: 1,
+    lesen_score: 1,
+    skipped_count: TOTAL - 3,
+  });
+});
+
+test('stale full confirmation and frozen answer rewrite are refused', async () => {
+  const exam = await publishFullExam();
+  const created = await newGuest(depsNow());
+  const sessionId = created.guest.sessionId;
+  const { attemptId, startMs } = fullExamAgo(sessionId, exam, IN_LESEN_SECONDS);
+  saveInHoeren(
+    sessionId,
+    attemptId,
+    'hoeren-1',
+    fullKeyOf('hoeren-1'),
+    startMs,
+  );
+  const before = await readAnswerRows(attemptId);
+  const stale = [
+    // The confirmation of Hören, sent after Lesen started.
+    { phaseRevision: 0, skipped: TOTAL - 1 },
+    // The numbers of a tab that counts a Hören change as answered.
+    { phaseRevision: 2, skipped: TOTAL - 2 },
+  ];
+  for (const confirmation of stale) {
+    const refused = await submitAttempt(depsNow(), created.token, {
+      attemptId,
+      commandId: randomUUID(),
+      answers: [examAnswer('hoeren-5', fullKeyOf('hoeren-5'))],
+      confirmation,
+    });
+    expect(refused).toMatchObject({
+      ok: true,
+      result: { outcome: 'stale-confirmation', state: { phase: 'lesen' } },
+    });
+    expect(await readAnswerRows(attemptId)).toEqual(before);
+    expect((await readSubmission(attemptId)).frozen_answers).toBeNull();
+  }
+  // A cancel names the phase of now as well.
+  expect(
+    await cancelAttempt(depsNow(), created.token, {
+      attemptId,
+      commandId: randomUUID(),
+      confirmation: { phaseRevision: 1, skipped: TOTAL - 1 },
+    }),
+  ).toMatchObject({ ok: true, result: { outcome: 'stale-confirmation' } });
+  // The closed Hören is not rewritten by a save either.
+  expect(
+    await saveAnswer(depsNow(), created.token, {
+      attemptId,
+      questionId: 'hoeren-1',
+      optionId: fullWrongOf('hoeren-1'),
+      revision: 2,
+    }),
+  ).toEqual({ ok: false, error: 'attempt-not-found' });
+  expect(await readAnswerRows(attemptId)).toEqual(before);
+  // With the numbers of now the cancel is accepted; nothing is rewritten.
+  expect(
+    await cancelAttempt(depsNow(), created.token, {
+      attemptId,
+      commandId: randomUUID(),
+      confirmation: { phaseRevision: 2, skipped: TOTAL - 1 },
+    }),
+  ).toMatchObject({ ok: true, result: { outcome: 'accepted' } });
+  expect(await readAnswerRows(attemptId)).toEqual(before);
+  expect(await readResults(attemptId)).toEqual([]);
+});
+
+test('early full submit counts hidden lesen tasks in skipped', async () => {
+  const exam = await publishFullExam();
+  const created = await newGuest(depsNow());
+  const sessionId = created.guest.sessionId;
+  const { attemptId } = fullExamAgo(sessionId, exam, 10);
+  for (const questionId of ['hoeren-1', 'hoeren-2', 'hoeren-3']) {
+    const saved = await saveAnswer(depsNow(), created.token, {
+      attemptId,
+      questionId,
+      optionId: fullKeyOf(questionId),
+      revision: 1,
+    });
+    expect(saved.ok).toBe(true);
+  }
+  const before = await readAnswerRows(attemptId);
+  const page = await readAttemptPage(
+    depsNow(),
+    created.guest,
+    exam.slug,
+    attemptId,
+  );
+  const status = await readAttemptStatus(depsNow(), created.token, {
+    attemptId,
+  });
+  if (page.status !== 'ready' || !status.ok) throw new Error('not readable');
+  // The page has only the 20 Hören tasks; the 25 of Lesen are a number.
+  expect(page.practice.questions).toHaveLength(HOEREN_IDS.length);
+  expect(status.result.summary.skills.lesen).toEqual({
+    assigned: 25,
+    answered: 0,
+    state: 'unopened',
+  });
+  const confirmation = confirmationOf({
+    questions: page.practice.questions,
+    answers: [],
+    phaseRevision: status.result.state.phaseRevision,
+    stored: new Set(Object.keys(status.result.answers)),
+    summary: status.result.summary,
+  });
+  expect(confirmation).toEqual({
+    phaseRevision: 0,
+    skipped: TOTAL - 3,
+    unanswered: { hoeren: 17, lesen: 25 },
+    unopened: 25,
+  });
+  expect(confirmation.skipped).toBe(status.result.skipped);
+
+  const command = {
+    attemptId,
+    commandId: randomUUID(),
+    answers: [],
+    confirmation: { phaseRevision: 0, skipped: confirmation.skipped },
+  };
+  expect(await submitAttempt(depsNow(), created.token, command)).toEqual({
+    ok: true,
+    result: { outcome: 'result-ready', attemptId },
+  });
+  expect(await submitAttempt(depsNow(), created.token, command)).toEqual({
+    ok: true,
+    result: { outcome: 'result-ready', attemptId },
+  });
+  const results = (await readResults(attemptId)) as Record<string, unknown>[];
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({
+    max_score: TOTAL,
+    skipped_count: TOTAL - 3,
+    hoeren_score: 3,
+    lesen_max: 25,
+  });
+  expect(await readEventKinds(attemptId)).toEqual(['start', 'finish']);
+  expect(await readAnswerRows(attemptId)).toEqual(before);
 });
