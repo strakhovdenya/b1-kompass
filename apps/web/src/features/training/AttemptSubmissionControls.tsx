@@ -7,6 +7,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type {
   CancelSummary,
+  Expiry,
   ResultCheck,
   SubmissionPhase,
   SubmitConfirmation,
@@ -21,6 +22,8 @@ export interface AttemptSubmissionControlsProps {
   isRenewed: boolean;
   cancelSummary: CancelSummary | null;
   resultCheck: ResultCheck;
+  // Set once the deadline of a timed run closed it.
+  expiry?: Expiry | null;
   answered: number;
   total: number;
   onSubmit: () => void;
@@ -48,6 +51,7 @@ export const AttemptSubmissionControls = ({
   isRenewed,
   cancelSummary,
   resultCheck,
+  expiry = null,
   answered,
   total,
   onSubmit,
@@ -60,6 +64,44 @@ export const AttemptSubmissionControls = ({
   onDismiss,
 }: AttemptSubmissionControlsProps) => {
   const t = useTranslations('training');
+
+  // The end of the time is announced once, as a status of its own; only
+  // the answers the server accepted before the deadline count.
+  if (phase === 'expired' && expiry) {
+    return (
+      <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
+        <Alert
+          severity="info"
+          role="status"
+          data-testid="timed-expired"
+          data-unsaved={expiry.unsaved}
+          data-result-ready={expiry.isResultReady}
+        >
+          <Stack spacing={0.5}>
+            <span>{t('expired')}</span>
+            {expiry.unsaved > 0 ? (
+              <span data-testid="timed-expired-unsaved">
+                {t('expiredUnsaved', { unsaved: expiry.unsaved })}
+              </span>
+            ) : null}
+          </Stack>
+        </Alert>
+        <Button
+          variant="contained"
+          data-testid="result-check"
+          disabled={resultCheck === 'checking'}
+          onClick={onCheckResult}
+        >
+          {t('checkResult')}
+        </Button>
+        {resultCheck === 'not-ready' ? (
+          <Alert severity="warning" role="alert" data-testid="result-pending">
+            {t('resultNotReady')}
+          </Alert>
+        ) : null}
+      </Stack>
+    );
+  }
 
   if (phase === 'accepted' || phase === 'completed') {
     return (

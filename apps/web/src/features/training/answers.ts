@@ -141,7 +141,29 @@ export interface AnswerStore {
   readFinalAnswers: () => FinalAnswer[];
   // The answers the server accepted: shown as they are, nothing pending.
   settle: (accepted: Selections) => void;
+  // The deadline closed the run with the answers the server accepted in
+  // time. They are final; every other choice stays on screen as refused,
+  // never as saved. Returns how many choices were not saved in time.
+  expire: (accepted: Selections) => number;
 }
+
+// The choices left after a deadline closed the run with the accepted
+// answers: a choice the server holds is no longer pending; any other one is
+// refused, whatever state its save was in.
+export const unsavedAtDeadline = (
+  pending: PendingAnswers,
+  accepted: Selections,
+): PendingAnswers => {
+  const left: Record<string, PendingAnswer> = {};
+  for (const [questionId, entry] of Object.entries(pending)) {
+    const held = Object.hasOwn(accepted, questionId)
+      ? accepted[questionId]
+      : undefined;
+    if (held === entry.optionId) continue;
+    left[questionId] = { ...entry, status: 'refused' };
+  }
+  return left;
+};
 
 // The answers of one attempt. Every new choice of a question gets the next
 // revision, continued from the revisions the server returned with the page
@@ -295,6 +317,18 @@ export const useAnswerStore = ({
     setPending(pendingRef.current);
   }, []);
 
+  // A late answer to a save sent before the deadline changes nothing any
+  // more: isFinal stops it, so a refused choice never turns into Saved.
+  const expire = useCallback((accepted: Selections) => {
+    isLocked.current = true;
+    isFinal.current = true;
+    selectionsRef.current = accepted;
+    pendingRef.current = unsavedAtDeadline(pendingRef.current, accepted);
+    setSelections(accepted);
+    setPending(pendingRef.current);
+    return Object.keys(pendingRef.current).length;
+  }, []);
+
   return {
     selections,
     pending,
@@ -305,5 +339,6 @@ export const useAnswerStore = ({
     unlock,
     readFinalAnswers,
     settle,
+    expire,
   };
 };

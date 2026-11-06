@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ExamContent } from '@b1k/domain';
-import { toPracticeState } from './projection';
+import {
+  parsePinnedDurations,
+  toLifecycleState,
+  toPracticeState,
+} from './projection';
 import type { AttemptRunView } from './projection';
 
 const option = (id: string) => ({ id, text: `Antwort ${id}` });
@@ -72,6 +76,8 @@ const view = (questionIds: string[]): AttemptRunView => ({
   sourceAttemptId: null,
   questionIds,
   acceptedAt: '2026-11-01T10:00:00.000Z',
+  durations: {},
+  isClosedByDeadline: false,
 });
 
 const project = (questionIds: string[]) =>
@@ -104,5 +110,83 @@ describe('toPracticeState', () => {
     expect(state.trackIds).toEqual(['track-1']);
     expect(state.groups.map((item) => item.id)).toEqual(['pair-1']);
     expect(state.texts).toEqual([]);
+  });
+});
+
+const ACCEPTED_MS = Date.parse('2026-11-01T10:00:00.000Z');
+
+const pinned = {
+  revisionId: '00000000-0000-4000-8000-000000000009',
+  hoerenSeconds: 1500,
+  transitionSeconds: 60,
+  lesenSeconds: 2700,
+};
+
+const timedView = (
+  selection: 'hoeren' | 'lesen',
+  status = 'active',
+): AttemptRunView => ({
+  ...view(['hoeren-1']),
+  mode: 'timed-block',
+  selection,
+  status,
+  durations: parsePinnedDurations(pinned) ?? {},
+});
+
+describe('toLifecycleState', () => {
+  it('gives a timed block the deadline of its pinned skill duration', () => {
+    const hoeren = toLifecycleState(timedView('hoeren'), ACCEPTED_MS + 60_000);
+    expect(hoeren).toMatchObject({
+      mode: 'timed-block',
+      phase: 'hoeren',
+      phaseRevision: 0,
+      deadlineMs: ACCEPTED_MS + 1_500_000,
+      remainingMs: 1_440_000,
+      openSkills: ['hoeren'],
+    });
+    const lesen = toLifecycleState(timedView('lesen'), ACCEPTED_MS);
+    expect(lesen?.deadlineMs).toBe(ACCEPTED_MS + 2_700_000);
+    // At the deadline the block is closed, a millisecond before it open:
+    // the same boundary as the database.
+    const atDeadline = toLifecycleState(
+      timedView('hoeren'),
+      ACCEPTED_MS + 1_500_000,
+    );
+    expect(atDeadline).toMatchObject({ phase: 'closed', remainingMs: 0 });
+    expect(
+      toLifecycleState(timedView('hoeren'), ACCEPTED_MS + 1_499_999)?.phase,
+    ).toBe('hoeren');
+    // A closed run is closed whatever the moment.
+    expect(
+      toLifecycleState(timedView('hoeren', 'submitted'), ACCEPTED_MS)?.phase,
+    ).toBe('closed');
+  });
+
+  it('keeps a free or legacy run without deadline and refuses a broken pin', () => {
+    const free = toLifecycleState(view(['lesen-1']), ACCEPTED_MS + 1e9);
+    expect(free).toMatchObject({
+      mode: 'training',
+      phase: 'open',
+      deadlineMs: null,
+      remainingMs: null,
+    });
+    expect(parsePinnedDurations(null)).toEqual({});
+    expect(parsePinnedDurations(pinned)).toEqual({
+      hoerenMs: 1_500_000,
+      transitionMs: 60_000,
+      lesenMs: 2_700_000,
+    });
+    for (const broken of [
+      { ...pinned, hoerenSeconds: 0 },
+      { ...pinned, lesenSeconds: '2700' },
+      [],
+      'pinned',
+    ]) {
+      expect(parsePinnedDurations(broken)).toBeNull();
+    }
+    // A timed run without durations has no deadline to show: refused.
+    expect(
+      toLifecycleState({ ...timedView('hoeren'), durations: {} }, ACCEPTED_MS),
+    ).toBeNull();
   });
 });

@@ -48,7 +48,11 @@ export interface RunRow {
   cancelReason: string | null;
   frozenAnswers: unknown;
   submissionAcceptedAt: string | null;
+  // Null for a submission closed by its deadline instead of a command.
+  submitCommandId: string | null;
   legacyCompleted: boolean;
+  // The timing profile pinned at the start of a timed run; null otherwise.
+  timingSnapshot: unknown;
 }
 
 export interface StoredAnswers {
@@ -76,14 +80,17 @@ interface RunRecord {
   cancel_reason: string | null;
   frozen_answers: unknown;
   submission_accepted_at: string | null;
+  submit_command_id: string | null;
   legacy_completed: boolean;
+  timing_profile_snapshot: unknown;
 }
 
 const ATTEMPT_COLUMNS =
   'id, status, scope, exam_id, exam_version_id, progress, created_at';
 const RUN_COLUMNS = [
   'mode, purpose, selection, source_attempt_id, assignment, accepted_at',
-  'cancel_reason, frozen_answers, submission_accepted_at, legacy_completed',
+  'cancel_reason, frozen_answers, submission_accepted_at, submit_command_id',
+  'legacy_completed, timing_profile_snapshot',
 ].join(', ');
 
 const toAttempt = (row: AttemptRecord): AttemptRow => ({
@@ -218,7 +225,9 @@ export const readRun = async (
     cancelReason: data.cancel_reason,
     frozenAnswers: data.frozen_answers,
     submissionAcceptedAt: data.submission_accepted_at,
+    submitCommandId: data.submit_command_id,
     legacyCompleted: data.legacy_completed,
+    timingSnapshot: data.timing_profile_snapshot,
   };
 };
 
@@ -259,13 +268,19 @@ export interface StartRow {
   outcome: 'accepted' | 'replayed' | 'conflict';
   status: string;
   accepted_at: string | null;
+  // The expired attempt of the slot this start closed. It stays on the
+  // trusted server: its result is computed after the commit and its id never
+  // goes into the public outcome.
+  closed_attempt_id: string | null;
 }
 
 export type StartCallResult =
   { ok: true; row: StartRow } | { ok: false; error: unknown };
 
-// The production start: slot lock, database time, command journal and the
-// insert of attempt, run, command and start event in one transaction.
+// The production start: slot lock, row lock of the active attempt, profile
+// lock of a timed start, database time, closing of an expired attempt,
+// command journal and the insert of attempt, run (with its pinned profile),
+// command and start event in one transaction.
 export const callStart = async (
   deps: ServerDeps,
   call: StartCall,
@@ -286,6 +301,40 @@ export const callStart = async (
     .single<StartRow>();
   if (error) return { ok: false, error };
   return { ok: true, row: data };
+};
+
+// The command of this guest with this commandId, if the database already
+// holds it: a repeated start returns its attempt; another kind is refused.
+export const findStartCommand = async (
+  deps: ServerDeps,
+  sessionId: string,
+  commandId: string,
+): Promise<{ kind: string; attemptId: string } | null> => {
+  const { data, error } = await deps.db
+    .from('attempt_commands')
+    .select('kind, attempt_id')
+    .eq('guest_session_id', sessionId)
+    .eq('command_id', commandId)
+    .maybeSingle<{ kind: string; attempt_id: string }>();
+  if (error) throw new Error('Command lookup failed', { cause: error });
+  return data ? { kind: data.kind, attemptId: data.attempt_id } : null;
+};
+
+// The guest's submitted attempts of one exam: accepted, result not stored.
+export const findSubmittedAttemptIds = async (
+  deps: ServerDeps,
+  sessionId: string,
+  examId: string,
+): Promise<string[]> => {
+  const { data, error } = await deps.db
+    .from('attempts')
+    .select('id')
+    .eq('guest_session_id', sessionId)
+    .eq('exam_id', examId)
+    .eq('status', 'submitted')
+    .returns<{ id: string }[]>();
+  if (error) throw new Error('Submitted lookup failed', { cause: error });
+  return data.map((row) => row.id);
 };
 
 // The closed key of one version. It is read only to score or to review a
@@ -402,8 +451,10 @@ export interface Confirmation {
   skipped: number;
 }
 
+// closed-phase: the deadline of a timed run was reached; the command closed
+// it with the answers accepted in time instead.
 export type CommandRecordOutcome =
-  'accepted' | 'replayed' | 'conflict' | 'stale-confirmation';
+  'accepted' | 'replayed' | 'conflict' | 'stale-confirmation' | 'closed-phase';
 
 export interface SubmissionRecord {
   outcome: CommandRecordOutcome;
@@ -436,6 +487,29 @@ export const callAcceptSubmission = async (
       p_expected_skipped: call.confirmation.skipped,
     })
     .single<SubmissionRecord>();
+  if (error) return { ok: false, error };
+  return { ok: true, row: data };
+};
+
+export interface ReconcileRecord {
+  attempt_status: string;
+  closed: boolean;
+  server_now: string;
+}
+
+// The production status read: an open timed attempt is locked, its deadline
+// is judged by the database clock read after the lock and an expired run is
+// closed. Returns the status and that moment.
+export const callReconcile = async (
+  deps: ServerDeps,
+  call: { sessionId: string; attemptId: string },
+): Promise<RpcResult<ReconcileRecord>> => {
+  const { data, error } = await deps.db
+    .rpc('m2_reconcile_attempt', {
+      p_session_id: call.sessionId,
+      p_attempt_id: call.attemptId,
+    })
+    .single<ReconcileRecord>();
   if (error) return { ok: false, error };
   return { ok: true, row: data };
 };

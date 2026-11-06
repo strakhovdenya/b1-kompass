@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -20,17 +20,22 @@ import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
 import type { ReviewBlock } from '../results/AttemptReviewView';
 import { AttemptSubmissionControls } from './AttemptSubmissionControls';
+import { AttemptTimer } from './AttemptTimer';
 import {
   attemptLesenPath,
   attemptPath,
   choicePath,
   requestSaveAnswer,
 } from './attempt-client';
+import type { TimedClock } from './attempt-client';
 import { useAnswerStore } from './answers';
+import { syncOf } from './exam-clock';
+import type { ClockSync } from './exam-clock';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
 import { useAttemptProgress } from './useAttemptProgress';
 import { useAttemptSubmission } from './useAttemptSubmission';
+import type { SubmissionPhase } from './useAttemptSubmission';
 
 export interface ResolveAudioInput {
   attemptId: string;
@@ -45,6 +50,15 @@ const BLOCK_PATHS: readonly {
   { block: 'lesen', pathOf: attemptLesenPath },
 ];
 
+const ZERO_RETRY_MS = 3000;
+
+// The run is closed for this page: the clock is no longer shown.
+const CLOSED_PHASES: readonly SubmissionPhase[] = [
+  'accepted',
+  'completed',
+  'expired',
+];
+
 interface TrainingShellProps {
   examSlug: string;
   attemptId: string;
@@ -57,6 +71,9 @@ interface TrainingShellProps {
   // The submission is accepted and its result is not stored yet.
   isResultPending: boolean;
   phaseRevision: number;
+  // The deadline of an open timed run as the server read it; null for a
+  // free training and a closed run.
+  timer?: TimedClock | null;
   resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
   children: ReactNode;
 }
@@ -78,6 +95,7 @@ export const TrainingShell = ({
   initialProgress,
   isResultPending,
   phaseRevision,
+  timer = null,
   resolveAudio,
   children,
 }: TrainingShellProps) => {
@@ -94,6 +112,7 @@ export const TrainingShell = ({
     readFinalAnswers,
     readPending,
     settle,
+    expire,
   } = useAnswerStore({
     attemptId,
     initialSelections,
@@ -102,8 +121,8 @@ export const TrainingShell = ({
     isSettled: initialReview !== null || isResultPending,
   });
   const store = useMemo(
-    () => ({ lock, unlock, readFinalAnswers, readPending, settle }),
-    [lock, unlock, readFinalAnswers, readPending, settle],
+    () => ({ lock, unlock, readFinalAnswers, readPending, settle, expire }),
+    [lock, unlock, readFinalAnswers, readPending, settle, expire],
   );
   // The review arrives with the page once the result is stored.
   const review = initialReview;
@@ -119,6 +138,19 @@ export const TrainingShell = ({
     isSettled: initialReview !== null || isResultPending,
   });
 
+  // The latest reading of the server clock of a timed run. The page brings
+  // the first one; every status renews it.
+  const [sync, setSync] = useState<ClockSync | null>(() =>
+    timer
+      ? syncOf(timer.serverNowMs, performance.now(), performance.now())
+      : null,
+  );
+  const [isAtZero, setIsAtZero] = useState(false);
+  const onSync = useCallback((next: ClockSync) => {
+    setSync(next);
+    setIsAtZero(false);
+  }, []);
+
   const submission = useAttemptSubmission({
     attemptId,
     examSlug,
@@ -127,7 +159,58 @@ export const TrainingShell = ({
     isResultPending,
     store,
     onClosed: stopProgress,
+    onSync,
   });
+  const { reconcile } = submission;
+  const reconcileRef = useRef(reconcile);
+  useEffect(() => {
+    reconcileRef.current = reconcile;
+  }, [reconcile]);
+  const isTimed = timer !== null;
+
+  // A timed run follows the server, not the page: on opening, on focus, on
+  // return to the tab, on reconnection and at zero the state is read again
+  // on its own fetch, beside any save in flight. Only the server closes the
+  // run; a page that was away never extends it.
+  useEffect(() => {
+    if (!isTimed) return undefined;
+    const refresh = () => void reconcileRef.current();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    window.addEventListener('pageshow', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+      window.removeEventListener('pageshow', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isTimed]);
+
+  // At zero the server is asked until it answers; a lost answer is retried.
+  useEffect(() => {
+    if (!isAtZero) return undefined;
+    const retry = setInterval(() => void reconcileRef.current(), ZERO_RETRY_MS);
+    return () => clearInterval(retry);
+  }, [isAtZero]);
+
+  // A save the server refused may mean that its deadline has passed before
+  // the page's clock shows it: the server state is read at once.
+  const hasRefused = Object.values(pending).some(
+    (entry) => entry.status === 'refused',
+  );
+  useEffect(() => {
+    if (isTimed && hasRefused) void reconcileRef.current();
+  }, [isTimed, hasRefused]);
+
+  const onZero = useCallback(() => {
+    setIsAtZero(true);
+    void reconcileRef.current();
+  }, []);
 
   const state: TrainingState = useMemo(
     () => ({
@@ -194,6 +277,16 @@ export const TrainingShell = ({
   const answered = questions.filter((question) =>
     Object.hasOwn(selections, question.id),
   ).length;
+  const isOpen = !CLOSED_PHASES.includes(submission.phase);
+  const clock =
+    timer && sync && isOpen ? (
+      <AttemptTimer
+        deadlineMs={timer.deadlineMs}
+        sync={sync}
+        skill={timer.skill}
+        onZero={onZero}
+      />
+    ) : null;
 
   return (
     <TrainingContext.Provider value={state}>
@@ -202,7 +295,9 @@ export const TrainingShell = ({
         data-testid="training-shell"
         data-attempt-id={attemptId}
         data-submission={submission.phase}
+        data-mode={isTimed ? 'timed-block' : 'training'}
       >
+        {clock}
         {nav}
         {trackIds.map((trackId, trackIndex) => (
           <AudioPlayer
@@ -232,6 +327,7 @@ export const TrainingShell = ({
             isRenewed={submission.isRenewed}
             cancelSummary={submission.cancelSummary}
             resultCheck={submission.resultCheck}
+            expiry={submission.expiry}
             answered={answered}
             total={questions.length}
             onSubmit={submission.submit}

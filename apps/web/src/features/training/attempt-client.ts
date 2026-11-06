@@ -9,6 +9,7 @@ import type {
   SaveAnswerResult,
   SaveProgressResult,
   Selections,
+  Skill,
   StartOutcome,
   SubmitOutcome,
 } from '@b1k/domain';
@@ -71,6 +72,21 @@ export interface AttemptStatusView {
   readonly answers: Selections;
   readonly skipped: number;
   readonly submittedAt: string | null;
+  // The moment the server judged this state at, as ISO text: for an open
+  // timed run the database clock read after its row lock. The browser shows
+  // the remaining time from it, never from its own clock.
+  readonly serverNow: string;
+  // A timed run that its deadline closed: only the answers the server
+  // accepted before it count.
+  readonly isClosedByDeadline: boolean;
+}
+
+// The clock of an open timed run as the server reads it: the absolute
+// deadline and the server moment of the read, both epoch milliseconds.
+export interface TimedClock {
+  readonly deadlineMs: number;
+  readonly serverNowMs: number;
+  readonly skill: Skill;
 }
 
 // 'network' means the answer was lost: the same commandId may be sent again
@@ -88,6 +104,7 @@ const FAILURES: readonly RunTechnicalFailure[] = [
   'not-found',
   'unavailable',
   'not-enabled',
+  'guest-too-short',
 ];
 
 const toFailure = (value: unknown): RunTechnicalFailure =>

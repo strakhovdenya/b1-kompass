@@ -61,7 +61,8 @@ const withState = async (
   deps: ServerDeps,
   guest: GuestContext,
   attemptId: string,
-  outcome: 'result-pending' | 'conflict' | 'stale-confirmation',
+  outcome:
+    'result-pending' | 'conflict' | 'stale-confirmation' | 'closed-phase',
 ): Promise<SubmitAttemptResult> => {
   const read = await readAttemptRun(deps, guest, attemptId);
   if (read.status !== 'ready') return fail('unavailable');
@@ -70,7 +71,8 @@ const withState = async (
   return { ok: true, result: { outcome, attemptId, state } };
 };
 
-// The accepted submission is completed when its result can be computed;
+// A timed block is accepted only before its deadline, judged by the database
+// clock after the row lock. The accepted submission is completed when its result can be computed;
 // otherwise it stays submitted and the result is pending.
 const settle = async (
   deps: ServerDeps,
@@ -87,6 +89,26 @@ const settle = async (
     return { ok: true, result: { outcome: 'result-ready', attemptId } };
   }
   return withState(deps, guest, attemptId, 'result-pending');
+};
+
+// Computes the result of a run its deadline closed. A failure leaves it
+// submitted; any later status tries again.
+export const finalizeClosedRun = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  attemptId: string,
+): Promise<void> => {
+  try {
+    const [attempt, run] = await Promise.all([
+      readOwnedAttempt(deps, guest.sessionId, attemptId),
+      readRun(deps, attemptId),
+    ]);
+    if (attempt && run) {
+      await finalizeSubmitted(deps, guest.sessionId, attempt, run);
+    }
+  } catch (error) {
+    console.error({ error });
+  }
 };
 
 const runSubmit = async (
@@ -110,6 +132,11 @@ const runSubmit = async (
   const { outcome } = call.row;
   if (outcome === 'accepted' || outcome === 'replayed') {
     return settle(deps, guest, input.attemptId);
+  }
+  // The deadline closed the timed run instead: the answers accepted in time
+  // get their result; the batch of this submission was not written.
+  if (outcome === 'closed-phase') {
+    await finalizeClosedRun(deps, guest, input.attemptId);
   }
   return withState(deps, guest, input.attemptId, outcome);
 };

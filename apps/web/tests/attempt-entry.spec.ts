@@ -541,6 +541,10 @@ test('attempt reader preserves stored assignment and pinned metadata', async () 
       sourceAttemptId: null,
       questionIds: stored,
       acceptedAt: '2026-11-01T10:00:00+00:00',
+      // A free training pins no timing profile and is never closed by a
+      // deadline (#43).
+      durations: {},
+      isClosedByDeadline: false,
     },
   });
   const page = await readAttemptPage(
@@ -620,11 +624,14 @@ test('foreign attempts and not enabled modes cannot be opened or started', async
   expect(await readAnswers(ownerAttempt)).toEqual({ 'hoeren-1': 'b' });
 
   // Unknown and not yet enabled modes, over HTTP and directly. The single
-  // skills are enabled since #41 (free-training.spec.ts).
+  // skills are enabled since #41 (free-training.spec.ts), one timed block of
+  // one skill since #43 (timed-block.spec.ts); a timed block of the whole
+  // set does not exist and the full exam waits for P4.
   const refused: [Record<string, unknown>, number, string][] = [
     [{ mode: 'speed-run' }, 400, 'invalid-input'],
-    [{ mode: 'timed-block', selection: 'hoeren' }, 422, 'not-enabled'],
+    [{ mode: 'timed-block', selection: 'all' }, 400, 'invalid-input'],
     [{ mode: 'exam' }, 422, 'not-enabled'],
+    [{ mode: 'exam', selection: 'hoeren' }, 422, 'not-enabled'],
     [
       { purpose: 'error-repeat', sourceAttemptId: ownerAttempt },
       422,

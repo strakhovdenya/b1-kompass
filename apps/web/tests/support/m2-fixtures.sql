@@ -7,7 +7,25 @@
 create schema if not exists m2_test;
 revoke all on schema m2_test from public, anon, authenticated, service_role;
 
--- The start at an explicit moment: the same slot lock, then the same kernel.
+-- The start at an explicit moment: the same locks in the same order (slot,
+-- the active attempt of the slot, the profile head of a timed start), then
+-- the same kernel. The OUT form follows the production start; an older
+-- installation with another OUT form is dropped first; the current form is
+-- only replaced, so concurrent callers keep the same function.
+do $$
+begin
+  if exists (
+    select 1 from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'm2_test' and p.proname = 'start_attempt_at'
+      and pg_catalog.pg_get_function_result(p.oid)
+        not like '%closed_attempt_id%'
+  ) then
+    drop function m2_test.start_attempt_at(uuid, uuid, uuid, text, text, text, uuid, uuid, text, jsonb, timestamptz);
+  end if;
+end;
+$$;
+
 create or replace function m2_test.start_attempt_at(
   p_session_id uuid,
   p_exam_id uuid,
@@ -21,7 +39,13 @@ create or replace function m2_test.start_attempt_at(
   p_question_ids jsonb,
   p_at timestamptz
 )
-returns table (attempt_id uuid, outcome text, status text, accepted_at timestamptz)
+returns table (
+  attempt_id uuid,
+  outcome text,
+  status text,
+  accepted_at timestamptz,
+  closed_attempt_id uuid
+)
 language plpgsql
 set search_path = ''
 as $$
@@ -30,6 +54,16 @@ begin
   perform pg_catalog.pg_advisory_xact_lock(
     m2_private.slot_key(p_session_id, p_exam_id)
   );
+  perform 1 from public.attempts a
+  where a.guest_session_id = p_session_id
+    and a.exam_id = p_exam_id
+    and a.status = 'active'
+  for update;
+  if p_mode = 'timed-block' then
+    perform 1 from m2_private.timing_profiles h
+    where h.exam_version_id = p_version_id
+    for share;
+  end if;
   return query select * from m2_private.admit_start(
     p_session_id, p_exam_id, p_command_id, p_mode, p_purpose, p_selection,
     p_source_attempt_id, p_version_id, p_scope, p_question_ids, p_at
@@ -162,12 +196,33 @@ begin
 end;
 $$;
 
+-- The status read at an explicit moment: the same row lock of the attempt,
+-- then the same kernel, which closes a timed run at its deadline.
+create or replace function m2_test.reconcile_attempt_at(
+  p_session_id uuid,
+  p_attempt_id uuid,
+  p_at timestamptz
+)
+returns table (attempt_status text, closed boolean, server_now timestamptz)
+language plpgsql
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform 1 from public.attempts a
+  where a.id = p_attempt_id and a.guest_session_id = p_session_id
+  for update;
+  return query select * from m2_private.reconcile_attempt(
+    p_session_id, p_attempt_id, p_at
+  );
+end;
+$$;
+
 -- A timed run pinned to the current confirmed timing profile of its
--- version, as the SQL start of #43 will write it: under the slot lock, the
+-- version, as the SQL start writes it since #43: under the slot lock, the
 -- gate m2_private.current_confirmed_profile, then attempt and run with the
--- returned revision and snapshot. Only for the isolated test database: the
--- production start does not pin profiles yet. No command or event is
--- written.
+-- returned revision and snapshot. Only for the isolated test database. No
+-- command or event is written.
 create or replace function m2_test.insert_pinned_run_at(
   p_session_id uuid,
   p_version_id uuid,

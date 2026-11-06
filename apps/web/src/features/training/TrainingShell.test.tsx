@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import { TrainingShell } from './TrainingShell';
+import type { TimedClock } from './attempt-client';
 
 const ATTEMPT_ID = '00000000-0000-4000-8000-000000000000';
 
@@ -54,7 +55,13 @@ const review: AttemptReview = {
   })),
 };
 
-const render = (initialReview: AttemptReview | null, isResultPending = false) =>
+const DEADLINE_MS = Date.parse('2026-11-06T12:25:00.000Z');
+
+const render = (
+  initialReview: AttemptReview | null,
+  isResultPending = false,
+  timer: TimedClock | null = null,
+) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <TrainingShell
@@ -68,6 +75,7 @@ const render = (initialReview: AttemptReview | null, isResultPending = false) =>
         initialProgress={null}
         isResultPending={isResultPending}
         phaseRevision={0}
+        timer={timer}
         resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
       >
         <p>block page</p>
@@ -76,6 +84,42 @@ const render = (initialReview: AttemptReview | null, isResultPending = false) =>
   );
 
 describe('TrainingShell', () => {
+  it('shows one compact server clock above the block of a timed run', () => {
+    const html = render(null, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 25 * 60_000,
+      skill: 'hoeren',
+    });
+    const timer = /<div[^>]*role="timer"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(timer).toContain('data-testid="attempt-timer"');
+    expect(timer).toContain('data-deadline-ms="' + DEADLINE_MS + '"');
+    expect(timer).toContain('data-state="running"');
+    // Not announced every second: no live region on the clock.
+    expect(timer).not.toContain('aria-live');
+    expect(html).toContain('25:00 left');
+    expect(html).toContain('Timed block · Hören');
+    expect(html).toContain('data-mode="timed-block"');
+    // One line before the block links, the recording and the block page.
+    const clock = html.indexOf('data-testid="attempt-timer"');
+    expect(clock).toBeLessThan(html.indexOf('data-testid="block-link-hoeren"'));
+    expect(clock).toBeLessThan(html.indexOf('data-testid="audio-element"'));
+    expect(clock).toBeLessThan(html.indexOf('block page'));
+    expect(html.match(/role="timer"/g)).toHaveLength(1);
+    expect(html).toContain('data-testid="finish-attempt"');
+  });
+
+  it('shows no clock for a free training or a closed timed run', () => {
+    expect(render(null)).not.toContain('role="timer"');
+    expect(render(null)).toContain('data-mode="training"');
+    const pending = render(null, true, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 1000,
+      skill: 'lesen',
+    });
+    expect(pending).not.toContain('role="timer"');
+    expect(pending).toContain('data-testid="submission-accepted"');
+  });
+
   it('wraps the block with the recording, block links and one finish point', () => {
     const html = render(null);
     expect(html).toContain('block page');
