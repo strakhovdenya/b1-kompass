@@ -861,6 +861,15 @@ test('full start requires fresh prepared audio through horen duration', async ({
       Date.parse(firstAudio.audio.serverNow),
   ).toBe((H + RESERVE_SECONDS) * SECOND_MS);
 
+  // Every new load of the one element is counted: a renewal loads again
+  // even when Storage signs the same address within the same second.
+  await examAudio(page).evaluate((element: HTMLAudioElement) => {
+    element.dataset.loads = '0';
+    element.addEventListener('loadstart', () => {
+      element.dataset.loads = String(Number(element.dataset.loads) + 1);
+    });
+  });
+
   // After waiting on the choice the address no longer covers Hören: the
   // start is blocked until a new address is playable; no time runs.
   await page.clock.fastForward('04:50');
@@ -871,8 +880,21 @@ test('full start requires fresh prepared audio through horen duration', async ({
     { timeout: 20_000 },
   );
   expect(prepares).toHaveLength(2);
+  const renewedAudio = (await (await prepares[1]?.response())?.json()) as {
+    audio: { url: string; coverSeconds: number };
+  };
+  expect(renewedAudio.audio.coverSeconds).toBe(H);
   const renewed = await mediaOf(page);
-  expect(renewed.src).not.toBe(first.src);
+  // The element plays the renewed answer, loaded anew, still silent.
+  expect(renewed.src).toBe(renewedAudio.audio.url);
+  expect(
+    Number(
+      await examAudio(page).evaluate(
+        (element: HTMLAudioElement) => element.dataset.loads,
+      ),
+    ),
+  ).toBeGreaterThanOrEqual(1);
+  expect(first.src).not.toBe('');
   expect(renewed.paused).toBe(true);
   expect(starts).toHaveLength(0);
   expect(await readAttempts(sessionOf(created))).toEqual([]);
