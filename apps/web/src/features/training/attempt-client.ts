@@ -39,7 +39,7 @@ export interface StartRequest {
 // guest and cookie exist; every other answer left the cookie untouched.
 export type GuestReplacementAnswer =
   | { status: 'replaced' }
-  | { status: 'not-needed' }
+  | { status: 'replacement-not-needed' }
   | { status: 'rate-limited' }
   | { status: 'conflict'; attemptId: string }
   | { status: 'refused'; failure: RunTechnicalFailure };

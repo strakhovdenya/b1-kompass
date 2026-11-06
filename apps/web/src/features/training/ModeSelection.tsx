@@ -192,7 +192,7 @@ export const ModeSelection = ({
       return;
     }
     setDialogOpen(false);
-    if (answer.status === 'not-needed') {
+    if (answer.status === 'replacement-not-needed') {
       setStatus('replacement-not-needed');
       return;
     }

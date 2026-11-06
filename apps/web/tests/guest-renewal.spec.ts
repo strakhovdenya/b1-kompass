@@ -1010,7 +1010,7 @@ test('replacement refuses rotation when reserve is sufficient', async () => {
   const enough = await guestEndingIn(LONG_ENOUGH_SECONDS);
   const before = await readSession(enough.guest.sessionId);
   expect(await replaceFor(enough.token, await timedBody())).toEqual({
-    status: 'not-needed',
+    status: 'replacement-not-needed',
   });
   expect(await readSession(enough.guest.sessionId)).toEqual(before);
   // The ordinary start stays available.
@@ -1241,7 +1241,7 @@ test('replacement server action enforces origin and ownership', async ({
   // A guest with enough reserve is told the replacement is not needed.
   const enough = await guestEndingIn(LONG_ENOUGH_SECONDS);
   const needless = await post(enough.token, real);
-  expect(needless.text).toContain('not-needed');
+  expect(needless.text).toContain('replacement-not-needed');
   expect(needless.setsCookie).toBe(false);
   expect(await resolveGuestSession(depsNow(), enough.token)).not.toBeNull();
   expect(await readStoredAttempts(fresh.guest.sessionId)).toEqual([]);

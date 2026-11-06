@@ -108,7 +108,7 @@ export type ReplaceGuestResult =
   | { status: 'created'; created: CreatedGuest }
   | { status: 'rate-limited' }
   // The current guest can still finish the block: nothing was created.
-  | { status: 'not-needed' }
+  | { status: 'replacement-not-needed' }
   // An active attempt of the exam holds the slot: no replacement helps.
   | { status: 'conflict'; attemptId: string }
   | { status: 'refused'; failure: RunTechnicalFailure };
@@ -137,5 +137,5 @@ export const replaceGuestSession = async (
   if (verdict.result.outcome === 'conflict') {
     return { status: 'conflict', attemptId: verdict.result.attemptId };
   }
-  return { status: 'not-needed' };
+  return { status: 'replacement-not-needed' };
 };
