@@ -1,9 +1,20 @@
+import { randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
-import { saveAnswer, saveProgress } from '../src/server/attempts/attempts';
+import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
+import { createTimingProfileRevision } from '../../../scripts/manage-timing-profile';
+import type { TimingSettings } from '../../../scripts/manage-timing-profile';
+import {
+  preflightTimedStart,
+  readAttemptStatus,
+  saveAnswer,
+  saveProgress,
+} from '../src/server/attempts/attempts';
 import type { ServerDeps } from '../src/server/db';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
+  hashGuestToken,
+  replaceGuestSession,
   resolveGuestSession,
   setGuestLocale,
 } from '../src/server/guest-session/session';
@@ -21,6 +32,7 @@ import {
   readAnswers,
   readAttempts,
   readResults,
+  readRunRows,
   readSession,
   readSessionByToken,
   serviceDb,
@@ -28,7 +40,15 @@ import {
   startFor,
   submitStored,
 } from './support/db';
-import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  FULL_TRACK_ID,
+  SHORT_TIMING,
+  ensureConfirmedTestProfile,
+} from './support/full-exam';
+import { createTestRecording } from './support/global-setup';
+import { installM2Fixtures, psql, quote, sqlRunnerAs } from './support/sql';
 import {
   CHOICE_URL,
   HOEREN_URL,
@@ -705,5 +725,526 @@ test('restart keeps the guest locale', async ({ browser, baseURL }) => {
   await expect(page.getByTestId('finish-attempt')).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   expect(await shellAttemptId(page)).not.toBe(guest.completedId);
+  await context.close();
+});
+
+// --- Explicit guest replacement before a timed block (#44) -----------------
+// A guest too short for the block gets a dialog; only a consent creates a new
+// English guest, and the block starts by a separate request under the new
+// cookie. Sessions end in a few minutes through the test-only fixture, so no
+// clock is moved and nothing is mocked.
+
+const TERM_HOURS_MS = 720 * 60 * 60 * 1000;
+// The block of Hören of the full set needs 1500 s and the 300 s reserve.
+const TOO_SHORT_SECONDS = 600;
+const LONG_ENOUGH_SECONDS = 1500 + 300 + 600;
+const PER_MINUTE = 500;
+const owner = sqlRunnerAs('owner');
+
+test.beforeAll(() => {
+  installM2Fixtures();
+});
+
+const guestEndingIn = async (seconds: number) => {
+  const token = randomBytes(32).toString('base64url');
+  psql(`select m2_test.insert_guest_ending_in(
+    ${quote(hashGuestToken(token))}, ${seconds})`);
+  const guest = await resolveGuestSession(depsNow(), token);
+  if (!guest) throw new Error('guest is not active');
+  return { token, guest };
+};
+
+const timedBody = (slug: string = FULL_EXAM.slug) =>
+  startBody(slug, { mode: 'timed-block', selection: 'hoeren' });
+
+// The server work of the Server Action with the real preflight; the cookie
+// write is the only thing left to the action.
+const replaceFor = async (
+  token: string | null,
+  body: Awaited<ReturnType<typeof timedBody>>,
+) =>
+  replaceGuestSession(depsNow(), PER_MINUTE, () =>
+    preflightTimedStart(depsNow(), token, body),
+  );
+
+interface TimedExam {
+  slug: string;
+  versionId: string;
+}
+
+const publishTimedExam = async (
+  settings: TimingSettings | null,
+): Promise<TimedExam> => {
+  const slug = `test-replace-${randomUUID().slice(0, 8)}`;
+  const outcome = await publishExamVersion(serviceDb, {
+    slug,
+    title: 'Replacement test',
+    format: 'DTZ',
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...createTestRecording(523) }],
+  });
+  if (settings) ensureConfirmedTestProfile(owner, outcome.versionId, settings);
+  return { slug, versionId: outcome.versionId };
+};
+
+const openChoiceAs = async (
+  browser: Browser,
+  baseURL: string | undefined,
+  token: string,
+  viewport?: { width: number; height: number },
+) => {
+  const context = await browser.newContext(viewport ? { viewport } : {});
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: token, url: baseURL ?? '' },
+  ]);
+  const page = await context.newPage();
+  await page.goto(`/practice/${FULL_EXAM.slug}`);
+  return { context, page };
+};
+
+const dialogOf = (page: Page) => page.getByTestId('guest-replacement-dialog');
+
+// Chooses the timed Hören block and starts it: a too-short guest meets the
+// dialog.
+const startTimed = async (page: Page) => {
+  await page.getByTestId('mode-option-timed-block').click();
+  await page.getByTestId('selection-option-hoeren').click();
+  await page.getByTestId('start-attempt').click();
+  await expect(dialogOf(page)).toBeVisible();
+};
+
+test('replacement requires consent then starts with new english guest', async ({
+  browser,
+  baseURL,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  expect(await setGuestLocale(depsNow(), old.guest, 'ru')).toBe(true);
+  const before = await readSession(old.guest.sessionId);
+  const { context, page } = await openChoiceAs(browser, baseURL, old.token);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+
+  // Refusal: the dialog closes, cookie, session and data stay as they were.
+  await startTimed(page);
+  await page.getByTestId('guest-replacement-cancel').click();
+  await expect(dialogOf(page)).toBeHidden();
+  expect(await tokenOf(context)).toBe(old.token);
+  expect(await readSession(old.guest.sessionId)).toEqual(before);
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual([]);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+
+  // Consent: a new English guest of 720 hours, then the chosen block.
+  await page.getByTestId('guest-replacement-open').click();
+  await page.getByTestId('guest-replacement-confirm').click();
+  await page.waitForURL(HOEREN_URL);
+  const token = await tokenOf(context);
+  expect(token).not.toBe(old.token);
+  const fresh = await sessionOf(context);
+  expect(fresh.id).not.toBe(old.guest.sessionId);
+  expect(fresh.locale).toBe('en');
+  expect(new Date(fresh.expires_at).getTime()).toBe(
+    new Date(fresh.created_at).getTime() + TERM_HOURS_MS,
+  );
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  const rows = await readStoredAttempts(fresh.id);
+  expect(rows).toHaveLength(1);
+  const [run] = await readRunRows(rows[0]?.id ?? '');
+  expect(run).toMatchObject({ mode: 'timed-block', selection: 'hoeren' });
+  // The old session keeps its term and has no attempt.
+  expect(await readSession(old.guest.sessionId)).toEqual(before);
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual([]);
+  await context.close();
+});
+
+test('replacement retains old data and isolates other browser', async ({
+  browser,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  const practice = await openReady(depsNow(), old);
+  await save(depsNow(), old.token, practice.attemptId, 'hoeren-1');
+  await finish(old.token, practice.attemptId);
+  const attempts = await readStoredAttempts(old.guest.sessionId);
+  const answers = await readAnswers(practice.attemptId);
+  const results = await readResults(practice.attemptId);
+  const events = await readEvents(old.guest.visitorId);
+  const sessionBefore = await readSession(old.guest.sessionId);
+  const other = await browserGuest(browser);
+
+  const replaced = await replaceFor(old.token, await timedBody());
+  if (replaced.status !== 'created') throw new Error(replaced.status);
+  expect(replaced.created.guest.locale).toBe('en');
+
+  // The old guest keeps everything, untouched and unextended.
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual(attempts);
+  expect(await readAnswers(practice.attemptId)).toEqual(answers);
+  expect(await readResults(practice.attemptId)).toEqual(results);
+  expect(await readEvents(old.guest.visitorId)).toEqual(events);
+  expect(await readSession(old.guest.sessionId)).toEqual(sessionBefore);
+  // The new guest owns nothing of it.
+  expect(await readStoredAttempts(replaced.created.guest.sessionId)).toEqual(
+    [],
+  );
+
+  // Another browser keeps its own guest, attempt and saving.
+  const status = await readAttemptStatus(depsNow(), other.token, {
+    attemptId: other.attemptId,
+  });
+  expect(status).toMatchObject({ ok: true, result: { outcome: 'active' } });
+  await save(depsNow(), other.token, other.attemptId, 'hoeren-1');
+  expect(await readAnswers(other.attemptId)).toEqual({
+    'hoeren-1': keyOf('hoeren-1'),
+  });
+  await other.context.close();
+});
+
+test('new guest cannot recover old history by id', async () => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  const practice = await openReady(depsNow(), old);
+  await save(depsNow(), old.token, practice.attemptId, 'hoeren-1');
+  await finish(old.token, practice.attemptId);
+  const replaced = await replaceFor(old.token, await timedBody());
+  if (replaced.status !== 'created') throw new Error(replaced.status);
+  const { token } = replaced.created;
+
+  const status = await readAttemptStatus(depsNow(), token, {
+    attemptId: practice.attemptId,
+  });
+  expect(status.ok).toBe(false);
+  const review = await submitStored(depsNow(), token, {
+    attemptId: practice.attemptId,
+  });
+  expect(review.ok).toBe(false);
+  // The old token still reads its own history.
+  expect(
+    await readAttemptStatus(depsNow(), old.token, {
+      attemptId: practice.attemptId,
+    }),
+  ).toMatchObject({ ok: true });
+});
+
+test('replacement rejects missing consent and forged guest', async () => {
+  // The function never rotates without a verified old session.
+  const body = await timedBody();
+  expect(await replaceFor(null, body)).toEqual({
+    status: 'refused',
+    failure: 'session-invalid',
+  });
+  expect(await replaceFor(randomBytes(32).toString('base64url'), body)).toEqual(
+    { status: 'refused', failure: 'session-invalid' },
+  );
+  // Forged fields of the start are refused by its strict input.
+  const short = await guestEndingIn(TOO_SHORT_SECONDS);
+  expect(
+    await replaceFor(short.token, {
+      ...body,
+      sessionId: short.guest.sessionId,
+    } as typeof body),
+  ).toEqual({ status: 'refused', failure: 'invalid-input' });
+  expect(await resolveGuestSession(depsNow(), short.token)).toMatchObject({
+    expiresAt: short.guest.expiresAt,
+  });
+  // The Server Action side (consent, Origin) is in the action test below.
+});
+
+test('replacement does not bypass active slot or profile refusal', async () => {
+  // An active attempt of the exam: a conflict that names it.
+  const busy = await guestEndingIn(TOO_SHORT_SECONDS);
+  const started = await startFor(depsNow(), busy.token, FULL_EXAM.slug);
+  if (!started.ok) throw new Error(started.failure);
+  expect(await replaceFor(busy.token, await timedBody())).toEqual({
+    status: 'conflict',
+    attemptId: started.result.attemptId,
+  });
+
+  // No confirmed profile together with a short term: the profile refusal.
+  const draft = await publishTimedExam(null);
+  const short = await guestEndingIn(TOO_SHORT_SECONDS);
+  expect(await replaceFor(short.token, await timedBody(draft.slug))).toEqual({
+    status: 'refused',
+    failure: 'not-enabled',
+  });
+  // Free training is not a timed start: nothing to replace.
+  const free = await startBody(FULL_EXAM.slug);
+  expect(await replaceFor(short.token, free)).toEqual({
+    status: 'refused',
+    failure: 'invalid-input',
+  });
+  expect(await readStoredAttempts(short.guest.sessionId)).toEqual([]);
+});
+
+test('replacement rechecks concurrent active and profile before cookie write', async () => {
+  // Another tab started an attempt before the confirmation reached the server.
+  const first = await guestEndingIn(TOO_SHORT_SECONDS);
+  const body = await timedBody();
+  expect(await preflightTimedStart(depsNow(), first.token, body)).toEqual({
+    ok: false,
+    failure: 'guest-too-short',
+  });
+  const started = await startFor(depsNow(), first.token, FULL_EXAM.slug);
+  if (!started.ok) throw new Error(started.failure);
+  expect(await replaceFor(first.token, body)).toMatchObject({
+    status: 'conflict',
+  });
+
+  // The profile became a draft after the dialog opened.
+  const exam = await publishTimedExam(SHORT_TIMING);
+  const second = await guestEndingIn(100);
+  const timed = await timedBody(exam.slug);
+  expect(await preflightTimedStart(depsNow(), second.token, timed)).toEqual({
+    ok: false,
+    failure: 'guest-too-short',
+  });
+  createTimingProfileRevision(
+    owner,
+    { versionId: exam.versionId },
+    { ...SHORT_TIMING, hoerenSeconds: SHORT_TIMING.hoerenSeconds + 1 },
+  );
+  expect(await replaceFor(second.token, timed)).toEqual({
+    status: 'refused',
+    failure: 'not-enabled',
+  });
+  expect(await readStoredAttempts(second.guest.sessionId)).toEqual([]);
+});
+
+test('replacement refuses rotation when reserve is sufficient', async () => {
+  const enough = await guestEndingIn(LONG_ENOUGH_SECONDS);
+  const before = await readSession(enough.guest.sessionId);
+  expect(await replaceFor(enough.token, await timedBody())).toEqual({
+    status: 'replacement-not-needed',
+  });
+  expect(await readSession(enough.guest.sessionId)).toEqual(before);
+  // The ordinary start stays available.
+  expect(
+    await startFor(depsNow(), enough.token, FULL_EXAM.slug, {
+      mode: 'timed-block',
+      selection: 'hoeren',
+    }),
+  ).toMatchObject({ ok: true, result: { outcome: 'accepted' } });
+});
+
+test('replacement is not offered when current guest can finish timed run', async ({
+  browser,
+  baseURL,
+}) => {
+  const enough = await guestEndingIn(LONG_ENOUGH_SECONDS);
+  const { context, page } = await openChoiceAs(browser, baseURL, enough.token);
+  await page.getByTestId('mode-option-timed-block').click();
+  await page.getByTestId('selection-option-hoeren').click();
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  expect(await dialogOf(page).count()).toBe(0);
+  expect(await tokenOf(context)).toBe(enough.token);
+  await context.close();
+});
+
+test('replacement retry preserves start command idempotency', async ({
+  browser,
+  baseURL,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  const { context, page } = await openChoiceAs(browser, baseURL, old.token);
+  await startTimed(page);
+  const commands: string[] = [];
+  let calls = 0;
+  await page.route('**/api/attempts/start', async (route) => {
+    calls += 1;
+    commands.push(route.request().postDataJSON().commandId);
+    // The first start is lost before it is sent; the second commits and its
+    // answer is lost; the third goes through.
+    if (calls === 1) return route.abort('failed');
+    if (calls === 2) {
+      await route.fetch();
+      return route.abort('failed');
+    }
+    return route.continue();
+  });
+
+  await page.getByTestId('guest-replacement-confirm').click();
+  await expect(page.getByTestId('start-error')).toBeVisible();
+  // Failed start after replacement: the new session works, nothing is hidden.
+  const token = await tokenOf(context);
+  expect(token).not.toBe(old.token);
+  const fresh = await resolveGuestSession(depsNow(), token);
+  expect(fresh?.locale).toBe('en');
+  expect(await readStoredAttempts(fresh?.sessionId ?? '')).toEqual([]);
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual([]);
+
+  await page.getByTestId('start-attempt').click();
+  await expect.poll(() => calls).toBe(2);
+  await expect
+    .poll(async () => (await readStoredAttempts(fresh?.sessionId ?? '')).length)
+    .toBe(1);
+  const [committed] = await readStoredAttempts(fresh?.sessionId ?? '');
+
+  await expect(page.getByTestId('start-error')).toBeVisible();
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  expect(attemptIdOf(page)).toBe(committed?.id);
+  expect(await readStoredAttempts(fresh?.sessionId ?? '')).toHaveLength(1);
+  expect(new Set(commands).size).toBe(1);
+  await context.close();
+});
+
+test('failed start after replacement retains recoverable new session', async ({
+  browser,
+  baseURL,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  const { context, page } = await openChoiceAs(browser, baseURL, old.token);
+  await startTimed(page);
+  await page.route('**/api/attempts/start', (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: false, failure: 'unavailable' }),
+    }),
+  );
+  await page.getByTestId('guest-replacement-confirm').click();
+  await expect(page.getByTestId('start-error')).toBeVisible();
+  const fresh = await resolveGuestSession(depsNow(), await tokenOf(context));
+  expect(fresh).not.toBeNull();
+  expect(await readStoredAttempts(fresh?.sessionId ?? '')).toEqual([]);
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual([]);
+
+  // The choice is kept and the retry runs under the new cookie.
+  await page.unroute('**/api/attempts/start');
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  expect(await readStoredAttempts(fresh?.sessionId ?? '')).toHaveLength(1);
+  expect(await readStoredAttempts(old.guest.sessionId)).toEqual([]);
+  await context.close();
+});
+
+test('guest replacement dialog is accessible and preserves pending choice', async ({
+  browser,
+  baseURL,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  expect(await setGuestLocale(depsNow(), old.guest, 'ru')).toBe(true);
+  const { context, page } = await openChoiceAs(browser, baseURL, old.token, {
+    width: 320,
+    height: 640,
+  });
+  await startTimed(page);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveCount(1);
+  await expect(dialog).toHaveAccessibleName(/\S/);
+
+  // 320 px: the dialog and its controls fit the screen.
+  const box = await dialog.boundingBox();
+  expect(box?.x).toBeGreaterThanOrEqual(0);
+  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(320);
+  for (const id of ['guest-replacement-cancel', 'guest-replacement-confirm']) {
+    const button = await page.getByTestId(id).boundingBox();
+    expect(button?.height).toBeGreaterThanOrEqual(44);
+    expect((button?.x ?? 0) + (button?.width ?? 0)).toBeLessThanOrEqual(320);
+  }
+
+  // Keyboard: the focus starts on the safe answer, stays inside, and Escape
+  // closes the dialog and returns it to the start button.
+  await expect(page.getByTestId('guest-replacement-cancel')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('guest-replacement-confirm')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('guest-replacement-cancel')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialogOf(page)).toBeHidden();
+  await expect(page.getByTestId('start-attempt')).toBeFocused();
+  expect(await tokenOf(context)).toBe(old.token);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+
+  // Enter on the confirm button: English interface, same mode and block, and
+  // the recording does not start by itself.
+  await page.getByTestId('guest-replacement-open').click();
+  await expect(page.getByTestId('guest-replacement-cancel')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('guest-replacement-confirm')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await page.waitForURL(HOEREN_URL);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  const fresh = await sessionOf(context);
+  const [row] = await readStoredAttempts(fresh.id);
+  const [run] = await readRunRows(row?.id ?? '');
+  expect(run).toMatchObject({ mode: 'timed-block', selection: 'hoeren' });
+  await waitForPlayer(page);
+  expect(await audioOf(page).evaluate((e: HTMLAudioElement) => e.paused)).toBe(
+    true,
+  );
+  await context.close();
+});
+
+test('replacement server action enforces origin and ownership', async ({
+  browser,
+  baseURL,
+  playwright,
+}) => {
+  const old = await guestEndingIn(TOO_SHORT_SECONDS);
+  const { context, page } = await openChoiceAs(browser, baseURL, old.token);
+  await startTimed(page);
+  const captured = page.waitForRequest(
+    (sent) => sent.method() === 'POST' && 'next-action' in sent.headers(),
+  );
+  await page.getByTestId('guest-replacement-confirm').click();
+  const sent = await captured;
+  await page.waitForURL(HOEREN_URL);
+  const action = sent.headers()['next-action'] ?? '';
+  const url = sent.url();
+  const original = JSON.parse(sent.postData() ?? '[]') as [
+    { consent?: boolean; start: Record<string, unknown> },
+  ];
+  const real = original[0];
+  if (!real) throw new Error('no captured argument');
+  expect(real.consent).toBe(true);
+
+  const api = await playwright.request.newContext();
+  const post = async (
+    token: string,
+    argument: unknown,
+    origin: string = baseURL ?? '',
+  ) => {
+    const response = await api.post(url, {
+      headers: {
+        'next-action': action,
+        'content-type': 'text/plain;charset=UTF-8',
+        origin,
+        cookie: `${GUEST_COOKIE}=${token}`,
+      },
+      data: JSON.stringify([argument]),
+    });
+    return {
+      text: await response.text(),
+      ok: response.ok(),
+      setsCookie: 'set-cookie' in response.headers(),
+    };
+  };
+  const fresh = await guestEndingIn(TOO_SHORT_SECONDS);
+
+  // A foreign Origin is rejected before the action runs.
+  const foreign = await post(fresh.token, real, 'https://evil.example');
+  expect(foreign.ok).toBe(false);
+  expect(foreign.setsCookie).toBe(false);
+
+  // Missing consent, a forged guest field and an unknown session.
+  const noConsent = await post(fresh.token, { start: real.start });
+  expect(noConsent.text).toContain('invalid-input');
+  expect(noConsent.setsCookie).toBe(false);
+  const forged = await post(fresh.token, {
+    consent: true,
+    start: { ...real.start, sessionId: fresh.guest.sessionId },
+  });
+  expect(forged.text).toContain('invalid-input');
+  expect(forged.setsCookie).toBe(false);
+  const unknown = await post(randomBytes(32).toString('base64url'), real);
+  expect(unknown.text).toContain('session-invalid');
+  expect(unknown.setsCookie).toBe(false);
+
+  // A guest with enough reserve is told the replacement is not needed.
+  const enough = await guestEndingIn(LONG_ENOUGH_SECONDS);
+  const needless = await post(enough.token, real);
+  expect(needless.text).toContain('replacement-not-needed');
+  expect(needless.setsCookie).toBe(false);
+  expect(await resolveGuestSession(depsNow(), enough.token)).not.toBeNull();
+  expect(await readStoredAttempts(fresh.guest.sessionId)).toEqual([]);
+  await api.dispose();
   await context.close();
 });

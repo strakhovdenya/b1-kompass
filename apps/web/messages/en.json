@@ -54,7 +54,20 @@
       "lesen": "Lesen only ({count, plural, one {# task} other {# tasks}})"
     },
     "timedBlockDetail": "One block against the clock: Hören or Lesen, with the time of the exam. The time keeps running if you pause the recording or leave the page.",
-    "guestTooShort": "Your guest session ends too soon for this timed block. Choose the free training, or start the block in a new guest session."
+    "guestTooShort": "Your guest session ends too soon for this timed block. Choose the free training, or start the block in a new guest session.",
+    "replaceOpen": "Start in a new guest session",
+    "replaceNotNeeded": "Your current session is long enough for this block. You can start it now.",
+    "replace": {
+      "title": "Start a new guest session?",
+      "tooShort": "Your current guest session ends too soon for this timed block, and it cannot be extended.",
+      "history": "Your earlier attempts and results are not deleted, but once the new session starts they are no longer available in this browser. Other browsers are not affected.",
+      "english": "The new session starts in English. The block you chose starts right after it.",
+      "keep": "Keep current session",
+      "confirm": "Start new session and block",
+      "working": "Starting…",
+      "busy": "Too many new sessions right now. Please try again in a minute.",
+      "error": "The session was not replaced. Please try again."
+    }
   },
   "save": {
     "idle": "Choose one answer.",

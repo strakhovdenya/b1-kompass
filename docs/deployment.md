@@ -98,7 +98,7 @@ Playwright сам берёт URL и ключи из `supabase status`; рабо�
 **Выпуск.**
 1. Миграция `20261109000000_word_dictionary_cache.sql` применяется только через ручной `Release Production` после approval владельца (после merge; до этого — нет). Перед ней — резервная копия базы по runbook. Миграция только добавляет объекты (expand), старый код с ней совместим.
 2. При желании задать `DICTIONARY_CONTACT_EMAIL` в Vercel (Production/Preview). `DICTIONARY_TEST_PROVIDER` в Vercel не задаётся.
-3. Проверка после выпуска (владелец, не автоматизирована): в Supabase → Integrations → Cron видна задача `purge-dictionary-data`; publishable-ключ получает `42501` на `dictionary_cache`, `dictionary_budget` и `reserve_dictionary_budget`; на сайте — перевод слова в Lesen и в варианте Hören (EN и RU), radio не меняется, синоним открывает свой перевод, ссылки и атрибуция видны, переключатель выключает словарь; iOS Safari и Android Chrome — tap и bottom sheet, `speechSynthesis` не глушит запись Hören.
+3. Проверка после выпуска (владелец, не автоматизирована): в Supabase → Integrations → Cron видна задача `purge-dictionary-data`; publishable-ключ получает `42501` на `dictionary_cache`, `dictionary_budget` и `reserve_dictionary_budget`; на сайте — перевод слова в Lesen и в варианте Hören (EN и RU), radio не меняется, синоним открывает свой перевод, ссылки и атрибуция видны, переключатель выключает словарь; iOS Safari и Android Chrome — удержание слова 1,5 с открывает bottom sheet, короткое касание и прокрутка нет, `speechSynthesis` не глушит запись Hören.
 
 **Статус:** код и локальные проверки — в PR задачи #60. Применение миграции в Production, работа с настоящими MyMemory/OpenThesaurus из Vercel и ручная проверка на устройствах ⏳ не выполнялись.
 

@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { buildAssignment, examContentSchema } from '@b1k/domain';
-import { createGuestSession } from '../src/server/guest-session/session';
+import { preflightTimedStart } from '../src/server/attempts/attempts';
+import {
+  createGuestSession,
+  hashGuestToken,
+  replaceGuestSession,
+} from '../src/server/guest-session/session';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { PILOT_EXAM_SLUG } from '../src/server/material/published';
 import {
@@ -13,7 +18,9 @@ import {
   readAttempts,
   readSession,
   serviceDb,
+  startBody,
 } from './support/db';
+import { FULL_EXAM } from './support/full-exam';
 import { installM2Fixtures, psql, quote } from './support/sql';
 import { TEST_GUEST_SESSIONS_PER_MINUTE } from './support/env';
 
@@ -294,4 +301,84 @@ test('denies anon execution of limit and purge functions', async () => {
   expect(await findSessionIds(expired)).toEqual(expired);
   expect(await countSessions()).toBe(before);
   await deleteSessions(expired);
+});
+
+// The explicit replacement of a guest too short for a timed block (#44) goes
+// through the same site-wide creation limit. Each test lives at its own
+// distant moment; the short guests are inserted with the term that ends
+// shortly after it.
+
+const TOO_SHORT_SECONDS = 100;
+
+const insertShortGuest = async (
+  now: Date,
+): Promise<{ id: string; token: string }> => {
+  const token = randomBytes(32).toString('base64url');
+  const createdAt = new Date(
+    now.getTime() - TERM_MS + TOO_SHORT_SECONDS * SECOND_MS,
+  );
+  const { data, error } = await serviceDb
+    .from('guest_sessions')
+    .insert({
+      token_hash: hashGuestToken(token),
+      created_at: createdAt.toISOString(),
+      expires_at: new Date(createdAt.getTime() + TERM_MS).toISOString(),
+    })
+    .select('id')
+    .single<{ id: string }>();
+  if (error) throw error;
+  return { id: data.id, token };
+};
+
+const countInWindow = async (now: Date): Promise<number> => {
+  const { count, error } = await serviceDb
+    .from('guest_sessions')
+    .select('*', { count: 'exact', head: true })
+    .gt('created_at', new Date(now.getTime() - 60 * SECOND_MS).toISOString())
+    .lte('created_at', now.toISOString());
+  if (error) throw error;
+  return count ?? 0;
+};
+
+const replaceAt = async (now: Date, token: string) => {
+  const body = await startBody(FULL_EXAM.slug, {
+    mode: 'timed-block',
+    selection: 'hoeren',
+  });
+  return replaceGuestSession(depsAt(now), LIMIT, () =>
+    preflightTimedStart(depsAt(now), token, body),
+  );
+};
+
+test('guest replacement obeys existing creation limit', async () => {
+  const now = momentOf(10);
+  const filled = await insertSessions(LIMIT - 1, new Date(now.getTime() - 30 * SECOND_MS));
+  const first = await insertShortGuest(now);
+  const second = await insertShortGuest(now);
+  expect(await countInWindow(now)).toBe(LIMIT - 1);
+
+  // The last free place of the window: the replacement is created.
+  const created = await replaceAt(now, first.token);
+  if (created.status !== 'created') throw new Error(created.status);
+  expect(created.created.guest.locale).toBe('en');
+  expect(created.created.guest.expiresAt.getTime()).toBe(now.getTime() + TERM_MS);
+  expect(await countInWindow(now)).toBe(LIMIT);
+
+  // The window is full: the same limit refuses, with an exact count.
+  expect(await replaceAt(now, second.token)).toEqual({ status: 'rate-limited' });
+  expect(await countInWindow(now)).toBe(LIMIT);
+  await deleteSessions([...filled, first.id, second.id, created.created.guest.sessionId]);
+});
+
+test('rate limited replacement creates neither guest nor attempt', async () => {
+  const now = momentOf(11);
+  const filled = await insertSessions(LIMIT, new Date(now.getTime() - 30 * SECOND_MS));
+  const short = await insertShortGuest(now);
+  const before = await readSession(short.id);
+
+  expect(await replaceAt(now, short.token)).toEqual({ status: 'rate-limited' });
+  expect(await countInWindow(now)).toBe(LIMIT);
+  expect(await readAttempts(short.id)).toEqual([]);
+  expect(await readSession(short.id)).toEqual(before);
+  await deleteSessions([...filled, short.id]);
 });

@@ -23,8 +23,11 @@ import {
   enterAndStart,
   expectStatus,
   goToLesen,
+  holdTouch,
   optionIn,
+  touchPadOf,
   playFrom,
+  scrollWithFinger,
   snapshotOf,
   waitForPlayer,
 } from './support/guest-browser';
@@ -44,6 +47,9 @@ const LONG_TASK = 11;
 const PARAGRAPH = 12;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PHONE = devices['Pixel 7'];
+// A finger must rest this long on a word before the phone opens the sheet.
+const LONG_PRESS_MS = 1500;
+const PAST_LONG_PRESS_MS = LONG_PRESS_MS + 400;
 
 const cardOf = (page: Page): Locator => page.getByTestId('dictionary-card');
 const wordOf = (page: Page): Locator => page.getByTestId('dictionary-word');
@@ -209,14 +215,15 @@ test('dictionary opens for Lesen word on desktop and mobile', async ({
   await expect(cardOf(page)).toBeHidden();
   await desktop.context.close();
 
-  // Phone: a tap opens the bottom sheet; the page is not locked.
+  // Phone: holding a finger on the word opens the bottom sheet; the page is
+  // not locked.
   const phone = await openContext(browser, true);
   await goToLesen(phone.page);
   const tap = await wordBox(
     phone.page.getByTestId('reading-paragraph-0'),
     'Anzeige',
   );
-  await phone.page.touchscreen.tap(tap.x, tap.y);
+  await holdTouch(phone.page, tap, PAST_LONG_PRESS_MS);
   const sheet = cardOf(phone.page);
   await expect(sheet).toBeVisible();
   await expect(sheet).toHaveAttribute('data-presentation', 'sheet');
@@ -237,6 +244,74 @@ test('dictionary opens for Lesen word on desktop and mobile', async ({
   await phone.page.getByTestId('dictionary-close').click();
   await expect(sheet).toBeHidden();
   await phone.context.close();
+});
+
+test('mobile dictionary requires 1500ms stationary long press', async ({
+  browser,
+}) => {
+  const { context, page } = await openContext(browser, true);
+  await goToLesen(page);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  const point = await wordBox(
+    page.getByTestId('reading-paragraph-0'),
+    'Anzeige',
+  );
+  const pad = await touchPadOf(page);
+  // Every wait ends well after 1500 ms from the touch start, so a timer that
+  // was not cancelled would have opened the sheet by then.
+  const expectNothing = async (elapsedMs: number) => {
+    await page.waitForTimeout(Math.max(PAST_LONG_PRESS_MS - elapsedMs, 0));
+    await expect(cardOf(page)).toHaveCount(0);
+    expect(lookups).toEqual([]);
+  };
+
+  // A tap, however it is timed, and a hold released before the delay.
+  await page.touchscreen.tap(point.x, point.y);
+  await expectNothing(0);
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(550);
+  await pad.up();
+  await expectNothing(550);
+
+  // A finger that drifts further than the tolerance.
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(200);
+  await pad.move(point.x + 24, point.y);
+  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await pad.up();
+  await expectNothing(PAST_LONG_PRESS_MS);
+
+  // A cancelled touch.
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(300);
+  await pad.cancel();
+  await expectNothing(300);
+
+  // A scroll: the page really scrolls and no lookup is asked. A short screen
+  // makes the page taller than the viewport.
+  await page.setViewportSize({ width: 412, height: 420 });
+  const scrollable = await wordBox(
+    page.getByTestId('reading-paragraph-0'),
+    'Anzeige',
+  );
+  const scrolled = await scrollWithFinger(page, pad, scrollable);
+  expect(scrolled.after).not.toBe(scrolled.before);
+  await expectNothing(PAST_LONG_PRESS_MS);
+
+  // A stationary hold for the full delay opens the sheet exactly once; the
+  // release and the click after it add no second lookup.
+  const held = await wordBox(
+    page.getByTestId('reading-paragraph-0'),
+    'Anzeige',
+  );
+  await pad.down(held.x, held.y);
+  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Anzeige');
+  await pad.up();
+  await page.waitForTimeout(500);
+  expect(lookups).toHaveLength(1);
+  await context.close();
 });
 
 test('dictionary lookup preserves Hören selection', async ({ browser }) => {
@@ -461,17 +536,20 @@ test('word interaction cannot submit answer', async ({ browser }) => {
   await setTranslator(page, true);
   await context.close();
 
-  // Phone: a tap on the option text opens the sheet, not the answer.
+  // Phone: holding a finger on the option text opens the sheet, not the
+  // answer, and the release does not choose it either.
   const phone = await openContext(browser, true);
   const phoneAttempt = await activeAttemptOf(phone.context);
   const phoneAnswers = trackPosts(phone.page, ANSWER_PATH);
   const phoneCard = card(phone.page, 'hoeren-1');
   const tap = await wordBox(optionLabel(phoneCard, 'a'), 'Antwort');
-  await phone.page.touchscreen.tap(tap.x, tap.y);
+  await holdTouch(phone.page, tap, PAST_LONG_PRESS_MS);
   await expect(cardOf(phone.page)).toHaveAttribute(
     'data-presentation',
     'sheet',
   );
+  await expect(optionIn(phoneCard, 'a')).not.toBeChecked();
+  expect(phoneAnswers).toEqual([]);
   await phone.page.getByTestId('dictionary-close').click();
   await expect(optionIn(phoneCard, 'a')).not.toBeChecked();
   await optionIn(phoneCard, 'a').tap();

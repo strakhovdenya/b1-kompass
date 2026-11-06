@@ -258,3 +258,76 @@ export const finishFromShell = async (page: Page) => {
 export const ANSWER_URL = '**/api/attempts/*/answer';
 export const PROGRESS_URL = '**/api/attempts/*/progress';
 export const SUBMIT_URL = '**/api/attempts/*/submit';
+
+// A finger driven by hand through the DevTools protocol (Chromium): Playwright
+// itself only taps. The browser turns these touches into real pointer events,
+// native scrolling and pointercancel, so a long press, a drag or a cancelled
+// touch behave as on a phone.
+export interface TouchPad {
+  down: (x: number, y: number) => Promise<void>;
+  move: (x: number, y: number) => Promise<void>;
+  up: () => Promise<void>;
+  cancel: () => Promise<void>;
+}
+
+export const touchPadOf = async (page: Page): Promise<TouchPad> => {
+  const session = await page.context().newCDPSession(page);
+  const send = async (
+    type: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel',
+    points: { x: number; y: number }[],
+  ) => {
+    await session.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: points,
+    });
+  };
+  return {
+    down: (x, y) => send('touchStart', [{ x, y }]),
+    move: (x, y) => send('touchMove', [{ x, y }]),
+    up: () => send('touchEnd', []),
+    cancel: () => send('touchCancel', []),
+  };
+};
+
+// Holds a finger still on a point for `milliseconds`, then lifts it.
+export const holdTouch = async (
+  page: Page,
+  point: { x: number; y: number },
+  milliseconds: number,
+) => {
+  const pad = await touchPadOf(page);
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(milliseconds);
+  await pad.up();
+};
+
+const SCROLL_STEPS = 8;
+const SCROLL_STEP_PX = 20;
+const SCROLL_STEP_MS = 30;
+const SCROLL_HOLD_MS = 1900;
+
+// A finger scroll of the page that starts on a word and keeps the finger on
+// the screen past the 1500 ms delay of the dictionary. It drags the way the
+// page has room for; the browser takes the gesture over (pointercancel) and
+// scrolls. Returns the scroll position before and after.
+export const scrollWithFinger = async (
+  page: Page,
+  pad: TouchPad,
+  point: { x: number; y: number },
+): Promise<{ before: number; after: number }> => {
+  const before = await page.evaluate(() => window.scrollY);
+  const room = await page.evaluate(
+    () => document.documentElement.scrollHeight - window.innerHeight,
+  );
+  const drag = SCROLL_STEPS * SCROLL_STEP_PX;
+  // A finger moving up scrolls the page down.
+  const direction = room - before >= drag ? -1 : 1;
+  await pad.down(point.x, point.y);
+  for (let step = 1; step <= SCROLL_STEPS; step += 1) {
+    await pad.move(point.x, point.y + direction * step * SCROLL_STEP_PX);
+    await page.waitForTimeout(SCROLL_STEP_MS);
+  }
+  await page.waitForTimeout(SCROLL_HOLD_MS);
+  await pad.up();
+  return { before, after: await page.evaluate(() => window.scrollY) };
+};

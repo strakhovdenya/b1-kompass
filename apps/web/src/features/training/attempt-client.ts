@@ -35,6 +35,22 @@ export interface StartRequest {
   expectedVersionId: string;
 }
 
+// What the explicit guest replacement answers. Only 'replaced' means a new
+// guest and cookie exist; every other answer left the cookie untouched.
+export type GuestReplacementAnswer =
+  | { status: 'replaced' }
+  | { status: 'replacement-not-needed' }
+  | { status: 'rate-limited' }
+  | { status: 'conflict'; attemptId: string }
+  | { status: 'refused'; failure: RunTechnicalFailure };
+
+// The server action of the replacement, passed down by the page: the consent
+// and the start the guest asked for, which the server checks again.
+export type ReplaceGuest = (input: {
+  consent: true;
+  start: StartRequest;
+}) => Promise<GuestReplacementAnswer>;
+
 export interface FinalAnswer {
   questionId: string;
   optionId: string;

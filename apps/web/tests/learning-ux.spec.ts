@@ -13,8 +13,11 @@ import {
   finishFromShell,
   goToHoeren,
   goToLesen,
+  holdTouch,
   optionIn,
+  touchPadOf,
   playFrom,
+  scrollWithFinger,
   snapshotOf,
   waitForPlayer,
 } from './support/guest-browser';
@@ -46,6 +49,9 @@ const SHARED_SET_FIRST = 18;
 const HOEREN_STEPS = 14;
 const LESEN_TASKS = 25;
 const POSITION_TOLERANCE_SECONDS = 0.1;
+// The phone opens the sheet only after a finger rests this long on a word.
+const LONG_PRESS_MS = 1500;
+const PAST_LONG_PRESS_MS = LONG_PRESS_MS + 400;
 
 const openGuest = async (
   browser: Browser,
@@ -484,7 +490,8 @@ test('off header translator never requests lookup', async ({ browser }) => {
   expect(lookups).toEqual([]);
   await context.close();
 
-  // A touch device: a tap on a word of the option does not look it up.
+  // A touch device: even a long hold on a word of the option does not look
+  // it up while the translator is off.
   const phone = await browser.newContext({ ...devices['Pixel 7'] });
   const phonePage = await phone.newPage();
   await enterAndStart(phonePage);
@@ -495,8 +502,7 @@ test('off header translator never requests lookup', async ({ browser }) => {
     rowOf(card(phonePage, 'hoeren-1'), 'a'),
     'Antwort',
   );
-  await phonePage.touchscreen.tap(tap.x, tap.y);
-  await phonePage.waitForTimeout(700);
+  await holdTouch(phonePage, tap, PAST_LONG_PRESS_MS);
   await expect(cardOf(phonePage)).toHaveCount(0);
   expect(phoneLookups).toEqual([]);
   await phone.close();
@@ -515,6 +521,11 @@ test('mobile word tap does not choose radio', async ({ browser }) => {
 
   const tap = await wordPoint(rowOf(target, 'a'), 'Antwort');
   await page.touchscreen.tap(tap.x, tap.y);
+  await page.waitForTimeout(700);
+  await expect(cardOf(page)).toHaveCount(0);
+  await expect(optionIn(target, 'a')).not.toBeChecked();
+  // Only holding the word opens the sheet, and it still does not choose.
+  await holdTouch(page, tap, PAST_LONG_PRESS_MS);
   await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
   await expect(optionIn(target, 'a')).not.toBeChecked();
   await expect(target.getByTestId('save-status')).toHaveAttribute(
@@ -524,6 +535,81 @@ test('mobile word tap does not choose radio', async ({ browser }) => {
   expect(answers).toEqual([]);
   expect(await readAnswers(attemptId)).toEqual({});
   await context.close();
+});
+
+test('mobile long press ignores taps scroll and early selection while preserving controls', async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ ...devices['Pixel 7'] });
+  const page = await context.newPage();
+  await enterAndStart(page);
+  const { attemptId } = await activeAttemptOf(context);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  const answers = trackPosts(page, ANSWER_PATH);
+  const target = card(page, 'hoeren-1');
+  const pad = await touchPadOf(page);
+  // The words are text zones only once the page is hydrated and the
+  // translator is on: a touch before that would choose the answer.
+  await expect(
+    rowOf(target, 'b').locator('[data-dictionary-text]').first(),
+  ).toBeVisible();
+  // The screen can still settle (player, status): the point is read again
+  // right before each touch.
+  const pointOfWord = () => wordPoint(rowOf(target, 'b'), 'Antwort');
+
+  // Taps, a hold released early and a native selection of the word before
+  // the delay: no lookup, no answer.
+  const tapped = await pointOfWord();
+  await page.touchscreen.tap(tapped.x, tapped.y);
+  await page.waitForTimeout(400);
+  const word = await pointOfWord();
+  await pad.down(word.x, word.y);
+  await selectWord(rowOf(target, 'b'), 'Antwort');
+  await page.waitForTimeout(1000);
+  await expect(cardOf(page)).toHaveCount(0);
+  await pad.up();
+  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(lookups).toEqual([]);
+  expect(answers).toEqual([]);
+
+  // A finger scroll over the word moves the page and starts nothing.
+  const drag = await pointOfWord();
+  const scrolled = await scrollWithFinger(page, pad, drag);
+  expect(scrolled.after).not.toBe(scrolled.before);
+  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(lookups).toEqual([]);
+  expect(answers).toEqual([]);
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // The radio itself still chooses at once, a tap included.
+  await optionIn(target, 'a').tap();
+  await expectStatus(target, 'saved');
+  expect(answers).toHaveLength(1);
+
+  // A long press opens one sheet for the word and changes no answer.
+  const again = await pointOfWord();
+  await holdTouch(page, again, PAST_LONG_PRESS_MS);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await page.waitForTimeout(500);
+  expect(lookups).toHaveLength(1);
+  expect(answers).toHaveLength(1);
+  await expect(optionIn(target, 'b')).not.toBeChecked();
+  expect(await readAnswers(attemptId)).toEqual({ 'hoeren-1': 'a' });
+  await context.close();
+
+  // Desktop keeps its double click (hover and selection by mouse are covered
+  // by the dictionary specs, unchanged).
+  const desktop = await openGuest(browser);
+  await expect(
+    desktop.page.locator('[data-dictionary-text]').first(),
+  ).toBeVisible();
+  const prompt = card(desktop.page, 'hoeren-1').locator('h2');
+  const point = await wordPoint(prompt, 'Frage');
+  await desktop.page.mouse.dblclick(point.x, point.y);
+  await expect(wordOf(desktop.page)).toHaveText('Frage');
+  await desktop.context.close();
 });
 
 test('translator toggle changes radio label behavior safely', async ({
