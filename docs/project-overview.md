@@ -9,7 +9,7 @@ B1 Kompass — отдельный веб-тренажёр подготовки �
 - [Все согласованные решения, материалы и результаты проверок](project-decisions.md) — полный исходный документ, редакция 12.
 - [DONE — первый PRD: гостевой онлайн-тренажёр M1](prd/DONE-PRD-guest-online-exam-trainer.md) — границы первого релиза и 19 критериев приёмки.
 - [DONE — план M1](plans/DONE-PLAN-guest-online-exam-trainer.md) — пять этапов, 14 задач.
-- [PRD Exam Modes and Timers](prd/PRD-exam-modes-and-timers.md) и [план M2](plans/PLAN-exam-modes-and-timers.md) — требования второго релиза (AC-01–AC-34), реализованы в Issues #37–#48.
+- [PRD Exam Modes and Timers](prd/DONE-PRD-exam-modes-and-timers.md) и [план M2](plans/DONE-PLAN-exam-modes-and-timers.md) — требования второго релиза (AC-01–AC-34), реализованы в Issues #37–#48.
 - [Приёмка M2](m2-acceptance.md) — матрица AC-01–AC-34, доказательства и невыполненная ручная приёмка.
 - [Будущие PRD и развитие](roadmap.md) — темы следующих релизов и зависимости; [PRD Admin Exam Library](prd/PRD-admin-exam-library.md) — Draft M3, не реализован.
 - [Архитектурные условия следующих PRD](architecture-evolution.md) — ограничения текущей реализации, момент расширения и проверки для будущих планов и задач.

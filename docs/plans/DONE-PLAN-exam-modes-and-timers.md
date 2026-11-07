@@ -1,6 +1,6 @@
 # DONE — Plan: Exam Modes and Timers — M2
 
-**PRD:** [PRD-exam-modes-and-timers.md](../prd/PRD-exam-modes-and-timers.md)
+**PRD:** [DONE-PRD-exam-modes-and-timers.md](../prd/DONE-PRD-exam-modes-and-timers.md)
 **Date:** 2026-11-01
 **Status:** DONE — реализация M2 завершена, Issue #37–#49 закрыты; автоматическая приёмка подтверждена, **ручная приёмка владельца остаётся PENDING**.
 **Completed (engineering):** 2026-11-07 — реализация #37–#48 интегрирована в `main`; итоговая проверка/документация #49 закрыты. Источник: [`docs/m2-acceptance.md`](../m2-acceptance.md), GitHub Issues #37–#49. `DONE` означает завершение выполнения плана разработки, но не подтверждение достоверности реального аудио/ключа, точного профиля времени или пользовательской ручной приёмки.
