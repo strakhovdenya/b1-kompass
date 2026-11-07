@@ -861,7 +861,6 @@ test('four modes keep independent guests answers results and media', async ({
   browser,
   request,
 }) => {
-  test.setTimeout(240_000);
   installM2Fixtures();
   const latest = await latestVersionOf(FULL_EXAM.slug);
   if (!latest) throw new Error('full exam is not published');
@@ -1184,7 +1183,6 @@ const examMediaOf = (page: Page): Promise<ExamMedia> =>
 test('guest lifecycle mutations cannot affect other live sessions', async ({
   browser,
 }) => {
-  test.setTimeout(180_000);
   const [live, paused, actor] = await Promise.all(
     Array.from({ length: 3 }, () => newGuest(depsNow())),
   );

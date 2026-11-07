@@ -1321,7 +1321,9 @@ const sessionOfContext = async (context: BrowserContext) => {
 test('m2 controls remain accessible localized and responsive', async ({
   browser,
 }) => {
-  test.setTimeout(300_000);
+  // Measured 29.5 s on CI (53 s locally): the same triple budget as the other
+  // long journeys of this file.
+  test.slow();
   installM2Fixtures();
   const exam = await examExam();
   const texts: Record<string, string> = {};
@@ -1536,7 +1538,6 @@ test('m2 controls remain accessible localized and responsive', async ({
 test('narrow localized failure states remain keyboard recoverable', async ({
   browser,
 }) => {
-  test.setTimeout(180_000);
   const ru = readMessages('ru');
   const created = await guestWith('ru');
   const context = await contextFor(browser, created.token, NARROW);
@@ -1641,7 +1642,8 @@ test('cross tab phase cookie replacement and replay remain consistent', async ({
   browser,
   request,
 }) => {
-  test.setTimeout(240_000);
+  // Measured 23.5 s on CI, most of it the real end of a 20 s Hören.
+  test.slow();
   installM2Fixtures();
   const exam = await examExam();
 
@@ -1840,7 +1842,6 @@ test('stale phase and replaced cookie cannot rewrite frozen data', async ({
   browser,
   request,
 }) => {
-  test.setTimeout(240_000);
   installM2Fixtures();
   const exam = await examExam();
 
