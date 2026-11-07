@@ -100,7 +100,8 @@
     "error": "The recording could not be loaded. You can still answer, and your answers are saved.",
     "retry": "Load again",
     "examReady": "The recording plays once, in step with the exam time, without pause or rewind.",
-    "examPlay": "Play the recording"
+    "examPlay": "Play the recording",
+    "examBlocked": "Your browser blocked the sound. Press Play to continue at the exam position."
   },
   "hoeren": {
     "intro": "Hören, {isRange, select, true {parts {first} to {last}} other {part {first}}}: {count, plural, one {# question} other {# questions}}, one answer each.{hasPairs, select, true { In part 3 the two questions of one conversation are shown together.} other {}}{hasSharedSet, select, true { In part 4 the whole list of statements a–f stays visible for all three questions.} other {}} You can change an answer at any time while the recording keeps playing.",

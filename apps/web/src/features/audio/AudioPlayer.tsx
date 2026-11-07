@@ -40,7 +40,15 @@ interface AudioPlayerProps {
   // paused, refuses every new play (including the media keys of the system),
   // and keeps its element, source and place.
   isActive?: boolean;
+  // Where a stored place lands in a recording of the given length. The shell
+  // supplies the rule of its mode; by default the place is kept inside it.
+  restoreSeconds?: (savedSeconds: number, durationSeconds: number) => number;
 }
+
+const keepInside = (savedSeconds: number, durationSeconds: number): number =>
+  Number.isFinite(durationSeconds)
+    ? Math.min(savedSeconds, durationSeconds)
+    : savedSeconds;
 
 // Readable by assistive technology, invisible on screen.
 const VISUALLY_HIDDEN = {
@@ -89,6 +97,7 @@ export const AudioPlayer = ({
   initialPosition = 0,
   onPosition,
   isActive = true,
+  restoreSeconds = keepInside,
 }: AudioPlayerProps) => {
   const t = useTranslations('audio');
   const element = useRef<HTMLAudioElement>(null);
@@ -184,9 +193,7 @@ export const AudioPlayer = ({
     setDuration(media.duration);
     if (resumeAt.current !== null) {
       // A stored place beyond the recording is kept inside it.
-      const target = Number.isFinite(media.duration)
-        ? Math.min(resumeAt.current, media.duration)
-        : resumeAt.current;
+      const target = restoreSeconds(resumeAt.current, media.duration);
       media.currentTime = target;
       setPosition(target);
       resumeAt.current = null;
@@ -321,7 +328,8 @@ export const AudioPlayer = ({
 
 interface AudioStatusLineProps {
   status: PlayerStatus;
-  onRetry: () => void;
+  // Absent when nothing can be retried: the server refused for good.
+  onRetry?: () => void;
   // The announcement of a ready recording; the free one by default.
   readyLabel?: string;
 }
@@ -342,9 +350,16 @@ export const AudioStatusLine = ({
         data-testid="audio-status"
         data-status={status}
         action={
-          <Button color="inherit" size="small" onClick={onRetry}>
-            {t('retry')}
-          </Button>
+          onRetry ? (
+            <Button
+              color="inherit"
+              size="small"
+              onClick={onRetry}
+              data-testid="audio-retry"
+            >
+              {t('retry')}
+            </Button>
+          ) : undefined
         }
       >
         {t('error')}
