@@ -1,6 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Browser, BrowserContext, Page } from '@playwright/test';
+import { selectScoringPolicy } from '@b1k/domain';
 import {
   getAttemptReview,
   saveAnswer,
@@ -14,6 +17,8 @@ import {
   resolveGuestSession,
   setGuestLocale,
 } from '../src/server/guest-session/session';
+import type { CreatedGuest } from '../src/server/guest-session/session';
+import type { ExamVersionRef } from './support/db';
 import {
   createPublicClient,
   depsAt,
@@ -21,12 +26,16 @@ import {
   latestVersionOf,
   newGuest,
   openStarted,
+  readAnswerRows,
   readAnswers,
   readAttempts,
+  readEventKinds,
   readOnlyResult,
   readProgress,
   readResults,
+  readRunRows,
   readSession,
+  readSessionByToken,
   serviceDb,
   startBody,
   startFor,
@@ -35,22 +44,36 @@ import {
 import {
   FULL_EXAM,
   FULL_PILOT,
+  FULL_TIMING,
   FULL_TRACK_ID,
   fullKeyOf,
   fullWrongOf,
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
+  examRunTimes,
+  installM2Fixtures,
+  psql,
+  quote,
+  secondsAgoSql,
+  startExamAt,
+} from './support/sql';
+import {
   ANSWER_URL,
   CHOICE_URL,
   HOEREN_URL,
+  FULL_ORIGIN,
   LESEN_URL,
+  SUBMIT_URL,
   activeAttemptOf,
   attemptLesenUrl,
+  attemptIdOf,
   attemptUrl,
   card,
   expectStatus,
+  finishFromShell,
   optionIn,
+  postCommand,
   seekTo,
   snapshotOf,
   startBrowserGuest,
@@ -61,6 +84,7 @@ import {
   WIDE,
   expectAccessibleScreen,
   expectEnlargedText,
+  expectNoFocusTrap,
   expectUsableLayout,
   goToStep,
   openGuestPage,
@@ -1121,4 +1145,859 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
     max_score: 45,
   });
   await context.close();
+});
+
+// M2 controls and lifecycle (#48) ----------------------------------------------
+//
+// Guests with their own cookie on the full-set server, in a chosen language.
+// The time of an exam or of a guest is placed through the test-only
+// admission wrappers; every control is then used through the real page and
+// every refusal or replay through the real route. Rows are re-read after each
+// step.
+
+const SECOND_MS = 1000;
+const H = FULL_TIMING.hoerenSeconds;
+const ALL_IDS = FULL_PILOT.content.questions.map((question) => question.id);
+type Locale = 'en' | 'ru';
+
+const readMessages = (locale: Locale) =>
+  JSON.parse(
+    readFileSync(
+      path.join(import.meta.dirname, '..', 'messages', `${locale}.json`),
+      'utf8',
+    ),
+  ) as { save: { error: string } };
+
+const guestWith = async (
+  locale: Locale,
+  termSeconds: number | null = null,
+): Promise<CreatedGuest> => {
+  const created =
+    termSeconds === null
+      ? await newGuest(depsNow())
+      : await shortGuest(termSeconds);
+  const update = await serviceDb
+    .from('guest_sessions')
+    .update({ locale })
+    .eq('id', created.guest.sessionId);
+  expect(update.error).toBeNull();
+  return created;
+};
+
+// A guest whose fixed term ends the given seconds after the database clock.
+const shortGuest = async (seconds: number): Promise<CreatedGuest> => {
+  const token = randomBytes(32).toString('base64url');
+  psql(
+    `select m2_test.insert_guest_ending_in(${quote(hashGuestToken(token))}, ${seconds})`,
+  );
+  const guest = await resolveGuestSession(depsNow(), token);
+  if (!guest) throw new Error('short guest is not active');
+  return { token, guest };
+};
+
+const contextFor = async (
+  browser: Browser,
+  token: string,
+  viewport: ViewportSize = WIDE,
+): Promise<BrowserContext> => {
+  const context = await browser.newContext({ viewport });
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: token, url: FULL_ORIGIN },
+  ]);
+  return context;
+};
+
+const startedAttempt = async (
+  created: CreatedGuest,
+  overrides: Record<string, unknown> = {},
+): Promise<string> => {
+  const started = await startFor(
+    depsNow(),
+    created.token,
+    FULL_EXAM.slug,
+    overrides,
+  );
+  if (!started.ok || started.result.outcome !== 'accepted') {
+    throw new Error(`start failed: ${JSON.stringify(started)}`);
+  }
+  return started.result.attemptId;
+};
+
+// A completed free training with one wrong answer: a source with an error.
+const completedWithError = async (created: CreatedGuest): Promise<string> => {
+  const attemptId = await startedAttempt(created);
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId,
+    questionId: 'hoeren-1',
+    optionId: wrongOf('hoeren-1'),
+    revision: 1,
+  });
+  if (!saved.ok) throw new Error(`answer: ${saved.error}`);
+  const finished = await submitStored(depsNow(), created.token, { attemptId });
+  if (!finished.ok) throw new Error(`finish: ${finished.error}`);
+  return attemptId;
+};
+
+const examExam = async () => {
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full exam is not published');
+  return latest;
+};
+
+// A full exam whose Hören began the given seconds ago.
+const examAgo = (
+  created: CreatedGuest,
+  exam: ExamVersionRef,
+  seconds: number,
+) =>
+  startExamAt(created.guest.sessionId, exam, ALL_IDS, secondsAgoSql(seconds));
+
+// On a narrow screen the questions of a Lesen text sit behind a button.
+const showQuestions = async (page: Page) => {
+  const toggle = page.getByTestId('lesen-view-questions');
+  if (await toggle.isVisible()) await toggle.click();
+};
+
+// A modal covers the page on purpose: its own two actions must be reachable
+// inside the screen and the page must not scroll sideways.
+const expectDialogReachable = async (page: Page, screen: string) => {
+  for (const testId of [
+    'guest-replacement-cancel',
+    'guest-replacement-confirm',
+  ]) {
+    const action = page.getByTestId(testId);
+    await action.scrollIntoViewIfNeeded();
+    await expect(action, `${testId} ${screen}`).toBeInViewport();
+  }
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth,
+    ),
+    `dialog ${screen} scrolls sideways`,
+  ).toBe(true);
+};
+
+// One task by its step: a block shows the task of its step only.
+const answerTask = async (
+  page: Page,
+  number: number,
+  skill: 'hoeren' | 'lesen',
+  optionId: string,
+) => {
+  await showQuestions(page);
+  await goToStep(page, number);
+  const target = card(page, `${skill}-${number}`);
+  await expect(target).toBeVisible();
+  await optionIn(target, optionId).check();
+  await expectStatus(target, 'saved');
+};
+
+const radioIn = (page: Page, testId: string) =>
+  page.getByTestId(testId).getByRole('radio');
+
+const scoreOfSelections = (selections: Record<string, string>): number => {
+  const policy = selectScoringPolicy('DTZ', 'full-exam');
+  if (!policy) throw new Error('policy is missing');
+  return policy.score({
+    questions: FULL_PILOT.content.questions,
+    keys: FULL_PILOT.keys,
+    selections,
+  }).score;
+};
+
+// The guest of a context, read back from its cookie.
+const sessionOfContext = async (context: BrowserContext) => {
+  const token = (await context.cookies()).find(
+    (cookie) => cookie.name === GUEST_COOKIE,
+  )?.value;
+  if (!token) throw new Error('guest cookie is missing');
+  const stored = await readSessionByToken(token);
+  if (!stored) throw new Error('guest session is missing');
+  return { token, sessionId: stored.id };
+};
+
+test('m2 controls remain accessible localized and responsive', async ({
+  browser,
+}) => {
+  // Measured 29.5 s on CI (53 s locally): the same triple budget as the other
+  // long journeys of this file.
+  test.slow();
+  installM2Fixtures();
+  const exam = await examExam();
+  const texts: Record<string, string> = {};
+
+  for (const viewport of [NARROW, WIDE]) {
+    for (const locale of ['en', 'ru'] as const) {
+      const screen = `${locale} ${viewport.width}`;
+
+      // The choice and a timed block by keyboard, its clock, its two
+      // confirmations and its cancel.
+      const timedGuest = await guestWith(locale);
+      const context = await contextFor(browser, timedGuest.token, viewport);
+      const page = await context.newPage();
+      await page.goto(`/practice/${FULL_EXAM.slug}`);
+      await expect(page.getByTestId('mode-selection')).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('lang', locale);
+      await expectAccessibleScreen(page, `choice ${screen}`);
+      await tabTo(
+        page,
+        radioIn(page, 'mode-option-training'),
+        `modes ${screen}`,
+      );
+      await page.keyboard.press('ArrowDown');
+      await expect(radioIn(page, 'mode-option-timed-block')).toBeChecked();
+      await expect(radioIn(page, 'selection-option-hoeren')).toBeChecked();
+      await expectAccessibleScreen(page, `timed choice ${screen}`);
+      await tabTo(page, page.getByTestId('start-attempt'), `start ${screen}`);
+      await page.keyboard.press('Enter');
+      await page.waitForURL(HOEREN_URL);
+      const timedAttempt = (await activeAttemptOf(context)).attemptId;
+
+      const timer = page.getByTestId('attempt-timer');
+      await expect(timer).toHaveAttribute('role', 'timer');
+      expect(await timer.getAttribute('aria-live')).toBeNull();
+      expect(Number(await timer.getAttribute('data-deadline-ms'))).toBe(
+        Date.parse(examRunTimes(timedAttempt).acceptedAt) + H * SECOND_MS,
+      );
+      await expectAccessibleScreen(page, `timed ${screen}`);
+
+      await tabTo(page, page.getByTestId('finish-attempt'), `finish ${screen}`);
+      await page.keyboard.press('Enter');
+      const finishing = page.getByTestId('finish-confirmation');
+      await expect(finishing).toBeVisible();
+      await expectUsableLayout(page, `finish confirmation ${screen}`);
+      await tabTo(
+        page,
+        page.getByTestId('finish-cancel'),
+        `finish back ${screen}`,
+      );
+      await page.keyboard.press('Enter');
+      await expect(finishing).toHaveCount(0);
+
+      await tabTo(page, page.getByTestId('cancel-attempt'), `cancel ${screen}`);
+      await page.keyboard.press('Enter');
+      const cancelling = page.getByTestId('cancel-confirmation');
+      await expect(cancelling).toBeVisible();
+      await expectUsableLayout(page, `cancel confirmation ${screen}`);
+      await tabTo(
+        page,
+        page.getByTestId('cancel-back'),
+        `cancel back ${screen}`,
+      );
+      await page.keyboard.press('Enter');
+      await expect(cancelling).toHaveCount(0);
+      expect(await readAttempts(timedGuest.guest.sessionId)).toEqual([
+        { id: timedAttempt, status: 'active' },
+      ]);
+
+      await tabTo(page, page.getByTestId('cancel-attempt'), `cancel ${screen}`);
+      await page.keyboard.press('Enter');
+      await tabTo(
+        page,
+        page.getByTestId('cancel-confirm'),
+        `cancel ok ${screen}`,
+      );
+      await page.keyboard.press('Enter');
+      await page.waitForURL(CHOICE_URL);
+      await expect(page.getByTestId('mode-selection')).toBeVisible();
+      expect(await readAttempts(timedGuest.guest.sessionId)).toEqual([
+        { id: timedAttempt, status: 'cancelled' },
+      ]);
+      expect(await readResults(timedAttempt)).toEqual([]);
+      await context.close();
+
+      // The transition of a full exam, its status and the keyboard start of
+      // Lesen.
+      const examGuest = await guestWith(locale);
+      const examAttempt = examAgo(examGuest, exam, H + 5);
+      const examContext = await contextFor(browser, examGuest.token, viewport);
+      const examPage = await examContext.newPage();
+      await examPage.goto(attemptUrl(FULL_EXAM.slug, examAttempt));
+      await expect(examPage.getByTestId('transition-screen')).toBeVisible();
+      const status = examPage.getByTestId('transition-status');
+      await expect(status).toHaveAttribute('role', 'status');
+      texts[`transition ${screen}`] = (await status.textContent()) ?? '';
+      expect(texts[`transition ${screen}`]).not.toBe('');
+      await expectAccessibleScreen(examPage, `transition ${screen}`);
+      await tabTo(
+        examPage,
+        examPage.getByTestId('begin-lesen'),
+        `lesen ${screen}`,
+      );
+      await examPage.keyboard.press('Enter');
+      await examPage.waitForURL(LESEN_URL);
+      await expect(examPage.getByTestId('training-shell')).toHaveAttribute(
+        'data-phase',
+        'lesen',
+      );
+      await examContext.close();
+
+      // The repeat of the own errors from a review.
+      const reviewGuest = await guestWith(locale);
+      const sourceId = await completedWithError(reviewGuest);
+      const reviewContext = await contextFor(
+        browser,
+        reviewGuest.token,
+        viewport,
+      );
+      const reviewPage = await reviewContext.newPage();
+      await reviewPage.goto(attemptUrl(FULL_EXAM.slug, sourceId));
+      await expect(reviewPage.getByTestId('attempt-review')).toBeVisible();
+      await expectAccessibleScreen(reviewPage, `review ${screen}`);
+      await tabTo(
+        reviewPage,
+        reviewPage.getByTestId('repeat-errors'),
+        `repeat ${screen}`,
+      );
+      await reviewPage.keyboard.press('Enter');
+      await expect
+        .poll(() => new URL(reviewPage.url()).pathname)
+        .not.toContain(sourceId);
+      await reviewPage.waitForURL(HOEREN_URL);
+      const repeats = (await readAttempts(reviewGuest.guest.sessionId)).filter(
+        (row) => row.id !== sourceId,
+      );
+      expect(repeats).toHaveLength(1);
+      expect((await readRunRows(repeats[0]?.id ?? ''))[0]).toMatchObject({
+        purpose: 'error-repeat',
+        source_attempt_id: sourceId,
+      });
+      await reviewContext.close();
+
+      // A guest too short for a timed block: the refusal is text, the
+      // replacement is a modal that the keyboard enters, leaves and
+      // completes.
+      const shortOne = await guestWith(locale, 200);
+      const shortContext = await contextFor(browser, shortOne.token, viewport);
+      const shortPage = await shortContext.newPage();
+      await shortPage.goto(`/practice/${FULL_EXAM.slug}`);
+      await tabTo(
+        shortPage,
+        radioIn(shortPage, 'mode-option-training'),
+        `modes ${screen}`,
+      );
+      await shortPage.keyboard.press('ArrowDown');
+      await tabTo(
+        shortPage,
+        shortPage.getByTestId('start-attempt'),
+        `start ${screen}`,
+      );
+      await shortPage.keyboard.press('Enter');
+      // The refusal opens the replacement dialog by itself; the keyboard stays
+      // inside it, Escape leaves it and returns to the Start button.
+      const dialog = shortPage.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveAttribute(
+        'aria-labelledby',
+        'guest-replacement-title',
+      );
+      const inside = () =>
+        dialog.evaluate((element) => element.contains(document.activeElement));
+      for (let i = 0; i < 6; i++) {
+        await shortPage.keyboard.press('Tab');
+        expect(await inside(), `dialog focus ${screen}`).toBe(true);
+      }
+      await expectDialogReachable(shortPage, screen);
+      await shortPage.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(shortPage.getByTestId('start-attempt')).toBeFocused();
+      const tooShort = shortPage.getByTestId('start-guest-too-short');
+      await expect(tooShort).toBeVisible();
+      await expect(tooShort).toHaveAttribute('role', 'alert');
+      texts[`too short ${screen}`] = (await tooShort.textContent()) ?? '';
+      await expectUsableLayout(shortPage, `too short ${screen}`);
+      expect(await readAttempts(shortOne.guest.sessionId)).toEqual([]);
+      await tabTo(
+        shortPage,
+        shortPage.getByTestId('guest-replacement-open'),
+        `replace ${screen}`,
+      );
+      await shortPage.keyboard.press('Enter');
+      await expect(dialog).toBeVisible();
+      await shortPage.getByTestId('guest-replacement-confirm').focus();
+      await shortPage.keyboard.press('Enter');
+      await shortPage.waitForURL(HOEREN_URL);
+      const replaced = await sessionOfContext(shortContext);
+      expect(replaced.token).not.toBe(shortOne.token);
+      expect(replaced.sessionId).not.toBe(shortOne.guest.sessionId);
+      expect(await readAttempts(shortOne.guest.sessionId)).toEqual([]);
+      const [fresh] = await readAttempts(replaced.sessionId);
+      expect(fresh?.status).toBe('active');
+      expect((await readRunRows(fresh?.id ?? ''))[0]?.mode).toBe('timed-block');
+      await shortContext.close();
+    }
+  }
+  expect(texts['transition ru 390']).not.toBe(texts['transition en 390']);
+  expect(texts['too short ru 390']).not.toBe(texts['too short en 390']);
+  expect(texts['too short ru 1440']).toBe(texts['too short ru 390']);
+  expect(texts['too short en 1440']).toBe(texts['too short en 390']);
+});
+
+test('narrow localized failure states remain keyboard recoverable', async ({
+  browser,
+}) => {
+  const ru = readMessages('ru');
+  const created = await guestWith('ru');
+  const context = await contextFor(browser, created.token, NARROW);
+  const page = await context.newPage();
+  await page.goto(`/practice/${FULL_EXAM.slug}`);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+  await tabTo(page, page.getByTestId('start-attempt'), 'start');
+  await page.keyboard.press('Enter');
+  await page.waitForURL(HOEREN_URL);
+  const attemptId = attemptIdOf(page);
+  await waitForPlayer(page);
+
+  // A save that fails: the text names it, the choice stays marked, the
+  // retry is a button of the card that the keyboard reaches.
+  await context.route(ANSWER_URL, (route) =>
+    route.request().method() === 'POST'
+      ? route.fulfill({ status: 503, body: 'unavailable' })
+      : route.continue(),
+  );
+  const first = card(page, 'hoeren-1');
+  await optionIn(first, keyOf('hoeren-1')).focus();
+  await page.keyboard.press('Space');
+  await expectStatus(first, 'error');
+  const saveStatus = first.getByTestId('save-status');
+  await expect(saveStatus).toHaveAttribute('role', 'alert');
+  await expect(saveStatus).toContainText(ru.save.error);
+  await expect(optionIn(first, keyOf('hoeren-1'))).toBeChecked();
+  expect(await readAnswers(attemptId)).toEqual({});
+  await expectUsableLayout(page, 'save failure 390 ru');
+  await context.unroute(ANSWER_URL);
+  await tabTo(page, first.getByRole('button'), 'save retry');
+  await page.keyboard.press('Enter');
+  await expectStatus(first, 'saved');
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': keyOf('hoeren-1'),
+  });
+
+  // A recording that cannot be loaded: an alert in text, the tasks and their
+  // saves go on, the retry is a button.
+  await context.route(SIGN_URL, (route) => route.abort());
+  await page.reload();
+  const audio = page.getByTestId('audio-status');
+  await expect(audio).toHaveAttribute('data-status', 'error');
+  await expect(audio).toHaveAttribute('role', 'alert');
+  await expect(audio).not.toHaveText('');
+  await expect(page.getByTestId('audio-toggle')).toBeDisabled();
+  await expectUsableLayout(page, 'audio failure 390 ru');
+  await answerTask(page, 2, 'hoeren', keyOf('hoeren-2'));
+  await context.unroute(SIGN_URL);
+  await tabTo(page, audio.getByRole('button'), 'audio retry');
+  await page.keyboard.press('Enter');
+  await expect(audio).toHaveAttribute('data-status', 'ready');
+
+  // A submission whose answer is lost: the state is stated, the resend is a
+  // button, and the resend does not make a second result.
+  await context.route(SUBMIT_URL, (route) => route.abort());
+  await tabTo(page, page.getByTestId('finish-attempt'), 'finish');
+  await page.keyboard.press('Enter');
+  await tabTo(page, page.getByTestId('finish-confirm'), 'finish confirm');
+  await page.keyboard.press('Enter');
+  const uncertain = page.getByTestId('finish-uncertain');
+  await expect(uncertain).toBeVisible();
+  await expect(uncertain).toHaveAttribute('role', 'alert');
+  await expect(uncertain).not.toHaveText('');
+  expect(await readResults(attemptId)).toEqual([]);
+  await expectUsableLayout(page, 'submit failure 390 ru');
+  await expectNoFocusTrap(page, 'submit failure 390 ru');
+  await context.unroute(SUBMIT_URL);
+  await tabTo(page, page.getByTestId('finish-resend'), 'finish resend');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  expect(await readResults(attemptId)).toHaveLength(1);
+  expect(await readEventKinds(attemptId)).toEqual(['start', 'finish']);
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': keyOf('hoeren-1'),
+    'hoeren-2': keyOf('hoeren-2'),
+  });
+  await context.close();
+});
+
+// Two tabs, a phase, a replaced cookie and a replay ----------------------------
+
+interface SubmitSeen {
+  url: string;
+  body: string;
+}
+
+const recordSubmits = (page: Page): SubmitSeen[] => {
+  const seen: SubmitSeen[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/submit')) {
+      seen.push({ url: request.url(), body: request.postData() ?? '' });
+    }
+  });
+  return seen;
+};
+
+const finishKinds = async (attemptId: string): Promise<string[]> =>
+  (await readEventKinds(attemptId)).filter((kind) => kind === 'finish');
+
+test('cross tab phase cookie replacement and replay remain consistent', async ({
+  browser,
+  request,
+}) => {
+  // Measured 23.5 s on CI, most of it the real end of a 20 s Hören.
+  test.slow();
+  installM2Fixtures();
+  const exam = await examExam();
+
+  // Two tabs of one guest on one exam whose Hören ends in 20 seconds: each
+  // answers its own task, both see the transition, both ask for Lesen at
+  // once, and the answers of both are in one final set.
+  const guest = await newGuest(depsNow());
+  const attemptId = examAgo(guest, exam, H - 20);
+  const context = await contextFor(browser, guest.token);
+  const tabOne = await context.newPage();
+  const tabTwo = await context.newPage();
+  const submits = recordSubmits(tabOne);
+  await tabOne.goto(attemptUrl(FULL_EXAM.slug, attemptId));
+  await tabTwo.goto(attemptUrl(FULL_EXAM.slug, attemptId));
+  const oneDeadline = await tabOne
+    .getByTestId('attempt-timer')
+    .getAttribute('data-deadline-ms');
+  expect(
+    await tabTwo.getByTestId('attempt-timer').getAttribute('data-deadline-ms'),
+  ).toBe(oneDeadline);
+  await optionIn(card(tabOne, 'hoeren-1'), keyOf('hoeren-1')).check();
+  await expectStatus(card(tabOne, 'hoeren-1'), 'saved');
+  await answerTask(tabTwo, 2, 'hoeren', keyOf('hoeren-2'));
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': keyOf('hoeren-1'),
+    'hoeren-2': keyOf('hoeren-2'),
+  });
+
+  await expect(tabOne.getByTestId('transition-screen')).toBeVisible({
+    timeout: 90_000,
+  });
+  await expect(tabTwo.getByTestId('transition-screen')).toBeVisible({
+    timeout: 90_000,
+  });
+  const frozen = await readAnswers(attemptId);
+  // A save of a Hören task that a stale tab still sends is refused.
+  const late = await postCommand(
+    request,
+    `/api/attempts/${attemptId}/answer`,
+    { questionId: 'hoeren-3', optionId: keyOf('hoeren-3'), revision: 1 },
+    { token: guest.token },
+  );
+  expect(late.status).toBe(404);
+  expect(await readAnswers(attemptId)).toEqual(frozen);
+
+  await Promise.all([
+    tabOne.getByTestId('begin-lesen').click(),
+    tabTwo.getByTestId('begin-lesen').click(),
+  ]);
+  await tabOne.waitForURL(LESEN_URL);
+  await tabTwo.waitForURL(LESEN_URL);
+  const lesenStart = examRunTimes(attemptId).lesenStartedAt;
+  expect(lesenStart).not.toBeNull();
+  await expect
+    .poll(async () =>
+      Number(
+        await tabOne
+          .getByTestId('attempt-timer')
+          .getAttribute('data-deadline-ms'),
+      ),
+    )
+    .toBe(Date.parse(lesenStart ?? '') + FULL_TIMING.lesenSeconds * SECOND_MS);
+  await expect
+    .poll(async () =>
+      Number(
+        await tabTwo
+          .getByTestId('attempt-timer')
+          .getAttribute('data-deadline-ms'),
+      ),
+    )
+    .toBe(Date.parse(lesenStart ?? '') + FULL_TIMING.lesenSeconds * SECOND_MS);
+  expect(examRunTimes(attemptId).lesenStartedAt).toBe(lesenStart);
+  expect(await readAnswers(attemptId)).toEqual(frozen);
+
+  await showQuestions(tabOne);
+  await optionIn(card(tabOne, 'lesen-1'), keyOf('lesen-1')).check();
+  await expectStatus(card(tabOne, 'lesen-1'), 'saved');
+  await answerTask(tabTwo, 2, 'lesen', keyOf('lesen-2'));
+  const finalSet = {
+    'hoeren-1': keyOf('hoeren-1'),
+    'hoeren-2': keyOf('hoeren-2'),
+    'lesen-1': keyOf('lesen-1'),
+    'lesen-2': keyOf('lesen-2'),
+  };
+  expect(await readAnswers(attemptId)).toEqual(finalSet);
+
+  // The first tab finishes; the second finishes the same attempt too. There
+  // is one result and one finish event.
+  // The first tab counted three answers, the server holds four: the first
+  // confirmation is refused with the new numbers and nothing is stored until
+  // the guest confirms again.
+  await tabOne.getByTestId('finish-attempt').click();
+  await tabOne.getByTestId('finish-confirm').click();
+  await expect(tabOne.getByTestId('finish-renewed')).toBeVisible();
+  expect(await readResults(attemptId)).toEqual([]);
+  expect(await finishKinds(attemptId)).toEqual([]);
+  await tabOne.getByTestId('finish-confirm').click();
+  await expect(tabOne.getByTestId('attempt-review')).toBeVisible();
+  const results = await readResults(attemptId);
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({
+    score: scoreOfSelections(finalSet),
+    max_score: 45,
+  });
+  expect(await finishKinds(attemptId)).toEqual(['finish']);
+  await tabTwo.getByTestId('finish-attempt').click();
+  const confirm = tabTwo.getByTestId('finish-confirm');
+  await expect(confirm.or(tabTwo.getByTestId('attempt-review'))).toBeVisible();
+  if (await confirm.isVisible()) await confirm.click();
+  await expect(tabTwo.getByTestId('attempt-review')).toBeVisible({
+    timeout: 20_000,
+  });
+  expect(await readResults(attemptId)).toHaveLength(1);
+  expect(await finishKinds(attemptId)).toEqual(['finish']);
+  expect(await readAnswers(attemptId)).toEqual(finalSet);
+
+  // The accepted submission replays with its own command id: the same
+  // outcome and no second result; a new command on the finished attempt is
+  // not a second submission either.
+  const first = submits[0];
+  if (!first) throw new Error('the submit of the first tab was not seen');
+  const replay = await request.post(first.url, {
+    headers: {
+      'content-type': 'application/json',
+      cookie: `${GUEST_COOKIE}=${guest.token}`,
+      origin: FULL_ORIGIN,
+    },
+    data: first.body,
+  });
+  expect(replay.status()).toBe(200);
+  const replayed = (await replay.json()) as { ok: boolean };
+  expect(replayed.ok).toBe(true);
+  const fresh = await postCommand(
+    request,
+    `/api/attempts/${attemptId}/submit`,
+    {
+      commandId: randomUUID(),
+      answers: [],
+      confirmation: { phaseRevision: 0, skipped: 41 },
+    },
+    { token: guest.token },
+  );
+  expect(fresh.status).toBeLessThan(500);
+  expect(await readResults(attemptId)).toHaveLength(1);
+  expect(await finishKinds(attemptId)).toEqual(['finish']);
+  expect(await readAnswers(attemptId)).toEqual(finalSet);
+  expect(await readAttempts(guest.guest.sessionId)).toEqual([
+    { id: attemptId, status: 'completed' },
+  ]);
+  expect(await readEventKinds(attemptId)).toEqual(['start', 'finish']);
+  await context.close();
+
+  // The cookie of a browser is replaced while a second tab of the old guest
+  // is still open: the stale tab speaks for the new guest and cannot reach
+  // the old one's attempt; the old guest's rows stay.
+  const shortOne = await shortGuest(200);
+  const sourceId = await completedWithError(shortOne);
+  const oldRows = {
+    attempts: await readAttempts(shortOne.guest.sessionId),
+    results: await readResults(sourceId),
+    answers: await readAnswers(sourceId),
+    events: await readEventKinds(sourceId),
+  };
+  const shortContext = await contextFor(browser, shortOne.token);
+  const choicePage = await shortContext.newPage();
+  const stalePage = await shortContext.newPage();
+  await stalePage.goto(attemptUrl(FULL_EXAM.slug, sourceId));
+  await expect(stalePage.getByTestId('attempt-review')).toBeVisible();
+  await choicePage.goto(`/practice/${FULL_EXAM.slug}`);
+  await choicePage.getByTestId('mode-option-timed-block').click();
+  await choicePage.getByTestId('start-attempt').click();
+  await expect(choicePage.getByTestId('start-guest-too-short')).toBeVisible();
+  await choicePage.getByTestId('guest-replacement-confirm').click();
+  await choicePage.waitForURL(HOEREN_URL);
+  const replaced = await sessionOfContext(shortContext);
+  expect(replaced.sessionId).not.toBe(shortOne.guest.sessionId);
+  const newAttempts = await readAttempts(replaced.sessionId);
+  expect(newAttempts).toHaveLength(1);
+
+  await stalePage.getByTestId('repeat-errors').click();
+  // The refusal ends the request: the button is usable again and the page
+  // still shows the old attempt.
+  await expect(stalePage.getByTestId('repeat-errors')).toBeEnabled();
+  expect(new URL(stalePage.url()).pathname).toContain(sourceId);
+  expect(await readAttempts(replaced.sessionId)).toEqual(newAttempts);
+  expect({
+    attempts: await readAttempts(shortOne.guest.sessionId),
+    results: await readResults(sourceId),
+    answers: await readAnswers(sourceId),
+    events: await readEventKinds(sourceId),
+  }).toEqual(oldRows);
+  await shortContext.close();
+});
+
+test('stale phase and replaced cookie cannot rewrite frozen data', async ({
+  browser,
+  request,
+}) => {
+  installM2Fixtures();
+  const exam = await examExam();
+
+  // A Hören answer of an exam saved while its Hören was open, the Hören now
+  // closed: nothing a stale tab or a late request sends rewrites it.
+  const guest = await newGuest(depsNow());
+  const attemptId = examAgo(guest, exam, H + 5);
+  const startMs = Date.parse(examRunTimes(attemptId).acceptedAt);
+  psql(`select question_id from m2_test.save_answer_at(
+    ${quote(guest.guest.sessionId)}, ${quote(attemptId)}, 'hoeren-1',
+    ${quote(keyOf('hoeren-1'))}, 1,
+    ${quote(new Date(startMs + 10 * SECOND_MS).toISOString())}::timestamptz)`);
+  const frozen = { 'hoeren-1': keyOf('hoeren-1') };
+  expect(await readAnswers(attemptId)).toEqual(frozen);
+
+  const answerBody = (
+    questionId: string,
+    optionId: string,
+    revision: number,
+  ) => ({
+    questionId,
+    optionId,
+    revision,
+  });
+  const rows = async () => ({
+    answers: await readAnswerRows(attemptId),
+    results: await readResults(attemptId),
+    events: await readEventKinds(attemptId),
+    attempts: await readAttempts(guest.guest.sessionId),
+  });
+  const before = await rows();
+  for (const body of [
+    answerBody('hoeren-1', wrongOf('hoeren-1'), 2),
+    answerBody('hoeren-1', wrongOf('hoeren-1'), 1),
+    answerBody('hoeren-4', keyOf('hoeren-4'), 1),
+  ]) {
+    const reply = await postCommand(
+      request,
+      `/api/attempts/${attemptId}/answer`,
+      body,
+      { token: guest.token },
+    );
+    expect(reply.status, JSON.stringify(body)).toBe(404);
+  }
+  expect(await rows()).toEqual(before);
+
+  // The tab of the same guest in the transition: Lesen opens, its answers
+  // are saved, the exam is finished once.
+  const context = await contextFor(browser, guest.token);
+  const page = await context.newPage();
+  await page.goto(attemptUrl(FULL_EXAM.slug, attemptId));
+  await expect(page.getByTestId('transition-screen')).toBeVisible();
+  await page.getByTestId('begin-lesen').click();
+  await page.waitForURL(LESEN_URL);
+  await optionIn(card(page, 'lesen-1'), keyOf('lesen-1')).check();
+  await expectStatus(card(page, 'lesen-1'), 'saved');
+  await finishFromShell(page);
+  const done = {
+    'hoeren-1': keyOf('hoeren-1'),
+    'lesen-1': keyOf('lesen-1'),
+  };
+  expect(await readAnswers(attemptId)).toEqual(done);
+  expect(await readResults(attemptId)).toHaveLength(1);
+  const finished = await rows();
+
+  // After the finish nothing rewrites it: not a late save of either block,
+  // not a cancel, not another submission.
+  const lates = [
+    [
+      `/api/attempts/${attemptId}/answer`,
+      answerBody('lesen-1', wrongOf('lesen-1'), 2),
+    ],
+    [
+      `/api/attempts/${attemptId}/answer`,
+      answerBody('lesen-2', keyOf('lesen-2'), 1),
+    ],
+    [
+      `/api/attempts/${attemptId}/cancel`,
+      {
+        commandId: randomUUID(),
+        confirmation: { phaseRevision: 0, skipped: 43 },
+      },
+    ],
+    [
+      `/api/attempts/${attemptId}/submit`,
+      {
+        commandId: randomUUID(),
+        answers: [answerBody('lesen-3', keyOf('lesen-3'), 1)],
+        confirmation: { phaseRevision: 0, skipped: 42 },
+      },
+    ],
+  ] as const;
+  for (const [pathname, body] of lates) {
+    const reply = await postCommand(request, pathname, body, {
+      token: guest.token,
+    });
+    expect(reply.status, pathname).toBeLessThan(500);
+    expect(await rows(), pathname).toEqual(finished);
+  }
+  await context.close();
+
+  // The cookie replaced: the old guest's token and the new guest's token
+  // both fail to rewrite the finished attempt of the old guest.
+  const shortOne = await shortGuest(200);
+  const sourceId = await completedWithError(shortOne);
+  const sourceRows = async () => ({
+    answers: await readAnswerRows(sourceId),
+    results: await readResults(sourceId),
+    events: await readEventKinds(sourceId),
+    attempts: await readAttempts(shortOne.guest.sessionId),
+  });
+  const sourceBefore = await sourceRows();
+  const shortContext = await contextFor(browser, shortOne.token);
+  const shortPage = await shortContext.newPage();
+  await shortPage.goto(`/practice/${FULL_EXAM.slug}`);
+  await shortPage.getByTestId('mode-option-timed-block').click();
+  await shortPage.getByTestId('start-attempt').click();
+  await shortPage.getByTestId('guest-replacement-confirm').click();
+  await shortPage.waitForURL(HOEREN_URL);
+  const replaced = await sessionOfContext(shortContext);
+  expect(replaced.token).not.toBe(shortOne.token);
+  const newBefore = await readAttempts(replaced.sessionId);
+  for (const token of [shortOne.token, replaced.token]) {
+    for (const [pathname, body] of [
+      [
+        `/api/attempts/${sourceId}/answer`,
+        answerBody('hoeren-1', keyOf('hoeren-1'), 2),
+      ],
+      [
+        `/api/attempts/${sourceId}/answer`,
+        answerBody('hoeren-2', keyOf('hoeren-2'), 1),
+      ],
+      [
+        `/api/attempts/${sourceId}/cancel`,
+        {
+          commandId: randomUUID(),
+          confirmation: { phaseRevision: 0, skipped: 44 },
+        },
+      ],
+      [
+        `/api/attempts/${sourceId}/submit`,
+        {
+          commandId: randomUUID(),
+          answers: [],
+          confirmation: { phaseRevision: 0, skipped: 44 },
+        },
+      ],
+    ] as const) {
+      const reply = await postCommand(request, pathname, body, { token });
+      expect(
+        reply.status,
+        `${pathname} ${token === replaced.token}`,
+      ).toBeLessThan(500);
+      expect(await sourceRows(), pathname).toEqual(sourceBefore);
+    }
+  }
+  expect(await readAttempts(replaced.sessionId)).toEqual(newBefore);
+  await shortContext.close();
 });

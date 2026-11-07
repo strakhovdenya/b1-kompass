@@ -190,6 +190,51 @@ test('home shows busy message without session cookie', async ({ browser }) => {
   }
 });
 
+const countRows = async (table: string): Promise<number> => {
+  const { count, error } = await serviceDb
+    .from(table)
+    .select('*', { count: 'exact', head: true });
+  if (error) throw error;
+  return count ?? 0;
+};
+
+// The only spec that fills the real site-wide window: the parallel UX spec
+// merely looks at the notice. This one presses the real button.
+test('rate limited guest entry redirects to busy without creating session', async ({
+  browser,
+}) => {
+  const filled = await insertSessions(
+    TEST_GUEST_SESSIONS_PER_MINUTE,
+    new Date(Date.now() - 5 * SECOND_MS),
+  );
+  const tables = ['guest_sessions', 'attempts', 'attempt_runs', 'attempt_commands'];
+  const before = await Promise.all(tables.map(countRows));
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const starts: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/api/attempts')) {
+      starts.push(request.url());
+    }
+  });
+  try {
+    await page.goto('/');
+    expect(await context.cookies()).toEqual([]);
+    await page.getByRole('button', { name: 'Continue as guest' }).click();
+    await page.waitForURL('**/?busy=1');
+    const notice = page.getByTestId('home-busy');
+    await expect(notice).toHaveText(BUSY_TEXT);
+    await expect(notice).toHaveAttribute('role', 'alert');
+    await expect(page.getByRole('button', { name: 'Continue as guest' })).toBeVisible();
+    expect(await context.cookies()).toEqual([]);
+    expect(starts).toEqual([]);
+    expect(await Promise.all(tables.map(countRows))).toEqual(before);
+  } finally {
+    await context.close();
+    await deleteSessions(filled);
+  }
+});
+
 test('purges expired empty guest sessions', async () => {
   const now = new Date(Date.UTC(2032, 5, 1));
   await purge(now);

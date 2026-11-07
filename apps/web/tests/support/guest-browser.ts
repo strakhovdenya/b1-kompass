@@ -1,5 +1,11 @@
 import { expect } from '@playwright/test';
-import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
+import type {
+  APIRequestContext,
+  Browser,
+  BrowserContext,
+  Locator,
+  Page,
+} from '@playwright/test';
 import { GUEST_COOKIE } from '../../src/server/guest-session/cookie';
 import { readAttempts, readSessionByToken } from './db';
 
@@ -330,4 +336,46 @@ export const scrollWithFinger = async (
   await page.waitForTimeout(SCROLL_HOLD_MS);
   await pad.up();
   return { before, after: await page.evaluate(() => window.scrollY) };
+};
+
+// The full-set server and the origin it trusts.
+export const FULL_ORIGIN = 'http://localhost:3102';
+
+export interface CommandReply {
+  status: number;
+  body: Record<string, unknown>;
+  cacheControl: string;
+}
+
+export interface CommandOptions {
+  // The guest cookie of the request; none when null.
+  token: string | null;
+  // The Origin header: the trusted one when omitted, none when null.
+  origin?: string | null;
+  headers?: Record<string, string>;
+}
+
+// A real command of the browser to a Route Handler: JSON, the httpOnly guest
+// cookie and the Origin the server trusts unless the test says otherwise.
+export const postCommand = async (
+  request: APIRequestContext,
+  pathname: string,
+  body: unknown,
+  { token, origin = FULL_ORIGIN, headers = {} }: CommandOptions,
+): Promise<CommandReply> => {
+  const response = await request.post(`${FULL_ORIGIN}${pathname}`, {
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { cookie: `${GUEST_COOKIE}=${token}` } : {}),
+      ...(origin === null ? {} : { origin }),
+      ...headers,
+    },
+    data: JSON.stringify(body),
+    maxRedirects: 0,
+  });
+  return {
+    status: response.status(),
+    body: (await response.json()) as Record<string, unknown>,
+    cacheControl: response.headers()['cache-control'] ?? '',
+  };
 };
