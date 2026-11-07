@@ -81,3 +81,38 @@ describe('buildSteps with a shared set', () => {
     expect(steps[2]?.group?.id).toBe('s');
   });
 });
+
+describe('buildSteps with read-only context', () => {
+  const neighbour = {
+    questionId: 'n9',
+    number: 9,
+    prompt: 'Nachbar?',
+    options: [{ id: 'a', text: 'Erste' }],
+  };
+
+  it('keeps a pair with one assessed member and its context neighbour', () => {
+    const steps = buildSteps(
+      [question('q1', 1), question('q2', 2)],
+      [pair('p', ['q2', 'n9'])],
+      [neighbour],
+    );
+    expect(keysOf(steps)).toEqual([['q1'], ['q2']]);
+    expect(steps[1]?.group?.id).toBe('p');
+    expect(steps[1]?.members.map((member) => member.kind)).toEqual([
+      'assessed',
+      'context',
+    ]);
+  });
+
+  it('never makes a step of context alone and ignores stray context', () => {
+    const steps = buildSteps([question('q1', 1)], [], [neighbour]);
+    expect(keysOf(steps)).toEqual([['q1']]);
+    expect(steps[0]?.members).toHaveLength(1);
+    const broken = buildSteps(
+      [question('q1', 1)],
+      [pair('p', ['q1', 'missing'])],
+      [neighbour],
+    );
+    expect(broken[0]?.group).toBeNull();
+  });
+});

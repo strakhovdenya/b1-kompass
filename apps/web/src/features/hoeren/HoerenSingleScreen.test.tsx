@@ -205,3 +205,72 @@ describe('HoerenSingleScreen introduction', () => {
     expect(text).not.toContain('part 3');
   });
 });
+
+describe('HoerenSingleScreen partial Teil 3 and 4 groups', () => {
+  const shared: ExamGroup = {
+    id: 'set-4',
+    kind: 'shared-set',
+    teil: 4,
+    trackId: 'track-127',
+    options: [
+      { id: 'a', text: 'Erste' },
+      { id: 'b', text: 'Zweite' },
+    ],
+    questionIds: ['h5', 'h6'],
+  };
+  const neighbour = (id: string, number: number) => ({
+    questionId: id,
+    number,
+    prompt: `Nachbar ${id}?`,
+    options: [
+      { id: 'a', text: 'Erste' },
+      { id: 'b', text: 'Zweite' },
+    ],
+  });
+  const render = (
+    assessed: ExamQuestion[],
+    context: ReturnType<typeof neighbour>[],
+  ) =>
+    renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <HoerenSingleScreen
+          questions={assessed}
+          groups={[pair, shared]}
+          context={context}
+          initialSelections={{}}
+        />
+      </NextIntlClientProvider>,
+    );
+
+  it('shows one assessed member of a pair with its read-only neighbour', () => {
+    const html = render(
+      [question('h4', { number: 4, teil: 3 })],
+      [neighbour('h3', 3)],
+    );
+    expect(html).toContain('data-testid="pair-pair-3"');
+    expect(html).toContain('data-testid="question-card-h4"');
+    expect(html).toContain('data-testid="context-card-h3"');
+    expect(html).toContain('Answered: 0 of 1');
+    expect(html.match(/type="radio"/g)).toHaveLength(2);
+  });
+
+  it('keeps the shared list a–f with read-only neighbours of Teil 4', () => {
+    const html = render(
+      [question('h5', { number: 5, teil: 4, kind: 'shared-choice' })],
+      [neighbour('h6', 6)],
+    );
+    expect(html).toContain('data-testid="shared-set-4"');
+    expect(html).not.toContain('role="alert"');
+    expect(html).toContain('data-testid="question-card-h5"');
+    expect(html).toContain('data-testid="context-card-h6"');
+    expect(html).toContain('Answered: 0 of 1');
+  });
+
+  it('shows no neighbour of a group without an assessed member', () => {
+    const html = render(
+      [question('h1', { number: 1, teil: 1 })],
+      [neighbour('h3', 3)],
+    );
+    expect(html).not.toContain('context-card-h3');
+  });
+});

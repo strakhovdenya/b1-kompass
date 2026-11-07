@@ -13,6 +13,7 @@ import type {
   AttemptPhase,
   AttemptProgress,
   AttemptReview,
+  AttemptSelection,
   ExamQuestion,
   Selections,
 } from '@b1k/domain';
@@ -20,7 +21,7 @@ import { AudioPlayer } from '../audio/AudioPlayer';
 import { DictionaryBoundary } from '../dictionary/DictionaryBoundary';
 import type { AudioAccess } from '../audio/AudioPlayer';
 import { AttemptReviewView } from '../results/AttemptReviewView';
-import type { ReviewBlock } from '../results/AttemptReviewView';
+import type { RepeatStatus, ReviewBlock } from '../results/AttemptReviewView';
 import { AttemptSubmissionControls } from './AttemptSubmissionControls';
 import { AttemptTimer } from './AttemptTimer';
 import {
@@ -29,6 +30,7 @@ import {
   choicePath,
   requestAttemptAudio,
   requestBeginLesen,
+  requestRepeat,
   requestSaveAnswer,
 } from './attempt-client';
 import type {
@@ -106,6 +108,9 @@ interface TrainingShellProps {
   // The server's start of Hören of a full exam: the position of its one
   // recording.
   examStartedAtMs?: number | null;
+  // The source of a repeat of errors of a completed attempt; without it the
+  // review offers no repeat.
+  repeatSource?: RepeatSource | null;
   // The page's Server Action for an address. The shell no longer uses it:
   // every address comes from the HTTP route, beside the Server Action
   // queue of a locale switch.
@@ -114,6 +119,52 @@ interface TrainingShellProps {
 }
 
 const NO_ANSWERS: readonly never[] = [];
+
+// What a repeat of the errors of this completed attempt agrees with: the
+// pinned version and the selection of the source. The server checks both.
+export interface RepeatSource {
+  versionId: string;
+  selection: AttemptSelection;
+}
+
+// The free repeat of the errors of this attempt. An accepted repeat and a
+// conflict open the attempt they name; empty starts nothing. A lost answer
+// keeps the commandId, so a retry returns what the first request did.
+const useErrorRepeat = (
+  examSlug: string,
+  attemptId: string,
+  source: RepeatSource | null,
+) => {
+  const router = useRouter();
+  const [status, setStatus] = useState<RepeatStatus>('idle');
+  const commandId = useRef<string | null>(null);
+  const repeat = useCallback(async () => {
+    if (!source) return;
+    setStatus('starting');
+    commandId.current ??= crypto.randomUUID();
+    const answer = await requestRepeat(attemptId, {
+      commandId: commandId.current,
+      examSlug,
+      selection: source.selection,
+      expectedVersionId: source.versionId,
+    });
+    if (answer.ok) {
+      const { result } = answer;
+      if (result.outcome === 'empty') {
+        commandId.current = null;
+        setStatus('empty');
+        return;
+      }
+      router.push(attemptPath(examSlug, result.attemptId));
+      return;
+    }
+    const isRetryable =
+      answer.failure === 'network' || answer.failure === 'unavailable';
+    if (!isRetryable) commandId.current = null;
+    setStatus('error');
+  }, [attemptId, examSlug, router, source]);
+  return { status, repeat: source ? repeat : undefined };
+};
 
 // The frame of one attempt around the Hören and Lesen pages. It stays mounted
 // when the guest moves between the blocks, so the recording keeps playing and
@@ -137,6 +188,7 @@ export const TrainingShell = ({
   phase = null,
   summary = null,
   examStartedAtMs = null,
+  repeatSource = null,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
@@ -344,6 +396,7 @@ export const TrainingShell = ({
   // Starting again only opens the choice of the exam: a new attempt is
   // created there by an explicit start, never by this button.
   const restart = () => router.push(choicePath(examSlug));
+  const errorRepeat = useErrorRepeat(examSlug, attemptId, repeatSource);
 
   const nav =
     blocks.length > 1 ? (
@@ -380,6 +433,8 @@ export const TrainingShell = ({
             questions={questions}
             block={blocks.length > 1 ? current : undefined}
             onRestart={restart}
+            onRepeat={errorRepeat.repeat}
+            repeatStatus={errorRepeat.status}
           />
         </Stack>
       </TrainingContext.Provider>

@@ -6,9 +6,15 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ExamGroup, ExamQuestion } from '@b1k/domain';
 
+interface SetMember {
+  readonly number: ExamQuestion['number'];
+  readonly options: readonly ExamQuestion['options'][number][];
+}
+
 interface HoerenSharedSetViewProps {
   group: ExamGroup;
-  questions: readonly ExamQuestion[];
+  // Every member: assessed tasks and, in a repeat, read-only neighbours.
+  questions: readonly SetMember[];
   cards: ReactNode[];
 }
 
@@ -22,7 +28,7 @@ const optionKey = (options: readonly { id: string; text: string }[]): string =>
 // material and each member carries exactly the options of the group.
 const isUsable = (
   group: ExamGroup,
-  questions: readonly ExamQuestion[],
+  questions: readonly SetMember[],
 ): boolean => {
   if (group.kind !== 'shared-set') return false;
   if (group.options.length === 0) return false;

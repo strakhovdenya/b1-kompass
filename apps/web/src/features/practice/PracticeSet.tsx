@@ -6,9 +6,14 @@ import { useTranslations } from 'next-intl';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { ExamGroup, ExamQuestion, Selections } from '@b1k/domain';
+import type {
+  ExamGroup,
+  ExamQuestion,
+  PublicContextItem,
+  Selections,
+} from '@b1k/domain';
 import { useTraining } from '../training/TrainingContext';
-import { QuestionCard } from './QuestionCard';
+import { ContextCard, QuestionCard } from './QuestionCard';
 import { QuestionNavigator } from './QuestionNavigator';
 import type { NavigatorStep } from './QuestionNavigator';
 import { buildSteps } from './steps';
@@ -17,6 +22,8 @@ import type { PracticeStep } from './steps';
 interface PracticeSetProps {
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
+  // Read-only neighbours of a repeat, shown inside their group only.
+  context?: readonly PublicContextItem[];
   // Lays out the cards of a group step; without it they are stacked.
   renderGroup?: (step: PracticeStep, cards: ReactNode[]) => ReactNode;
   initialSelections: Selections;
@@ -33,6 +40,7 @@ interface PracticeSetProps {
 export const PracticeSet = ({
   questions,
   groups = [],
+  context = [],
   renderGroup,
   initialSelections,
   initialStepKey = null,
@@ -42,7 +50,7 @@ export const PracticeSet = ({
   const [index, setIndex] = useState(() =>
     Math.max(
       0,
-      buildSteps(questions, groups).findIndex(
+      buildSteps(questions, groups, context).findIndex(
         (item) => item.key === initialStepKey,
       ),
     ),
@@ -53,7 +61,7 @@ export const PracticeSet = ({
   // page's own answers count outside a shell (component tests).
   const selections = { ...initialSelections, ...training.selections };
 
-  const steps = buildSteps(questions, groups);
+  const steps = buildSteps(questions, groups, context);
   const step = steps[index];
   const stepKey = step?.key;
   useEffect(() => {
@@ -95,7 +103,13 @@ export const PracticeSet = ({
     ];
   });
 
-  const cards = step.questions.map((question) => {
+  // Context is never chosen, saved or counted: it has no card of its own in
+  // the navigator and no part in the answered count.
+  const cards = step.members.map((member) => {
+    if (member.kind === 'context') {
+      return <ContextCard key={member.item.questionId} item={member.item} />;
+    }
+    const { question } = member;
     const choice = Object.hasOwn(pending, question.id)
       ? pending[question.id]
       : undefined;

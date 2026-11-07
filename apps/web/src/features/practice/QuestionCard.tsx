@@ -13,7 +13,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { alpha } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
-import type { ExamQuestion } from '@b1k/domain';
+import type { ExamQuestion, PublicContextItem } from '@b1k/domain';
 import { GermanText } from '../dictionary/GermanText';
 
 // 'error' can be retried; 'refused' cannot be saved any more (the attempt is
@@ -104,6 +104,62 @@ export const QuestionCard = ({
           </RadioGroup>
         </FormControl>
         <SaveStatusLine status={shownStatus} onRetry={onRetry ?? null} />
+      </Stack>
+    </Paper>
+  );
+};
+
+interface ContextCardProps {
+  item: PublicContextItem;
+}
+
+// A neighbour of an assessed task, shown so its pair or shared set reads as
+// in the exam. It has no radio, no save state and no solution: it is never
+// answered, scored or reviewed. Its options are a plain list.
+export const ContextCard = ({ item }: ContextCardProps) => {
+  const t = useTranslations('practice');
+  const labelId = `context-${item.questionId}`;
+  return (
+    <Paper
+      component="section"
+      variant="outlined"
+      aria-labelledby={labelId}
+      data-testid={`context-card-${item.questionId}`}
+      sx={{
+        p: { xs: 1.5, sm: 3 },
+        minWidth: 0,
+        borderStyle: 'dashed',
+        bgcolor: 'action.hover',
+      }}
+    >
+      <Stack spacing={{ xs: 1, sm: 1.5 }}>
+        <Typography
+          variant="body2"
+          sx={{ fontWeight: 600 }}
+          data-testid="context-label"
+        >
+          {t('context')}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          {t('contextHint')}
+        </Typography>
+        <Typography id={labelId} component="h2" variant="taskPrompt" lang="de">
+          {item.number}. <GermanText>{item.prompt}</GermanText>
+        </Typography>
+        <Stack component="ul" spacing={1} sx={{ m: 0, pl: 0 }}>
+          {item.options.map((option) => (
+            <Typography
+              key={option.id}
+              component="li"
+              variant="answerOption"
+              lang="de"
+              sx={{ listStyle: 'none', overflowWrap: 'anywhere' }}
+            >
+              <strong>{option.id}</strong>{' '}
+              <GermanText>{option.text}</GermanText>
+            </Typography>
+          ))}
+        </Stack>
       </Stack>
     </Paper>
   );

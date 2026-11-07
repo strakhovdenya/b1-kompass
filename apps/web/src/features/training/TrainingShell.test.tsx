@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import { TrainingShell } from './TrainingShell';
+import type { RepeatSource } from './TrainingShell';
 import type { AttemptSummary, TimedClock } from './attempt-client';
 
 const ATTEMPT_ID = '00000000-0000-4000-8000-000000000000';
@@ -61,6 +62,7 @@ const render = (
   initialReview: AttemptReview | null,
   isResultPending = false,
   timer: TimedClock | null = null,
+  repeatSource: RepeatSource | null = null,
 ) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
@@ -77,6 +79,7 @@ const render = (
         phaseRevision={0}
         timer={timer}
         resolveAudio={async () => ({ ok: false, error: 'unavailable' })}
+        repeatSource={repeatSource}
       >
         <p>block page</p>
       </TrainingShell>
@@ -183,6 +186,21 @@ describe('TrainingShell', () => {
     expect(html).toContain('data-testid="result-check"');
     expect(html).not.toContain('data-testid="finish-attempt"');
     expect(html).not.toContain('data-testid="cancel-attempt"');
+  });
+
+  it('separates assessed review from the repeat of errors', () => {
+    const source: RepeatSource = {
+      versionId: '00000000-0000-4000-8000-000000000001',
+      selection: 'all',
+    };
+    const completed = render(review, false, null, source);
+    expect(completed).toContain('data-testid="repeat-errors"');
+    expect(completed).not.toContain('data-testid="repeat-status"');
+    // The review lists only assessed tasks; no read-only card is shown.
+    expect(completed).not.toContain('context-card-');
+    // An open attempt offers no repeat, and none without a source.
+    expect(render(null, false, null, source)).not.toContain('repeat-errors');
+    expect(render(review)).not.toContain('repeat-errors');
   });
 
   it('shows only the review of the open block once completed', () => {

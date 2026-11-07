@@ -56,3 +56,39 @@ describe('PracticeSet', () => {
     expect(render()).not.toContain('data-testid="attempt-review"');
   });
 });
+
+describe('PracticeSet with read-only context', () => {
+  it('shows the neighbour of a pair without counting or answering it', () => {
+    const assessed = { ...question('hoeren-3', 3), teil: 3 };
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <PracticeSet
+          questions={[assessed]}
+          groups={[
+            {
+              id: 'pair-3',
+              kind: 'pair',
+              teil: 3,
+              trackId: 'track',
+              questionIds: ['hoeren-3', 'hoeren-4'],
+            },
+          ]}
+          context={[
+            {
+              questionId: 'hoeren-4',
+              number: 4,
+              prompt: 'Nachbar vier?',
+              options: [{ id: 'a', text: 'Erste' }],
+            },
+          ]}
+          initialSelections={{}}
+        />
+      </NextIntlClientProvider>,
+    );
+    expect(html).toContain('data-testid="context-card-hoeren-4"');
+    expect(html).toContain('Nachbar vier?');
+    expect(html).toContain('Answered: 0 of 1');
+    expect(html).toContain('Question 1 of 1');
+    expect(html.match(/type="radio"/g)).toHaveLength(2);
+  });
+});

@@ -71,3 +71,19 @@ describe('HoerenSharedSetView', () => {
     }
   });
 });
+
+describe('HoerenSharedSetView with read-only members', () => {
+  it('accepts the options of a context neighbour as members of the set', () => {
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <HoerenSharedSetView
+          group={group()}
+          questions={[question('q1', 1), { number: 2, options: OPTIONS }]}
+          cards={[]}
+        />
+      </NextIntlClientProvider>,
+    );
+    expect(html).toContain('data-testid="shared-g"');
+    expect(html).not.toContain('role="alert"');
+  });
+});

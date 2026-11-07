@@ -26,7 +26,9 @@
       "lesen": "Lesen"
     },
     "unavailable": "The practice is not available right now. Please try again later.",
-    "source": "Source: {publisher}, {title}, page {page}"
+    "source": "Source: {publisher}, {title}, page {page}",
+    "context": "Context · not scored",
+    "contextHint": "Shown so that the assessed task makes sense. It cannot be answered here."
   },
   "choice": {
     "modeLabel": "How do you want to practise?",
@@ -152,7 +154,11 @@
       "a2": "A2",
       "b1": "B1"
     },
-    "untimedFull": "Free training of the whole set, without a time limit."
+    "untimedFull": "Free training of the whole set, without a time limit.",
+    "repeat": "Repeat my errors",
+    "repeating": "Starting the repeat…",
+    "repeatEmpty": "Nothing to repeat: every task of this result is right.",
+    "repeatError": "The repeat could not be started. Please try again."
   },
   "error": {
     "message": "Something went wrong. Your saved answers are kept.",

@@ -3,8 +3,9 @@ import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it } from 'vitest';
 import type { ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
+import ruMessages from '../../../messages/ru.json';
 import { DictionaryActiveContext } from '../dictionary/GermanText';
-import { QuestionCard } from './QuestionCard';
+import { ContextCard, QuestionCard } from './QuestionCard';
 
 const PAYLOAD = '<img src=x onerror="alert(1)">';
 
@@ -98,5 +99,37 @@ describe('QuestionCard', () => {
     );
     // Only the chosen option is checked.
     expect(html.match(/checked=""/g)).toHaveLength(1);
+  });
+});
+
+describe('ContextCard', () => {
+  const item = {
+    questionId: 'hoeren-4',
+    number: 4,
+    prompt: `Nachbar ${PAYLOAD}`,
+    options: [{ id: 'a', text: 'Erste' }],
+  };
+  const renderContext = (locale: 'en' | 'ru') =>
+    renderToStaticMarkup(
+      <NextIntlClientProvider
+        locale={locale}
+        messages={locale === 'en' ? messages : ruMessages}
+      >
+        <ContextCard item={item} />
+      </NextIntlClientProvider>,
+    );
+
+  it('is labelled read-only in both languages without radio, save or solution', () => {
+    const english = renderContext('en');
+    expect(english).toContain('Context · not scored');
+    expect(renderContext('ru')).toContain('Контекст · не оценивается');
+    for (const html of [english, renderContext('ru')]) {
+      expect(html).toContain('data-testid="context-card-hoeren-4"');
+      expect(html).not.toContain('type="radio"');
+      expect(html).not.toContain('data-testid="save-status"');
+      expect(html).not.toContain('review-solution');
+      expect(html).not.toContain('<img');
+      expect(html).toContain('lang="de"');
+    }
   });
 });

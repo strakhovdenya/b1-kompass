@@ -6,13 +6,15 @@ import type { ExamQuestion } from '@b1k/domain';
 
 interface HoerenPairViewProps {
   groupId: string;
-  questions: readonly ExamQuestion[];
+  // Both members, an assessed task or a read-only neighbour of a repeat.
+  questions: readonly Pick<ExamQuestion, 'number'>[];
   cards: ReactNode[];
 }
 
 // Teil 3: the two questions of one conversation next to each other, side by
 // side on a wide screen and stacked on a narrow one. The cards stay the
-// ordinary single-choice cards: each question is saved and scored alone.
+// ordinary single-choice cards: each question is saved and scored alone. In
+// a repeat the neighbour of a single assessed task is a read-only card.
 export const HoerenPairView = ({
   groupId,
   questions,

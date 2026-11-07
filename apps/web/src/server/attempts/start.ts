@@ -8,6 +8,7 @@ import {
 import type {
   AttemptAssignment,
   CommandResult,
+  RepeatStartOutcome,
   RunTechnicalFailure,
   StartOutcome,
 } from '@b1k/domain';
@@ -19,6 +20,7 @@ import { readConfirmedTimingProfile } from './profiles';
 import type { ConfirmedTimingProfile } from './profiles';
 import { readAttemptRun } from './read';
 import { toLifecycleState } from './projection';
+import { prepareRepeat } from './repeat';
 import {
   callStart,
   findActiveAttempt,
@@ -28,9 +30,12 @@ import {
   readVersionOfExam,
 } from './repository';
 import { finalizeClosedRun } from './submit';
-import type { ExamRow, VersionRow } from './repository';
+import type { ExamRow, StartCall, VersionRow } from './repository';
 
 export type StartAttemptResult = CommandResult<StartOutcome>;
+
+// The answer of the start route: a repeat of errors may also be empty.
+export type StartCommandResult = CommandResult<RepeatStartOutcome>;
 
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -55,20 +60,28 @@ const startInput = z.strictObject({
 
 type StartInput = z.infer<typeof startInput>;
 
-// The capabilities are switched on in order: the free training of the whole
-// set or of one skill, one timed block of Hören or Lesen and the full exam
-// of the whole set. The repeat of errors answers not-enabled before anything
-// is written. The tasks are assigned from the pinned version, never taken
-// from the client.
+// The capabilities: the free training of the whole set or of one skill, one
+// timed block of Hören or Lesen, the full exam of the whole set and the free
+// repeat of the errors of an own completed attempt. The tasks are assigned
+// by the server from the pinned version, never taken from the client.
 const isNormal = (input: StartInput): boolean =>
   input.purpose === 'normal' && input.sourceAttemptId === null;
+
+type RepeatInput = StartInput & { sourceAttemptId: string };
+
+const isRepeat = (input: StartInput): input is RepeatInput =>
+  input.purpose === 'error-repeat' && input.sourceAttemptId !== null;
 
 // A timed block and the full exam pin a confirmed profile and need the
 // reserve of the guest.
 const isTimed = (input: StartInput): boolean => input.mode !== 'training';
 
 const checkEnabled = (input: StartInput): RunTechnicalFailure | null => {
-  if (!isNormal(input)) return 'not-enabled';
+  // A repeat is always a free training; its source decides the rest.
+  if (isRepeat(input)) {
+    return input.mode === 'training' ? null : 'invalid-input';
+  }
+  if (!isNormal(input)) return 'invalid-input';
   const isWhole = input.selection === 'all';
   if (input.mode === 'timed-block' && isWhole) return 'invalid-input';
   if (input.mode === 'exam' && !isWhole) return 'invalid-input';
@@ -103,6 +116,8 @@ const RULE_FAILURES: Readonly<Record<string, RunTechnicalFailure>> = {
   // The prepared choice is no longer the latest version: the choice is read
   // again before a new start.
   version_changed: 'not-found',
+  // The repeat source is not an own completed attempt of this version.
+  repeat_source_invalid: 'not-found',
 };
 
 const fail = <Outcome>(
@@ -292,13 +307,80 @@ const readyFor = async (
   return { ok: true, result: { prepared, slot: verdict } };
 };
 
+// The SQL start and what follows its commit: the result of an expired
+// attempt it closed, then the attempt it names with its actual state.
+const admit = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  call: StartCall,
+): Promise<StartAttemptResult> => {
+  const started = await callStart(deps, call);
+  if (!started.ok) {
+    const rule = ruleViolation(started.error);
+    const known = rule ? RULE_FAILURES[rule] : undefined;
+    if (known) return fail(known);
+    throw new Error('Attempt was not started', { cause: started.error });
+  }
+  const { row } = started;
+  // The expired attempt this start closed gets its result after the commit,
+  // before the answer. A failure leaves it submitted without a result and
+  // never undoes the new start. A replayed start names no closed attempt, so
+  // every submitted attempt of the slot is tried again as well.
+  const closedIds = new Set(
+    await findSubmittedAttemptIds(deps, guest.sessionId, call.examId),
+  );
+  if (row.closed_attempt_id) closedIds.add(row.closed_attempt_id);
+  for (const closedId of closedIds) {
+    await finalizeClosedRun(deps, guest, closedId);
+  }
+  const outcome = row.outcome === 'conflict' ? 'conflict' : 'accepted';
+  return outcomeOf(deps, guest, row.attempt_id, outcome);
+};
+
+// The order of a repeat: a known commandId first (the SQL start replays it
+// or refuses another payload), then the source, which answers not-found
+// before the slot is looked at, then the slot and the admission in SQL. An
+// empty repeat writes nothing.
+const runRepeat = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  input: RepeatInput,
+  exam: ExamRow,
+): Promise<StartCommandResult> => {
+  const known = await findStartCommand(deps, guest.sessionId, input.commandId);
+  if (known && known.kind !== 'start') return fail('invalid-input');
+  let questionIds: readonly string[] = [];
+  if (!known) {
+    const prepared = await prepareRepeat(deps, guest, exam, input);
+    if (prepared.outcome === 'refused') return fail(prepared.failure);
+    if (prepared.outcome === 'empty') {
+      const { sourceAttemptId } = input;
+      return { ok: true, result: { outcome: 'empty', sourceAttemptId } };
+    }
+    questionIds = prepared.assignment.questionIds;
+  }
+  return admit(deps, guest, {
+    sessionId: guest.sessionId,
+    examId: exam.id,
+    commandId: input.commandId,
+    mode: input.mode,
+    purpose: input.purpose,
+    selection: input.selection,
+    sourceAttemptId: input.sourceAttemptId,
+    versionId: input.expectedVersionId,
+    scope: 'short-set',
+    questionIds,
+  });
+};
+
 const runStart = async (
   deps: ServerDeps,
   guest: GuestContext,
   input: StartInput,
-): Promise<StartAttemptResult> => {
+): Promise<StartCommandResult> => {
   const exam = await findExamBySlug(deps, input.examSlug);
   if (!exam) return fail('not-found');
+  if (isRepeat(input)) return runRepeat(deps, guest, input, exam);
   const ready = await readyFor(deps, guest, input, exam);
   if (!ready.ok) return fail(ready.failure);
   const { prepared, slot } = ready.result;
@@ -310,7 +392,7 @@ const runStart = async (
   }
   if (!prepared) return fail('not-found');
   const { version, assignment } = prepared;
-  const call = await callStart(deps, {
+  return admit(deps, guest, {
     sessionId: guest.sessionId,
     examId: exam.id,
     commandId: input.commandId,
@@ -322,37 +404,18 @@ const runStart = async (
     scope: assignment.scope,
     questionIds: assignment.questionIds,
   });
-  if (!call.ok) {
-    const rule = ruleViolation(call.error);
-    const known = rule ? RULE_FAILURES[rule] : undefined;
-    if (known) return fail(known);
-    throw new Error('Attempt was not started', { cause: call.error });
-  }
-  const { row } = call;
-  // The expired attempt this start closed gets its result after the commit,
-  // before the answer. A failure leaves it submitted without a result and
-  // never undoes the new start. A replayed start names no closed attempt, so
-  // every submitted attempt of the slot is tried again as well.
-  const closedIds = new Set(
-    await findSubmittedAttemptIds(deps, guest.sessionId, exam.id),
-  );
-  if (row.closed_attempt_id) closedIds.add(row.closed_attempt_id);
-  for (const closedId of closedIds) {
-    await finalizeClosedRun(deps, guest, closedId);
-  }
-  const outcome = row.outcome === 'conflict' ? 'conflict' : 'accepted';
-  return outcomeOf(deps, guest, row.attempt_id, outcome);
 };
 
 // An explicit start of one attempt. The same commandId returns the attempt
 // it created, also after completion; a new commandId while an attempt of the
 // exam is active is a conflict that names the active attempt. An active
-// timed attempt past its deadline is closed by the start instead.
-export const startAttempt = async (
+// timed attempt past its deadline is closed by the start instead. A repeat
+// of errors with nothing wrong or skipped is empty and starts nothing.
+export const startCommand = async (
   deps: ServerDeps,
   token: string | null | undefined,
   input: unknown,
-): Promise<StartAttemptResult> => {
+): Promise<StartCommandResult> => {
   const parsed = startInput.safeParse(input);
   if (!parsed.success) return fail('invalid-input');
   try {
@@ -365,6 +428,20 @@ export const startAttempt = async (
     console.error({ error });
     return fail('unavailable');
   }
+};
+
+// A start that names an attempt. Only a repeat can be empty: this entry has
+// no attempt to name for it and answers not-found.
+export const startAttempt = async (
+  deps: ServerDeps,
+  token: string | null | undefined,
+  input: unknown,
+): Promise<StartAttemptResult> => {
+  const answer = await startCommand(deps, token, input);
+  if (!answer.ok) return answer;
+  const { result } = answer;
+  if (result.outcome === 'empty') return fail('not-found');
+  return { ok: true, result };
 };
 
 // The read-only preflight of a timed start for the guest replacement of #44:

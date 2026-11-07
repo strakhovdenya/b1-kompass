@@ -5,7 +5,7 @@ import type { AttemptReview, ExamQuestion } from '@b1k/domain';
 import messages from '../../../messages/en.json';
 import ruMessages from '../../../messages/ru.json';
 import { AttemptReviewView } from './AttemptReviewView';
-import type { RestartStatus } from './AttemptReviewView';
+import type { RepeatStatus, RestartStatus } from './AttemptReviewView';
 
 const question = (id: string, number: number): ExamQuestion => ({
   id,
@@ -102,6 +102,34 @@ describe('AttemptReviewView', () => {
     expect(renderRestart('idle', 'ru')).toContain(ruMessages.results.restart);
     expect(renderRestart('restarting')).toContain('disabled=""');
     expect(renderRestart('error')).toContain('data-testid="restart-status"');
+  });
+
+  it('offers the repeat of errors and shows empty and error localized', () => {
+    const renderRepeat = (status: RepeatStatus, locale = 'en') =>
+      renderToStaticMarkup(
+        <NextIntlClientProvider
+          locale={locale}
+          messages={locale === 'ru' ? ruMessages : messages}
+        >
+          <AttemptReviewView
+            review={review}
+            questions={questions}
+            onRepeat={() => undefined}
+            repeatStatus={status}
+          />
+        </NextIntlClientProvider>,
+      );
+    expect(render(review)).not.toContain('data-testid="repeat-errors"');
+    const idle = renderRepeat('idle');
+    expect(idle).toContain('data-testid="repeat-errors"');
+    expect(idle).toContain(messages.results.repeat);
+    expect(idle).not.toContain('data-testid="repeat-status"');
+    expect(renderRepeat('starting')).toContain('disabled=""');
+    expect(renderRepeat('empty')).toContain(messages.results.repeatEmpty);
+    expect(renderRepeat('empty', 'ru')).toContain(
+      ruMessages.results.repeatEmpty,
+    );
+    expect(renderRepeat('error')).toContain(messages.results.repeatError);
   });
 
   it('omits the scope note only when a policy shows a level', () => {

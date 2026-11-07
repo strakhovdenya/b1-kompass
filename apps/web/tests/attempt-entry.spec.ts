@@ -623,11 +623,13 @@ test('foreign attempts and not enabled modes cannot be opened or started', async
   expect(await foreign.text()).not.toContain('question-card-hoeren-1');
   expect(await readAnswers(ownerAttempt)).toEqual({ 'hoeren-1': 'b' });
 
-  // Unknown, invalid and not yet enabled modes, over HTTP and directly. The
-  // single skills are enabled since #41 (free-training.spec.ts), one timed
-  // block of one skill since #43 (timed-block.spec.ts) and the full exam of
-  // the whole set since #45 (full-exam-timing.spec.ts); a timed block of the
-  // whole set and a full exam of one skill do not exist.
+  // Unknown and invalid modes, over HTTP and directly. The single skills are
+  // enabled since #41 (free-training.spec.ts), one timed block of one skill
+  // since #43 (timed-block.spec.ts), the full exam of the whole set since #45
+  // (full-exam-timing.spec.ts) and the repeat of errors since #47
+  // (error-repeat.spec.ts); a timed block of the whole set and a full exam
+  // of one skill do not exist. A foreign attempt is no repeat source: it is
+  // not found, never started from; a purpose without its source is invalid.
   const refused: [Record<string, unknown>, number, string][] = [
     [{ mode: 'speed-run' }, 400, 'invalid-input'],
     [{ mode: 'timed-block', selection: 'all' }, 400, 'invalid-input'],
@@ -635,8 +637,14 @@ test('foreign attempts and not enabled modes cannot be opened or started', async
     [{ mode: 'exam', selection: 'lesen' }, 400, 'invalid-input'],
     [
       { purpose: 'error-repeat', sourceAttemptId: ownerAttempt },
-      422,
-      'not-enabled',
+      404,
+      'not-found',
+    ],
+    [{ purpose: 'error-repeat', sourceAttemptId: null }, 400, 'invalid-input'],
+    [
+      { purpose: 'normal', sourceAttemptId: ownerAttempt },
+      400,
+      'invalid-input',
     ],
   ];
   for (const [overrides, status, failure] of refused) {
@@ -950,6 +958,77 @@ test('public and service roles cannot execute owner only migration helpers', asy
   expect(await readAttempts(sessionOf(created))).toEqual([
     { id: runless, status: 'active' },
   ]);
+});
+
+test('repeat migration keeps start and private functions inaccessible to public roles', async () => {
+  const REPEAT_KERNEL =
+    'm2_private.repeat_expected(uuid, uuid, uuid, text, uuid)';
+  const [start] = NEW_FUNCTIONS;
+  const admit = NEW_FUNCTIONS.find((fn) => fn.startsWith('m2_private.admit'));
+  if (!start || !admit) throw new Error('start functions are missing');
+  // After the repeat migration only the runtime role starts; the kernels
+  // stay owner-only and none has a PUBLIC grant.
+  expect(privilegeOf('service_role', start)).toBe(true);
+  for (const role of ['public', 'anon', 'authenticated']) {
+    for (const fn of [start, admit, REPEAT_KERNEL]) {
+      expect(privilegeOf(role, fn)).toBe(false);
+    }
+  }
+  for (const fn of [admit, REPEAT_KERNEL]) {
+    expect(privilegeOf('service_role', fn)).toBe(false);
+  }
+  expect(
+    psql(`select count(*) from pg_proc p,
+      aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+      where x.grantee = 0 and p.oid in (${[start, admit, REPEAT_KERNEL]
+        .map((fn) => `${quote(fn)}::regprocedure`)
+        .join(', ')})`),
+  ).toBe('0');
+
+  // A completed source of the owner, named by the publishable key and by
+  // the API roles in SQL: nothing is started.
+  const owner = await newGuest(depsNow());
+  const sourceId = await accepted(owner, FULL_EXAM.slug);
+  expect(
+    (await submitStored(depsNow(), owner.token, { attemptId: sourceId })).ok,
+  ).toBe(true);
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full set is missing');
+  const before = countsOf(sessionOf(owner));
+  const params = {
+    p_session_id: sessionOf(owner),
+    p_exam_id: latest.examId,
+    p_command_id: randomUUID(),
+    p_mode: 'training',
+    p_purpose: 'error-repeat',
+    p_selection: 'all',
+    p_source_attempt_id: sourceId,
+    p_version_id: latest.versionId,
+    p_scope: 'short-set',
+    p_question_ids: FULL_PILOT.content.questions.map((item) => item.id),
+  };
+  const anon = createPublicClient();
+  for (const fn of ['m2_start_attempt', 'admit_start', 'repeat_expected']) {
+    const called = await anon.rpc(fn, params);
+    expect(called.error).not.toBeNull();
+  }
+  for (const role of ['anon', 'authenticated']) {
+    expect(() =>
+      psql(`set role ${role};
+        select * from public.m2_start_attempt(
+          ${quote(params.p_session_id)}, ${quote(params.p_exam_id)},
+          ${quote(params.p_command_id)}, 'training', 'error-repeat', 'all',
+          ${quote(sourceId)}, ${quote(params.p_version_id)}, 'short-set',
+          '[]'::jsonb);`),
+    ).toThrow(/permission denied/);
+    expect(() =>
+      psql(`set role ${role};
+        select m2_private.repeat_expected(
+          ${quote(params.p_session_id)}, ${quote(params.p_exam_id)},
+          ${quote(sourceId)}, 'all', ${quote(params.p_version_id)});`),
+    ).toThrow(/permission denied/);
+  }
+  expect(countsOf(sessionOf(owner))).toEqual(before);
 });
 
 test('legacy finish cannot complete a cancelled migration duplicate', async () => {

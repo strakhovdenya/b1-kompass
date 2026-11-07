@@ -6,6 +6,7 @@ import {
   admitOperation,
   buildAssignment,
   buildRepeatAssignment,
+  contextIdsOf,
   scoreAssignment,
   selectScoringPolicy,
   toBeginLesenResult,
@@ -791,3 +792,93 @@ const toState = () => {
   if (admitted.reason === 'invalid-input') throw new Error('state expected');
   return admitted.state;
 };
+
+describe('repeat context and repeat of a repeat', () => {
+  it('gives context only for real groups, never other tasks of a text', () => {
+    const base = makeContent(2, 2, [
+      {
+        id: 'pair-1',
+        kind: 'pair' as const,
+        teil: 3,
+        trackId: 'track-1',
+        questionIds: ['hoeren-1', 'hoeren-2'],
+      },
+    ]);
+    const content: ExamContent = {
+      ...base,
+      questions: base.questions.map((item) =>
+        item.skill === 'lesen' ? { ...item, textId: 'text-1' } : item,
+      ),
+      texts: [{ id: 'text-1', title: 'Text', body: 'Body' }],
+    };
+    expect(contextIdsOf(content, new Set(['hoeren-1']))).toEqual(['hoeren-2']);
+    expect(contextIdsOf(content, new Set(['lesen-1']))).toEqual([]);
+    expect(contextIdsOf(content, new Set(['hoeren-1', 'hoeren-2']))).toEqual(
+      [],
+    );
+  });
+
+  it('gives no context for a group of another kind, Teil or skill', () => {
+    const content = makeContent(4, 2, [
+      {
+        id: 'pair-teil-2',
+        kind: 'pair' as const,
+        teil: 2,
+        trackId: 'track-1',
+        questionIds: ['hoeren-1', 'hoeren-2'],
+      },
+      {
+        id: 'shared-teil-3',
+        kind: 'shared-set' as const,
+        teil: 3,
+        trackId: 'track-1',
+        options: [
+          { id: 'a', text: 'A' },
+          { id: 'b', text: 'B' },
+        ],
+        questionIds: ['hoeren-3', 'hoeren-4'],
+      },
+      {
+        id: 'pair-with-lesen',
+        kind: 'pair' as const,
+        teil: 3,
+        trackId: 'track-1',
+        questionIds: ['hoeren-4', 'lesen-1'],
+      },
+    ]);
+    expect(contextIdsOf(content, new Set(['hoeren-1']))).toEqual([]);
+    expect(contextIdsOf(content, new Set(['hoeren-3']))).toEqual([]);
+    expect(contextIdsOf(content, new Set(['hoeren-4']))).toEqual([]);
+  });
+
+  it('a repeat of a repeat stays inside the tasks of its source', () => {
+    const content = makeContent(20, 25);
+    const first = buildRepeatAssignment({
+      assignment: assign(content),
+      versionId: VERSION,
+      content,
+      keys: keysOf(content),
+      selections: answers(
+        content,
+        idsOf(content).filter((id) => !['hoeren-2', 'lesen-4'].includes(id)),
+      ),
+    });
+    if (!first.ok) throw new Error(`unexpected error ${first.error}`);
+    expect(first.assignment.questionIds).toEqual(['hoeren-2', 'lesen-4']);
+    // Nothing answered in the repeat: only its own two tasks are skipped.
+    const second = buildRepeatAssignment({
+      assignment: first.assignment,
+      versionId: VERSION,
+      content,
+      keys: keysOf(content),
+      selections: {},
+    });
+    if (!second.ok) throw new Error(`unexpected error ${second.error}`);
+    expect(second.assignment.questionIds).toEqual(['hoeren-2', 'lesen-4']);
+    expect(second.assignment).toMatchObject({
+      purpose: 'error-repeat',
+      scope: 'short-set',
+      selection: 'all',
+    });
+  });
+});

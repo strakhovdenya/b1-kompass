@@ -2,6 +2,7 @@ import type { Selections } from '../answers/save-result';
 import type {
   AnswerKeys,
   ExamContent,
+  ExamGroup,
   ExamOption,
   ExamQuestion,
 } from '../material/schema';
@@ -67,13 +68,32 @@ const isSelection = (value: string): value is AttemptSelection =>
 const hasDuplicates = (ids: readonly string[]): boolean =>
   new Set(ids).size !== ids.length;
 
-const contextIdsOf = (
+// The only groups whose members are shown together in the exam: the Hören
+// Teil 3 pair and the Hören Teil 4 shared set. A group of another kind and
+// Teil, which the material schema still allows, gives no context.
+const CONTEXT_GROUP_TEIL: Readonly<Record<ExamGroup['kind'], number>> = {
+  pair: 3,
+  'shared-set': 4,
+};
+
+const isContextGroup = (group: ExamGroup): boolean =>
+  CONTEXT_GROUP_TEIL[group.kind] === group.teil;
+
+// The unassigned Hören members of every real group (a Teil 3 pair, a Teil 4
+// shared set) that has an assigned task. A Lesen text is no group: its other
+// tasks are never context.
+export const contextIdsOf = (
   content: ExamContent,
   assigned: ReadonlySet<string>,
 ): string[] => {
-  const known = new Set(content.questions.map((question) => question.id));
+  const known = new Set(
+    content.questions
+      .filter((question) => question.skill === 'hoeren')
+      .map((question) => question.id),
+  );
   const context = new Set<string>();
   for (const group of content.groups ?? []) {
+    if (!isContextGroup(group)) continue;
     if (!group.questionIds.some((id) => assigned.has(id))) continue;
     for (const id of group.questionIds) {
       if (known.has(id) && !assigned.has(id)) context.add(id);
@@ -209,7 +229,7 @@ export interface PublicContextItem {
 
 export const toPublicContext = (
   content: ExamContent,
-  assignment: AttemptAssignment,
+  assignment: Pick<AttemptAssignment, 'contextIds'>,
 ): PublicContextItem[] => {
   const byId = new Map(content.questions.map((q) => [q.id, q] as const));
   return assignment.contextIds.flatMap((id) => {

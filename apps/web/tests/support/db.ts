@@ -13,6 +13,8 @@ import type {
   PracticeState,
   StartAttemptResult,
 } from '../../src/server/attempts/attempts';
+import { startCommand } from '../../src/server/attempts/start';
+import type { StartCommandResult } from '../../src/server/attempts/start';
 import { createServiceClient } from '../../src/server/db';
 import type { Clock, ServerDeps } from '../../src/server/db';
 import {
@@ -275,6 +277,25 @@ export const startFor = async (
   overrides: Partial<StartBody> = {},
 ): Promise<StartAttemptResult> =>
   startAttempt(deps, token, await startBody(slug, overrides));
+
+// The repeat of the errors of one completed attempt, as the review sends it:
+// the start contract with the source, its version and its selection. The
+// overrides forge any field, so the strict input and the source judge them.
+export const repeatFor = async (
+  deps: ServerDeps,
+  token: string | null,
+  slug: string,
+  source: { attemptId: string; versionId: string; selection?: string },
+  overrides: Partial<StartBody> & Record<string, unknown> = {},
+): Promise<StartCommandResult> =>
+  startCommand(deps, token, {
+    ...(await startBody(slug)),
+    purpose: 'error-repeat',
+    selection: source.selection ?? 'all',
+    sourceAttemptId: source.attemptId,
+    expectedVersionId: source.versionId,
+    ...overrides,
+  });
 
 export type OpenedPractice =
   | { status: 'ready'; practice: PracticeState }
