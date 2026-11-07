@@ -33,14 +33,27 @@
 
 ## Контракт материала
 
-Схема — `examContentSchema` (`packages/domain/src/material/schema.ts`), проверки — `findMaterialProblems` и `findInventoryProblems`. Контракт один для короткого набора и полного пилота.
+Схема — `examContentSchema` (`packages/domain/src/material/schema.ts`), проверки — `findMaterialProblems` и `findInventoryProblems`. Контракт один для короткого набора и полного пилота. Полный DTZ дополнительно проверяет `findFullDtzProblems` (`packages/domain/src/material/full-dtz.ts`): она вызывает обе проверки и добавляет структурные правила ниже.
 
 - Типы задания: `single-choice`, `true-false`, `shared-choice`. У каждого задания свои `options`; у `shared-choice` они совпадают с общим набором группы.
 - Группы `groups`: `pair` (Teil 3: `true-false` и `single-choice`) и `shared-set` (Teil 4: ровно 3 задания, общий список вариантов).
 - Связи: `textId` (текст Lesen), `trackId` (запись), `sourcePage` (страница источника).
 - Номера уникальны внутри блока (`hoeren`, `lesen`), id — во всём наборе.
 
-Публикацию блокируют: отсутствующий ключ (`missing-key`), ключ вне вариантов (`key-not-option`), ключ у примера (`key-for-example`), ключ без задания (`unknown-key`), дубль номера, id или варианта, сломанная ссылка на текст, запись или задание группы (`broken-reference`), неверная группа (`invalid-group`), расхождение вариантов общего набора (`options-mismatch`), число заданий не 20 и 25 (`inventory-mismatch`). Каждая проблема приходит с id задания или группы.
+Публикацию блокируют: отсутствующий ключ (`missing-key`), ключ вне вариантов (`key-not-option`), ключ у примера (`key-for-example`), ключ без задания (`unknown-key`), дубль номера, id или варианта, сломанная ссылка на текст, запись или задание группы (`broken-reference`), неверная группа (`invalid-group`), расхождение вариантов общего набора (`options-mismatch`), число заданий не 20 и 25 (`inventory-mismatch`). Каждая проблема приходит с id задания или группы (или `hoeren:teil-N`), без значения ключа.
+
+## Структура полного DTZ
+
+`findFullDtzProblems(content, keys, context)` — единая проверка для `preparePilot` и `publishFullPilot`; публиковать набор с проблемами нельзя.
+
+- Заданий: Hören Teil 1–4 = 4/5/8/3, Lesen Teil 1–5 = 5/5/6/3/6 (всего 20 и 25).
+- Номера каждого навыка идут по возрастанию без пропусков и упорядочены по Teil; начальный номер не фиксируется (Lesen может начинаться с 1 или с 21).
+- Hören Teil 1–2 — `single-choice`; Teil 3 — ровно 4 группы `pair` (`true-false` + `single-choice`); Teil 4 — одна группа `shared-set` из 3 `shared-choice`.
+- Lesen — только `single-choice`. Teil 3: три последовательные пары, первое задание пары Richtig/Falsch (2 варианта), второе — Richtig/Falsch или выбор a/b/c (официальные наборы g.a.s.t. 31/32, 33/34, 35/36; шесть Richtig/Falsch подряд тоже допустимы ради прежнего пилота). Teil 4 — три Richtig/Falsch.
+- Весь Hören — одна дорожка (задания, группы, примеры). Склейка и нарезка аудио не выполняются.
+- Примеры только в `examples`, без ключа.
+
+Новые коды: `teil-mismatch` (id `hoeren:teil-N` / `lesen:teil-N`), `numbering-gap` (id задания), `teil-order` (id задания), `invalid-question-kind` (id задания), `multiple-hoeren-tracks` (id `hoeren`). Для групп используется существующий `invalid-group` (id группы или `hoeren:teil-3` / `hoeren:teil-4`).
 
 ## Подготовка
 

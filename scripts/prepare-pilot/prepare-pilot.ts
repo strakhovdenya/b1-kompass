@@ -13,13 +13,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import {
-  examContentSchema,
-  findInventoryProblems,
-  findMaterialProblems,
-} from '@b1k/domain';
+import { examContentSchema, findFullDtzProblems } from '@b1k/domain';
 import type { AnswerKeys, ExamContent, MaterialProblem } from '@b1k/domain';
-import { FULL_PILOT_TRACK_ID, PILOT_INVENTORY } from '../lib/pilot';
+import { FULL_PILOT_TRACK_ID } from '../lib/pilot';
 
 const draftSchema = z.strictObject({
   content: examContentSchema,
@@ -37,10 +33,7 @@ export interface PreparedPilot {
 export const preparePilot = (draft: unknown): PreparedPilot => {
   const { content, keys } = draftSchema.parse(draft);
   const trackIds = new Set([FULL_PILOT_TRACK_ID]);
-  const problems = [
-    ...findMaterialProblems(content, keys, { trackIds }),
-    ...findInventoryProblems(content, PILOT_INVENTORY),
-  ];
+  const problems = findFullDtzProblems(content, keys, { trackIds });
   return { content, keys, problems };
 };
 
