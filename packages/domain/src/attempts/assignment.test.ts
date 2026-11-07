@@ -818,6 +818,39 @@ describe('repeat context and repeat of a repeat', () => {
     );
   });
 
+  it('gives no context for a group of another kind, Teil or skill', () => {
+    const content = makeContent(4, 2, [
+      {
+        id: 'pair-teil-2',
+        kind: 'pair' as const,
+        teil: 2,
+        trackId: 'track-1',
+        questionIds: ['hoeren-1', 'hoeren-2'],
+      },
+      {
+        id: 'shared-teil-3',
+        kind: 'shared-set' as const,
+        teil: 3,
+        trackId: 'track-1',
+        options: [
+          { id: 'a', text: 'A' },
+          { id: 'b', text: 'B' },
+        ],
+        questionIds: ['hoeren-3', 'hoeren-4'],
+      },
+      {
+        id: 'pair-with-lesen',
+        kind: 'pair' as const,
+        teil: 3,
+        trackId: 'track-1',
+        questionIds: ['hoeren-4', 'lesen-1'],
+      },
+    ]);
+    expect(contextIdsOf(content, new Set(['hoeren-1']))).toEqual([]);
+    expect(contextIdsOf(content, new Set(['hoeren-3']))).toEqual([]);
+    expect(contextIdsOf(content, new Set(['hoeren-4']))).toEqual([]);
+  });
+
   it('a repeat of a repeat stays inside the tasks of its source', () => {
     const content = makeContent(20, 25);
     const first = buildRepeatAssignment({
