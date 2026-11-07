@@ -296,17 +296,135 @@ Merge PR #56 сам отключает автопубликацию `main` (`ver
 | `vercel promote` — ошибка или timeout CLI | неизвестно | workflow **не повторяет promote**; он читает alias через API до 3 минут. Alias у кандидата → успех; иначе job падает с `promotion-not-confirmed`. Проверить Vercel → Deployments / `vercel promote status`; повторный promote — только вручную после проверки |
 | Alias у кандидата, но GET главной не прошёл | новая версия уже публична | разобрать по Vercel logs. `vercel rollback` (или promote предыдущего deployment из summary) допустим **только если SQL совместим** со старой версией |
 
+## Выпуск M2: порядок, совместимость и откат
+
+Процедура для владельца поверх «Ручной выпуск Production (#56)». Описывает порядок и проверки; агент production-операции не выполняет. Что фактически выпущено и проверено — [m2-acceptance.md](m2-acceptance.md).
+
+### 1. Предвыпускная проверка
+
+1. `Quality` зелёный на HEAD `main` (`gh run list --workflow CI --branch main --limit 1`); `Release Production` сам отказывает при устаревшем SHA или красном CI.
+2. Локально от HEAD: `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run test:e2e` (нужен Docker и `npm run db:start`) и `node --test scripts/release/gate.test.mjs`. Результат CI не заменяется локальным прогоном и наоборот.
+3. `git diff --stat <прежний выпуск>..HEAD -- supabase/migrations` — список новых миграций; каждую прочитать и отметить: добавляет ли она объекты (expand) или удаляет/заменяет контракт, на котором работает опубликованная версия (cutover, раздел 4).
+4. Убедиться, что в репозитории нет `private/` и секретов, а `m2-fixtures.sql` и `tests/support/**` не импортируются кодом приложения (`production-boundary.spec.ts` проверяет это в CI).
+
+### 2. Резервная копия и готовность восстановления
+
+До выпуска, содержащего SQL, владелец делает копию со своего компьютера (команды `supabase db dump` схемы и данных — раздел «Настройки владельца», Supabase; файлы в `private/`). План Free не гарантирует автоматический backup. Восстановление проверяется на **локальной** Supabase (`npm run db:start`, затем `psql`), а не на рабочей базе. Копия содержит гостевые данные: хранить только в `private/`, в Git и чат не передавать.
+
+### 3. Порядок миграций и согласованность схемы и приложения
+
+- Миграции применяются по возрастанию timestamp; применённые не редактируются, исправление — новая миграция. M2 добавил (по порядку): `20261107…_m2_attempt_lifecycle`, `…08…_m2_submission`, `…10…_m2_timing_profiles`, `…11…_m2_timed_blocks`, `…12…_m2_full_exam`, `…13…_m2_error_repeat` (между ними `…09…_word_dictionary_cache`).
+- `Release Production` применяет только ожидающие миграции: сверяет, что история Production — префикс файлов репозитория, делает `db push --dry-run`, `db push` и проверяет равенство истории. Порядок «SQL → smoke → promote» значит, что **до promote старую опубликованную версию обслуживает уже новая схема**.
+- Поэтому каждая миграция должна быть совместима с кодом, который ещё обслуживает сайт (expand → deploy → contract). Исключение — cutover старых RPC (раздел 4): там совместимость старой версии невозможна, окно между `db push` и promote — известное и короткое (в Release #9 — секунды: `db push` 16:49:30, promote 16:49:35 UTC), но реальное.
+
+### 4. Замена устаревших RPC (cutover)
+
+Миграции M2 удалили или заменили контракты M1: `open_attempt`, `start_attempt`, `restart_attempt` (#39); `finish_attempt`, `save_attempt_answer`, `save_attempt_progress` с параметром времени (#40); `m2_start_attempt` и `m2_private.admit_start` пересозданы (`DROP` + `CREATE`) в #43 ради нового выходного поля; в #45 заменены оба (`create or replace`, прежняя сигнатура), в #47 — `admit_start`.
+
+- Версия приложения до M2 **несовместима** со схемой M2, а приложение M2 несовместимо со схемой до миграции `20261107…`. Эти две стороны нельзя смешивать в рабочем выпуске.
+- Выпуск, содержащий cutover, планируется в тихое время; сразу после `db push` workflow гоняет smoke кандидата («after-migrations»), и только затем promote.
+- Проверка, что устаревших функций нет (read-only, Supabase SQL Editor):
+
+  ```sql
+  select p.proname from pg_proc p
+  where p.pronamespace = 'public'::regnamespace
+    and p.proname in ('open_attempt','start_attempt','restart_attempt','finish_attempt',
+                      'save_attempt_answer','save_attempt_progress');
+  ```
+
+  Ожидается 0 строк. Новые cutover без отдельного ревью не добавлять: сначала expand (новая функция рядом), затем deploy, затем contract отдельным выпуском.
+
+### 5. Окружение Production и секреты
+
+- Vercel Production: `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Sensitive), `APP_ORIGIN=https://b1-kompass.vercel.app` (без неё мутации отклоняются; точное значение и совпадение с алиасом проверяет владелец, агентом не сверялось). `GUEST_SESSIONS_PER_MINUTE` необязательна. `PRACTICE_EXAM_SLUG` не задавать (по умолчанию открывается пилот); допустим только slug реального опубликованного экзамена, тестовое значение направило бы гостей на тестовый экзамен.
+- В Production **не** задаются тестовые переменные: `DICTIONARY_TEST_PROVIDER` и e2e-значение `PRACTICE_EXAM_SLUG`. `TIMING_PROFILE_OWNER_DB_URL` нужна только владельцу на компьютере и в Vercel не кладётся.
+- Секреты выпуска лежат только в Environments `release-prepare` и `production`; в Git, логи и бандл не попадают (`docs/security.md`).
+
+### 6. Тестовые обёртки не попадают в Production
+
+`m2_test` и `m2-fixtures.sql` существуют только в изолированной локальной БД тестов. Проверки: `production-boundary.spec.ts` (в CI) и, для облака, запрос на отсутствие схемы:
+
+```sql
+select nspname from pg_namespace where nspname = 'm2_test';
+```
+
+Ожидается 0 строк. Installer фикстур отказывает любой нелокальной БД; запускать его против облака нельзя.
+
+### 7. Проверка выпуска и smoke
+
+Автоматически (workflow): история миграций до/после, staged smoke и smoke после SQL (`GET /` → 200, `Cache-Control … no-store`, «Continue as guest»; `GET /practice` без cookie → 307), `vercel promote`, чтение alias. Это **не** проверяет права, материал, устройства и гостевой маршрут.
+
+Вручную после выпуска (владелец, тестовый Guest; результаты — в таблицу M-04…M-14 [m2-acceptance.md](m2-acceptance.md)):
+
+1. HTTPS-главная, «Continue as guest», выбор режима, свободная тренировка: ответ, «Saved», сдача, разбор.
+2. Блок на время и полный экзамен — только если профиль подтверждён (раздел 9). Без него полный экзамен отключён («Coming soon»), а старт блока на время отклоняется сообщением «This mode is not available yet.»; это ожидаемо.
+3. Мутация с чужим `Origin` отклоняется (`403`), `http://` ведёт на HTTPS.
+4. Vercel logs без ошибок RPC, например `function … does not exist`.
+
+### 8. Проверка Production после выпуска M2
+
+Read-only запросы в Supabase SQL Editor (результаты вносит владелец; агентом не выполнялись). Любое отличие от ожидаемого — остановиться и разобрать, а не игнорировать.
+
+```sql
+-- 1. RLS включён на всех таблицах public (ожидается 0 строк)
+select c.relname from pg_class c
+where c.relnamespace = 'public'::regnamespace and c.relkind = 'r' and not c.relrowsecurity;
+
+-- 2. У anon/authenticated нет прав на таблицы (ожидается 0 строк)
+select n.nspname, c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname in ('public','m2_private','m2_owner') and c.relkind in ('r','v','m','p')
+  and (has_table_privilege('anon', c.oid, 'select,insert,update,delete')
+    or has_table_privilege('authenticated', c.oid, 'select,insert,update,delete'));
+
+-- 3. anon/authenticated не исполняют функции (ожидается 0 строк)
+select n.nspname, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname in ('public','m2_private','m2_owner')
+  and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));
+
+-- 4. Закрытые схемы недоступны API-ролям (ожидается false, false)
+select has_schema_privilege('anon','m2_private','usage'), has_schema_privilege('authenticated','m2_owner','usage');
+
+-- 5. Перенос M1 (AC-34). Индекс слота на месте (ожидается 1 строка):
+select indexname from pg_indexes where indexname = 'attempts_one_active_per_exam';
+-- Отменённые дубликаты M1 (информационно: число зависит от данных M1; у каждой — сохранённые ответы и нет результата)
+select r.cancel_reason, count(*) from public.attempt_runs r
+join public.attempts a on a.id = r.attempt_id
+where a.status = 'cancelled' group by 1;
+```
+
+Storage и Data API с publishable-ключом: повторить скрипт отказов из M1 (`docs/security.md`, «Статус проверок») для бакета `exam-sources` и таблиц M2; все операции должны быть отклонены. Подписанный URL, уже выданный сервером, до своего TTL остаётся рабочим — это предел архитектуры, а не дефект проверки.
+
+### 9. Подтверждение профиля времени (точный отпечаток)
+
+Публичный timed открывается только для версии, у которой голова профиля `confirmed` с совпавшим отпечатком. Один зелёный CI профиль не подтверждает. Процедура владельца — раздел «Профиль времени (#42)» выше (шаги 1–5); кратко и без исключений:
+
+1. `show --exam <slug>`: версия, единственная дорожка и её `sha256` совпадают с оригинальным Track 127 у владельца.
+2. Прослушать запись (24:54), проверить паузы и регламент; решить, годятся ли предварительные 1500 / 60 / 2700 с.
+3. `draft` с проверенными значениями; **глазами** сверить версию, `audioSha256`, длительности и `fingerprint` из его вывода.
+4. `confirm --revision-id … --fingerprint …` с теми же значениями из шага 3; затем `show`: `confirmedRevisionId` — эта редакция, `headMatches = true`.
+5. Любое последующее `draft` закрывает новые timed-старты до нового `confirm`; начатые попытки не меняются. Профиль **другой версии** материала подтверждается отдельно.
+
+Состояние на 2026-11-07: процедура **не выполнена**; значения предварительные; состояние профиля в Production агентом не читалось.
+
+### 10. Откат
+
+- **Не использовать** сброс базы (`db reset`), правку истории миграций, `--include-all` и ручное удаление применённых миграций.
+- Приложение: `vercel rollback` или promote предыдущего deployment допустимы **только** если его код совместим с текущей схемой. Старый deployment до M2 несовместим со схемой после `20261107…` (раздел 4): откат к нему сломает сайт. Откат между двумя версиями M2 допустим, если разница между ними не удаляет и не переименовывает контракты схемы и не меняет тела функций, от которых зависит старый код (замена тела через `create or replace` тоже меняет поведение).
+- База: исправление вперёд новой миграцией (expand → deploy → contract). Восстановление из копии — крайняя мера по решению владельца после оценки потери данных гостей и проверки на локальной базе.
+- Быстрое ограничение без отката кода: новая `draft`-редакция профиля закрывает **новые** timed-старты (свободная тренировка продолжает работать, начатые попытки не меняются).
+- Если `db push` применился частично или promote не подтверждён — разбор по таблице «Отказы и восстановление» выше; повторный promote только вручную после проверки.
+
 ### Статус внедрения ручного CD
 
 Пять состояний ведутся раздельно; одно не подтверждает другое.
 
 | # | Состояние | Статус |
 | --- | --- | --- |
-| 1 | Код CD (`release-production.yml`, `gate.mjs`, `vercel.json`, документы) | ✅ в PR #57, не смержен. После merge Issue #56 закрывается автоматически (`Closes #56`) — это завершение кода, а не приёмка CD |
-| 2 | CI `Quality` на PR head, включая release gate tests | ✅ PR #57 (`Quality` success); повторяется на каждом push ветки |
-| 3 | Настройки GitHub (ruleset, Environments, reviewer, secrets, vars) и Vercel (bypass, токен, `APP_ORIGIN`) | ⏳ владельцем не подтверждены |
-| 4 | Проверка CD с approval (run с Reject, run с Approve) | ⏳ не выполнялась |
-| 5 | Первый подтверждённый Production release через CD | ⏳ не выполнялся; Production остаётся на `dpl_5mKAg5KA84Pe915sjd4XVmjKrv5p` до первого выпуска |
+| 1 | Код CD (`release-production.yml`, `gate.mjs`, `vercel.json`, документы) | ✅ слит в `main` (PR #57, `d4a0803`); работает |
+| 2 | CI `Quality` на PR head, включая release gate tests | ✅ зелёный на PR #57 и на каждом последующем PR/`main` |
+| 3 | Настройки GitHub (ruleset, Environments, reviewer, secrets, vars) и Vercel (bypass, токен, `APP_ORIGIN`) | ✅ в части, которую проверяет workflow: preflight читает Environments, reviewer и branch policy, Stage — проект Vercel, Vercel Authentication и bypass; последние запуски прошли. ⏳ Значение `APP_ORIGIN` в Production и ruleset `main` агентом не сверялись |
+| 4 | Проверка CD с approval | ✅ успешные запуски с approval и promote: первый запуск `d4a0803` ([run 42044321009](https://github.com/strakhovdenya/b1-kompass/actions/runs/42044321009)) … Release #9. ⏳ Сценарий «Reject» отдельно не подтверждён; Release #4 завершился `failure` |
+| 5 | Первый подтверждённый Production release через CD | ✅ Первый запуск, `d4a0803`, 2026-11-05 ([run 42044321009](https://github.com/strakhovdenya/b1-kompass/actions/runs/42044321009)). Актуальный — Release #9 (`95ac460`, 2026-11-07, [run 42393020156](https://github.com/strakhovdenya/b1-kompass/actions/runs/42393020156)) |
 
 ## Фактический статус публикации
 
@@ -331,3 +449,17 @@ Merge PR #56 сам отключает автопубликацию `main` (`ver
 | Работа при выключенном компьютере владельца | ⏳ не проверена фактически. По устройству развёртывания (Vercel и Supabase) компьютер не нужен |
 
 Успешная сборка не считается публикацией: статус обновляется только после реальной проверки по HTTPS.
+
+### Дополнение 2026-11-07 (M2)
+
+| Что | Статус |
+| --- | --- |
+| Production-код | ✅ `95ac460` (`main` после PR #70) выложен Release #9 ([run 42393020156](https://github.com/strakhovdenya/b1-kompass/actions/runs/42393020156)); GitHub Deployment `production` 7624044850: success 2026-11-07 16:49:43 UTC, `https://b1-kompass.vercel.app`. Проверка — данные workflow и GitHub API, сайт агентом не открывался |
+| Миграции Production | ✅ перед Release #9 «12 из 14», pending `20261112000000_m2_full_exam`, `20261113000000_m2_error_repeat`; после `db push` «14 из 14, pending: none»; история до и после проверена gate |
+| Smoke выпуска | ✅ staged и after-migrations: `GET /` и `GET /practice` без Guest. Гостевой маршрут, режимы M2 и права **не** проверялись |
+| Предыдущие выпуски M2 | Release #7 `20db12b` (#37–#42), Release #8 `e950c90` (#43) — тот же workflow, успех |
+| Профиль времени пилота | ⏳ не подтверждён владельцем по данным репозитория; состояние в Production не читалось. Публичный timed закрыт до `confirm` (раздел «Выпуск M2», п. 9) |
+| Права, RLS и Storage объектов M2 в облаке | ⏳ не проверялись (раздел «Выпуск M2», п. 8; M-15, M-16 в [m2-acceptance.md](m2-acceptance.md)) |
+| Ручная приёмка на телефоне и компьютере | ⏳ не выполнена (M-04…M-09 в [m2-acceptance.md](m2-acceptance.md)) |
+
+Историческая таблица выше отражает 2026-11-01 и сохранена как есть.
