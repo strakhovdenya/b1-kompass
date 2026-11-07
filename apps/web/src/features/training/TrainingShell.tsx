@@ -27,6 +27,7 @@ import {
   attemptLesenPath,
   attemptPath,
   choicePath,
+  requestAttemptAudio,
   requestBeginLesen,
   requestSaveAnswer,
 } from './attempt-client';
@@ -38,6 +39,7 @@ import type {
 import { useAnswerStore } from './answers';
 import { syncOf } from './exam-clock';
 import type { ClockSync } from './exam-clock';
+import { audioTargetSeconds } from './exam-audio-position';
 import { ExamAudioPanel } from './ExamAudioSession';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
@@ -51,6 +53,18 @@ export interface ResolveAudioInput {
   attemptId: string;
   trackId: string;
 }
+
+// The address of a free or timed recording, from its own HTTP request: no
+// Server Action queue, no wait for a save.
+const resolveFreeAudio = async (
+  attemptId: string,
+  trackId: string,
+): Promise<AudioAccess> => {
+  const result = await requestAttemptAudio(attemptId, trackId);
+  if (!result.ok) return { ok: false, error: result.error };
+  const { url, contentType, expiresAt } = result.audio;
+  return { ok: true, audio: { url, contentType, expiresAt } };
+};
 
 const BLOCK_PATHS: readonly {
   block: ReviewBlock;
@@ -92,7 +106,10 @@ interface TrainingShellProps {
   // The server's start of Hören of a full exam: the position of its one
   // recording.
   examStartedAtMs?: number | null;
-  resolveAudio: (input: ResolveAudioInput) => Promise<AudioAccess>;
+  // The page's Server Action for an address. The shell no longer uses it:
+  // every address comes from the HTTP route, beside the Server Action
+  // queue of a locale switch.
+  resolveAudio?: (input: ResolveAudioInput) => Promise<AudioAccess>;
   children: ReactNode;
 }
 
@@ -120,7 +137,6 @@ export const TrainingShell = ({
   phase = null,
   summary = null,
   examStartedAtMs = null,
-  resolveAudio,
   children,
 }: TrainingShellProps) => {
   const t = useTranslations('training');
@@ -399,10 +415,14 @@ export const TrainingShell = ({
   const examAudio =
     isExam && examTrackId && examStartedAtMs !== null ? (
       <ExamAudioPanel
+        key={attemptId}
         attemptId={attemptId}
         trackId={examTrackId}
         isActive={isOpen && trusted.phase === 'hoeren'}
         startedAtMs={examStartedAtMs}
+        deadlineMs={
+          trusted.phase === 'hoeren' ? (activeClock?.deadlineMs ?? null) : null
+        }
         sync={sync}
       />
     ) : null;
@@ -412,7 +432,14 @@ export const TrainingShell = ({
         <AudioPlayer
           key={trackId}
           isActive={current === 'hoeren'}
-          resolveAudio={() => resolveAudio({ attemptId, trackId })}
+          restoreSeconds={(savedSeconds, durationSeconds) =>
+            audioTargetSeconds({
+              mode: mode === 'timed-block' ? 'timed-block' : 'training',
+              savedSeconds,
+              durationSeconds,
+            })
+          }
+          resolveAudio={() => resolveFreeAudio(attemptId, trackId)}
           initialPosition={
             trackIndex === 0 ? (initialProgress?.positionSeconds ?? 0) : 0
           }
