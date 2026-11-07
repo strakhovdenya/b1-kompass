@@ -110,7 +110,12 @@ export interface MaterialProblem {
     | 'invalid-group'
     | 'options-mismatch'
     | 'invalid-example'
-    | 'inventory-mismatch';
+    | 'inventory-mismatch'
+    | 'teil-mismatch'
+    | 'numbering-gap'
+    | 'teil-order'
+    | 'invalid-question-kind'
+    | 'multiple-hoeren-tracks';
   questionId: string;
 }
 

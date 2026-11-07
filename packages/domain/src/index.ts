@@ -17,6 +17,7 @@ export {
   sourceSchema,
   textSchema,
 } from './material/schema';
+export { findFullDtzProblems } from './material/full-dtz';
 export {
   SYNTHETIC_TRACK_ID,
   buildSyntheticPilot,

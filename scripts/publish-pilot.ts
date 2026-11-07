@@ -14,13 +14,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { examContentSchema, findInventoryProblems } from '@b1k/domain';
+import { examContentSchema, findFullDtzProblems } from '@b1k/domain';
 import type { AnswerKeys } from '@b1k/domain';
 import {
   createServiceClient,
   readServiceConfig,
 } from '../apps/web/src/server/db';
-import { FULL_PILOT_TRACK_ID, PILOT_INVENTORY } from './lib/pilot';
+import { FULL_PILOT_TRACK_ID } from './lib/pilot';
 import { PILOT_EXAM } from './seed-pilot-question';
 import {
   audioContentTypeOf,
@@ -39,14 +39,15 @@ export interface FullPilotInput {
   audio: { contentType: AudioContentType; bytes: Uint8Array };
 }
 
-// The inventory is checked before anything is written; the contract itself is
-// checked by the shared publication.
-export const publishFullPilot = (
+// The material contract and the full DTZ structure are checked before
+// anything is written.
+export const publishFullPilot = async (
   db: SupabaseClient,
   input: FullPilotInput,
 ): Promise<PublishOutcome> => {
   const content = examContentSchema.parse(input.content);
-  const problems = findInventoryProblems(content, PILOT_INVENTORY);
+  const trackIds = new Set([FULL_PILOT_TRACK_ID]);
+  const problems = findFullDtzProblems(content, input.keys, { trackIds });
   if (problems.length > 0) {
     const list = problems.map((p) => `${p.code}:${p.questionId}`).join(', ');
     throw new Error(`Pilot is not complete: ${list}`);
