@@ -448,15 +448,30 @@ test('restart rejects foreign or active attempt', async () => {
   const ownerEvents = await readEvents(owner.guest.visitorId);
   const strangerEvents = await readEvents(stranger.guest.visitorId);
 
-  // A start builds on no foreign attempt: naming one as a source is not
-  // enabled; an active run is a conflict, never replaced.
+  // A start builds on no foreign attempt: naming one as a repeat source is
+  // not found, before the active slot of the stranger is looked at, so the
+  // answer names no attempt of either guest. The own active run is no source
+  // either. Only a valid own completed source meets the slot: a conflict
+  // that names the active run, never replaced.
   const foreign = {
     purpose: 'error-repeat',
     sourceAttemptId: owner.completedId,
   };
   expect(
     await startFor(depsNow(), stranger.token, FULL_EXAM.slug, foreign),
-  ).toEqual({ ok: false, failure: 'not-enabled' });
+  ).toEqual({ ok: false, failure: 'not-found' });
+  expect(
+    await startFor(depsNow(), owner.token, FULL_EXAM.slug, {
+      purpose: 'error-repeat',
+      sourceAttemptId: activeId,
+    }),
+  ).toEqual({ ok: false, failure: 'not-found' });
+  expect(
+    await startFor(depsNow(), owner.token, FULL_EXAM.slug, foreign),
+  ).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: activeId },
+  });
   expect(await startFor(depsNow(), owner.token, FULL_EXAM.slug)).toMatchObject({
     ok: true,
     result: { outcome: 'conflict', attemptId: activeId },

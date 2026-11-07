@@ -159,3 +159,17 @@ describe('LesenScreen', () => {
     expect(splitParagraphs('a\nb\n\nc')).toEqual(['a\nb', 'c']);
   });
 });
+
+describe('LesenScreen in a repeat of errors', () => {
+  it('keeps the whole linked text with only the assessed task of it', () => {
+    const html = render({
+      questions: [question('lesen-2', 2, 'text-1')],
+      texts: [text('text-1', 'Der ganze Text bleibt sichtbar.')],
+    });
+    expect(html).toContain('Der ganze Text bleibt sichtbar.');
+    expect(html).toContain('data-testid="question-card-lesen-2"');
+    expect(html).not.toContain('question-card-lesen-1');
+    expect(html).not.toContain('context-card-');
+    expect(html).toContain('Answered: 0 of 1');
+  });
+});

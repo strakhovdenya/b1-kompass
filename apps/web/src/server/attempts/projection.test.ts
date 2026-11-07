@@ -190,3 +190,115 @@ describe('toLifecycleState', () => {
     ).toBeNull();
   });
 });
+
+// A repeat of errors: one task of a Teil 3 pair and one of two Lesen tasks
+// of the same text are assigned.
+const repeatContent: ExamContent = {
+  ...content,
+  questions: [
+    ...content.questions,
+    {
+      id: 'hoeren-2',
+      number: 2,
+      kind: 'true-false',
+      skill: 'hoeren',
+      teil: 3,
+      prompt: 'Hören zwei?',
+      options: [option('r'), option('f')],
+      trackId: 'track-1',
+    },
+    {
+      id: 'lesen-3',
+      number: 3,
+      kind: 'single-choice',
+      skill: 'lesen',
+      teil: 1,
+      prompt: 'Lesen drei?',
+      options: [option('a'), option('b')],
+      textId: 'text-1',
+    },
+  ],
+  groups: [
+    {
+      id: 'pair-1',
+      kind: 'pair',
+      teil: 3,
+      trackId: 'track-1',
+      questionIds: ['hoeren-2', 'hoeren-1'],
+    },
+  ],
+};
+
+const repeatView = (questionIds: string[]): AttemptRunView => ({
+  ...view(questionIds),
+  purpose: 'error-repeat',
+  selection: 'all',
+  sourceAttemptId: '00000000-0000-4000-8000-000000000004',
+});
+
+describe('server-owned assessed and context projection', () => {
+  const projectRepeat = (questionIds: string[], isReview = false) =>
+    toPracticeState({
+      view: repeatView(questionIds),
+      examTitle: 'Test',
+      content: repeatContent,
+      selections: { 'hoeren-1': 'a', 'hoeren-2': 'r', 'lesen-3': 'b' },
+      revisions: { 'hoeren-1': 1, 'hoeren-2': 2, 'lesen-3': 1 },
+      trackIds: ['track-1'],
+      review: isReview
+        ? {
+            attemptId: '00000000-0000-4000-8000-000000000001',
+            scope: 'short-set',
+            showsLevel: false,
+            score: 0,
+            maxScore: 2,
+            percent: 0,
+            correct: 0,
+            incorrect: 1,
+            skipped: 1,
+            skills: null,
+            level: null,
+            completedAt: '2026-11-01T11:00:00.000Z',
+            items: [],
+          }
+        : null,
+      progress: null,
+    });
+
+  it('gives a pair neighbour as key-free context outside the assessed set', () => {
+    const state = projectRepeat(['hoeren-1', 'lesen-1']);
+    expect(state.questions.map((item) => item.id)).toEqual([
+      'hoeren-1',
+      'lesen-1',
+    ]);
+    expect(state.context).toEqual([
+      {
+        questionId: 'hoeren-2',
+        number: 2,
+        prompt: 'Hören zwei?',
+        options: [option('r'), option('f')],
+      },
+    ]);
+    // The neighbour has no answer and no revision on the page.
+    expect(state.selections).toEqual({ 'hoeren-1': 'a' });
+    expect(state.revisions).toEqual({ 'hoeren-1': 1 });
+    const serialized = JSON.stringify(state);
+    expect(serialized).not.toContain('correctOptionId');
+    expect(serialized).not.toContain('"hoeren-2":"r"');
+  });
+
+  it('keeps the linked Lesen text without the other tasks of that text', () => {
+    const state = projectRepeat(['lesen-1']);
+    expect(state.texts.map((item) => item.id)).toEqual(['text-1']);
+    expect(state.questions.map((item) => item.id)).toEqual(['lesen-1']);
+    expect(state.context).toEqual([]);
+    expect(JSON.stringify(state)).not.toContain('Lesen drei?');
+  });
+
+  it('has no context for a normal attempt or a completed review', () => {
+    expect(project(['hoeren-1']).context).toEqual([]);
+    const reviewed = projectRepeat(['hoeren-1'], true);
+    expect(reviewed.context).toEqual([]);
+    expect(JSON.stringify(reviewed)).not.toContain('Hören zwei?');
+  });
+});

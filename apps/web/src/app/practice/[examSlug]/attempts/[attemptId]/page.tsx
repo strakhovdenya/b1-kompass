@@ -59,6 +59,7 @@ const HoerenPage = async ({ params }: HoerenPageProps) => {
       <HoerenSingleScreen
         questions={practice.questions}
         groups={practice.groups}
+        context={practice.context}
         initialSelections={practice.selections}
       />
       <Typography variant="body2" color="text.secondary">

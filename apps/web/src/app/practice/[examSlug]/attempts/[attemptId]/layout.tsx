@@ -64,6 +64,11 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
       phase={state.phase}
       summary={summary}
       examStartedAtMs={state.mode === 'exam' ? state.startedAtMs : null}
+      repeatSource={
+        practice.review
+          ? { versionId: practice.versionId, selection: state.selection }
+          : null
+      }
       resolveAudio={resolveAudioAction}
     >
       {children}

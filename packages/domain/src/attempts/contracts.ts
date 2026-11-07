@@ -115,6 +115,15 @@ interface OutcomeOf<Kind extends string> {
 
 export type StartOutcome = OutcomeOf<'accepted' | 'conflict'>;
 
+// A repeat of errors whose source has nothing wrong or skipped starts
+// nothing: no attempt, command or event exists, so there is no state.
+export interface EmptyRepeatOutcome {
+  readonly outcome: 'empty';
+  readonly sourceAttemptId: string;
+}
+
+export type RepeatStartOutcome = StartOutcome | EmptyRepeatOutcome;
+
 export type SubmitOutcome =
   | OutcomeOf<
       | 'accepted'

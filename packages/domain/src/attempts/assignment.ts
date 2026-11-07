@@ -67,7 +67,10 @@ const isSelection = (value: string): value is AttemptSelection =>
 const hasDuplicates = (ids: readonly string[]): boolean =>
   new Set(ids).size !== ids.length;
 
-const contextIdsOf = (
+// The unassigned members of every real group (a Teil 3 pair, a Teil 4
+// shared set) that has an assigned task. A Lesen text is no group: its other
+// tasks are never context.
+export const contextIdsOf = (
   content: ExamContent,
   assigned: ReadonlySet<string>,
 ): string[] => {
@@ -209,7 +212,7 @@ export interface PublicContextItem {
 
 export const toPublicContext = (
   content: ExamContent,
-  assignment: AttemptAssignment,
+  assignment: Pick<AttemptAssignment, 'contextIds'>,
 ): PublicContextItem[] => {
   const byId = new Map(content.questions.map((q) => [q.id, q] as const));
   return assignment.contextIds.flatMap((id) => {

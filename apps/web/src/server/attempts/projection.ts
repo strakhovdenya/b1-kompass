@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { attemptProgressSchema, resolveLifecycle } from '@b1k/domain';
+import {
+  attemptProgressSchema,
+  contextIdsOf,
+  resolveLifecycle,
+  toPublicContext,
+} from '@b1k/domain';
 import type {
   AttemptProgress,
   AttemptReview,
@@ -10,6 +15,7 @@ import type {
   ExamText,
   LifecycleDurations,
   LifecycleState,
+  PublicContextItem,
   Selections,
   Skill,
 } from '@b1k/domain';
@@ -34,6 +40,9 @@ export interface PracticeState {
   // The revision of every stored answer: the next choice continues above it.
   revisions: Readonly<Record<string, number>>;
   trackIds: string[];
+  // Neighbours of an assigned task in its Teil 3 pair or Teil 4 shared set:
+  // shown read-only, never answered, scored or reviewed; no key, no answer.
+  context: PublicContextItem[];
   review: AttemptReview | null;
   // Where the guest stopped; null for a completed attempt.
   progress: AttemptProgress | null;
@@ -268,8 +277,19 @@ export interface PracticeInput {
   progress: unknown;
 }
 
+// The read-only neighbours of an open repeat of errors. A normal attempt
+// assigns whole groups and has none; a review shows the assigned tasks only.
+const contextOf = (input: PracticeInput, assigned: ReadonlySet<string>) => {
+  const { view, content } = input;
+  if (view.purpose !== 'error-repeat' || input.review) return [];
+  const contextIds = contextIdsOf(content, assigned);
+  return toPublicContext(content, { contextIds });
+};
+
 // Only the given tasks of the pinned version, without the key. Groups,
-// texts, recordings and answers of other tasks stay on the server. An open
+// texts, recordings and answers of other tasks stay on the server; a
+// neighbour of a repeat is passed as public context only. A Lesen text comes
+// with its assigned tasks, never with the other tasks of that text. An open
 // exam passes only the tasks of its visible phase (visibleQuestionIds).
 export const toPracticeState = (input: PracticeInput): PracticeState => {
   const { view, content, review } = input;
@@ -291,6 +311,7 @@ export const toPracticeState = (input: PracticeInput): PracticeState => {
     selections: pickIds(input.selections, assigned),
     revisions: pickIds(input.revisions, assigned),
     trackIds: hasHoeren ? input.trackIds : [],
+    context: contextOf(input, assigned),
     review,
     progress: review ? null : parseStoredProgress(input.progress),
   };

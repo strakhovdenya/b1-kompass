@@ -7,6 +7,7 @@ import type {
   CommandResult,
   ExamQuestion,
   LifecycleState,
+  RepeatStartOutcome,
   RunTechnicalFailure,
   SaveAnswerResult,
   SaveProgressResult,
@@ -141,6 +142,7 @@ export interface TimedClock {
 type WithNetwork<Result> = Result | { ok: false; failure: 'network' };
 
 export type StartClientResult = WithNetwork<CommandResult<StartOutcome>>;
+export type RepeatClientResult = WithNetwork<CommandResult<RepeatStartOutcome>>;
 export type SubmitClientResult = WithNetwork<CommandResult<SubmitOutcome>>;
 export type CancelClientResult = WithNetwork<CommandResult<CancelOutcome>>;
 export type StatusClientResult = WithNetwork<CommandResult<AttemptStatusView>>;
@@ -203,6 +205,22 @@ export const requestStart = async (
   request: StartRequest,
 ): Promise<StartClientResult> =>
   commandOf<StartOutcome>(await post('/api/attempts/start', request));
+
+// The repeat of the errors of one completed attempt: the same start route
+// and contract; the server assigns the tasks from the source and may answer
+// empty without starting anything.
+export const requestRepeat = async (
+  sourceAttemptId: string,
+  request: Omit<StartRequest, 'mode' | 'purpose' | 'sourceAttemptId'>,
+): Promise<RepeatClientResult> =>
+  commandOf<RepeatStartOutcome>(
+    await post('/api/attempts/start', {
+      ...request,
+      mode: 'training',
+      purpose: 'error-repeat',
+      sourceAttemptId,
+    }),
+  );
 
 export const requestSubmit = async (
   attemptId: string,

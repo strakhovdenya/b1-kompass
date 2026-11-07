@@ -19,6 +19,8 @@ export type ReviewBlock = 'hoeren' | 'lesen';
 
 export type RestartStatus = 'idle' | 'restarting' | 'error';
 
+export type RepeatStatus = 'idle' | 'starting' | 'empty' | 'error';
+
 interface AttemptReviewViewProps {
   review: AttemptReview;
   questions: readonly ExamQuestion[];
@@ -27,6 +29,9 @@ interface AttemptReviewViewProps {
   // Without a handler the result is shown without a new run.
   onRestart?: () => void;
   restartStatus?: RestartStatus;
+  // The free repeat of the wrong and skipped tasks of this result.
+  onRepeat?: () => void;
+  repeatStatus?: RepeatStatus;
 }
 
 const LEVEL_KEY: Readonly<Record<DtzLevel, string>> = {
@@ -76,6 +81,8 @@ export const AttemptReviewView = ({
   block,
   onRestart,
   restartStatus = 'idle',
+  onRepeat,
+  repeatStatus = 'idle',
 }: AttemptReviewViewProps) => {
   const t = useTranslations('results');
   const locale = useLocale();
@@ -149,6 +156,29 @@ export const AttemptReviewView = ({
             {restartStatus === 'error' ? (
               <Alert severity="error" role="alert" data-testid="restart-status">
                 {t('restartError')}
+              </Alert>
+            ) : null}
+          </Stack>
+        ) : null}
+        {onRepeat ? (
+          <Stack spacing={1} sx={{ alignItems: 'flex-start' }}>
+            <Button
+              variant="outlined"
+              data-testid="repeat-errors"
+              disabled={repeatStatus === 'starting'}
+              onClick={onRepeat}
+              sx={{ minHeight: 44 }}
+            >
+              {repeatStatus === 'starting' ? t('repeating') : t('repeat')}
+            </Button>
+            {repeatStatus === 'empty' ? (
+              <Alert severity="info" role="status" data-testid="repeat-status">
+                {t('repeatEmpty')}
+              </Alert>
+            ) : null}
+            {repeatStatus === 'error' ? (
+              <Alert severity="error" role="alert" data-testid="repeat-status">
+                {t('repeatError')}
               </Alert>
             ) : null}
           </Stack>

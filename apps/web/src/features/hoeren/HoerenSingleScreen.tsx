@@ -5,9 +5,15 @@ import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { ExamGroup, ExamQuestion, Selections } from '@b1k/domain';
+import type {
+  ExamGroup,
+  ExamQuestion,
+  PublicContextItem,
+  Selections,
+} from '@b1k/domain';
 import { useTraining } from '../training/TrainingContext';
 import { PracticeSet } from '../practice/PracticeSet';
+import { memberView } from '../practice/steps';
 import { HoerenPairView } from './HoerenPairView';
 import { HoerenSharedSetView } from './HoerenSharedSetView';
 
@@ -29,13 +35,17 @@ const PAIR_SIZE = 2;
 const isPairGroup = (group: ExamGroup): boolean =>
   group.kind === 'pair' && group.teil === PAIR_TEIL;
 
-// Teil 3 pairs of two questions that are all in the material; a pair with a
-// missing member is not shown.
+// Teil 3 pairs of two questions that are all in the material, assessed or
+// read-only context of a repeat; a pair with a missing member is not shown.
 export const selectPairGroups = (
   questions: readonly ExamQuestion[],
   groups: readonly ExamGroup[],
+  context: readonly PublicContextItem[] = [],
 ): ExamGroup[] => {
-  const known = new Set(questions.map((question) => question.id));
+  const known = new Set([
+    ...questions.map((question) => question.id),
+    ...context.map((item) => item.questionId),
+  ]);
   return groups.filter(
     (group) =>
       isPairGroup(group) &&
@@ -60,13 +70,14 @@ export const selectSharedSetGroups = (
 export const selectQuestions = (
   questions: readonly ExamQuestion[],
   groups: readonly ExamGroup[],
+  context: readonly PublicContextItem[] = [],
 ): ExamQuestion[] => {
   const hoerenIds = new Set(
     questions.filter((item) => item.skill === 'hoeren').map((item) => item.id),
   );
   const pairMembers = new Set(
     [
-      ...selectPairGroups(questions, groups),
+      ...selectPairGroups(questions, groups, context),
       ...selectSharedSetGroups(groups),
     ].flatMap((group) => group.questionIds.filter((id) => hoerenIds.has(id))),
   );
@@ -114,6 +125,8 @@ export const describeIntro = (
 interface HoerenSingleScreenProps {
   questions: readonly ExamQuestion[];
   groups?: readonly ExamGroup[];
+  // Read-only neighbours of a repeat inside its Teil 3/4 groups.
+  context?: readonly PublicContextItem[];
   initialSelections: Selections;
 }
 
@@ -124,6 +137,7 @@ interface HoerenSingleScreenProps {
 export const HoerenSingleScreen = ({
   questions,
   groups = [],
+  context = [],
   initialSelections,
 }: HoerenSingleScreenProps) => {
   const t = useTranslations('hoeren');
@@ -135,8 +149,8 @@ export const HoerenSingleScreen = ({
     (itemId: string) => reportProgress({ block: 'hoeren', hoeren: { itemId } }),
     [reportProgress],
   );
-  const shown = selectQuestions(questions, groups);
-  const pairGroups = selectPairGroups(questions, groups);
+  const shown = selectQuestions(questions, groups, context);
+  const pairGroups = selectPairGroups(questions, groups, context);
   const sharedSetGroups = selectSharedSetGroups(groups);
   const shownGroups = [...pairGroups, ...sharedSetGroups];
   if (shown.length === 0) {
@@ -150,17 +164,18 @@ export const HoerenSingleScreen = ({
       <PracticeSet
         questions={shown}
         groups={shownGroups}
+        context={context}
         renderGroup={(step, cards) =>
           step.group?.kind === 'shared-set' ? (
             <HoerenSharedSetView
               group={step.group}
-              questions={step.questions}
+              questions={step.members.map(memberView)}
               cards={cards}
             />
           ) : (
             <HoerenPairView
               groupId={step.key}
-              questions={step.questions}
+              questions={step.members.map(memberView)}
               cards={cards}
             />
           )

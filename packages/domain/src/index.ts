@@ -104,6 +104,7 @@ export { admitOperation, resolveLifecycle } from './attempts/lifecycle';
 export {
   buildAssignment,
   buildRepeatAssignment,
+  contextIdsOf,
   scoreAssignment,
   toBeginLesenResult,
   toPublicContext,
@@ -120,6 +121,8 @@ export type {
   BeginLesenOutcome,
   CancelOutcome,
   CommandResult,
+  EmptyRepeatOutcome,
+  RepeatStartOutcome,
   RunTechnicalFailure,
   StartOutcome,
   SubmitOutcome,
