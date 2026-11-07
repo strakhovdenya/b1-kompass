@@ -90,6 +90,9 @@ const SHORT_HOEREN: TimingSettings = {
   lesenSeconds: 60,
 };
 
+// Tracing off for the whole file: see the autoplay test below.
+test.use({ trace: 'off' });
+
 const MEDIA_URL = '**/storage/v1/object/sign/**';
 
 test.beforeAll(() => {
@@ -216,7 +219,7 @@ const ensurePlaying = async (page: Page) => {
     .toBe(false);
 };
 
-type MediaFault = '403' | 'garbage';
+type MediaFault = '403' | 'abort' | 'garbage';
 
 // The media request of the browser fails until the page has asked the app
 // for a new address `posts` times (the first ask is the initial one).
@@ -235,6 +238,10 @@ const failMediaUntilPosts = async (
     }
     if (fault === '403') {
       await route.fulfill({ status: 403, body: 'expired' });
+      return;
+    }
+    if (fault === 'abort') {
+      await route.abort('failed');
       return;
     }
     await route.fulfill({
@@ -352,7 +359,10 @@ test('refresh and signed url renewal restore mode specific position', async ({
     const ownContext = await contextWith(browser, guest.token);
     const ownPage = await ownContext.newPage();
     const ownAsks = requestsTo(ownPage, audioPath(id));
-    const ownMedia = await failMediaUntilPosts(ownPage, ownAsks, 2, '403');
+    // A refused address for the free training, a dropped connection for the
+    // timed block.
+    const fault = mode === 'training' ? '403' : 'abort';
+    const ownMedia = await failMediaUntilPosts(ownPage, ownAsks, 2, fault);
     await ownPage.goto(attemptUrl(exam.slug, id));
     await waitForPlayer(ownPage);
     expect(ownAsks.length, mode).toBeGreaterThanOrEqual(2);
@@ -363,6 +373,20 @@ test('refresh and signed url renewal restore mode specific position', async ({
       )
       .toBeLessThan(SAVED_POSITION_TOLERANCE_SECONDS);
     expect((await snapshotOf(ownPage)).paused).toBe(true);
+
+    // A refresh restores the same place; a timed block keeps its deadline.
+    const ownDeadline =
+      mode === 'timed-block' ? await timerDeadline(ownPage) : null;
+    await ownPage.reload();
+    await waitForPlayer(ownPage);
+    await expect
+      .poll(async () =>
+        Math.abs((await snapshotOf(ownPage)).currentTime - place),
+      )
+      .toBeLessThan(SAVED_POSITION_TOLERANCE_SECONDS);
+    if (ownDeadline !== null) {
+      expect(await timerDeadline(ownPage)).toBe(ownDeadline);
+    }
     await ownContext.close();
   }
 });
@@ -436,6 +460,10 @@ test('audio requests bypass held save and navigation preserves media', async ({
   await context.close();
 });
 
+// The refusal of the autoplay test must come from Chromium itself. The test runner's tracing runs
+// scripts in the page with a user gesture of their own right after it loads,
+// which makes the browser allow the sound; with tracing off nothing but the
+// app touches the page until the sound is tried, and Chromium refuses it.
 test('observed autoplay rejection recovers explicitly without timer pause', async ({
   browser,
 }) => {
@@ -447,13 +475,9 @@ test('observed autoplay rejection recovers explicitly without timer pause', asyn
   const page = await context.newPage();
   const asks = requestsTo(page, audioPath(attemptId));
 
-  // Chromium refuses a sound without a click, but the automation itself
-  // opens a window of a few seconds with a script of its own right after the
-  // page loads, so the real refusal cannot be left to chance. The page
-  // therefore applies the browser's rule at the play() call: a sound
-  // started while the page has no active gesture is refused with the very
-  // NotAllowedError the browser gives, and every refusal is recorded. The
-  // app must react to that observed rejection, not to a flag.
+  // Observation only: the native play() runs unchanged, its result is
+  // returned as it is, and the name of every refusal the browser gives is
+  // written down.
   await page.addInitScript(() => {
     const seen: string[] = [];
     Object.assign(window, { playRejections: seen });
@@ -461,12 +485,11 @@ test('observed autoplay rejection recovers explicitly without timer pause', asyn
     HTMLMediaElement.prototype.play = function play(
       this: HTMLMediaElement,
     ): Promise<void> {
-      if (navigator.userActivation.isActive) return original.call(this);
-      const refusal = Promise.reject(
-        new DOMException('play() needs a user gesture', 'NotAllowedError'),
-      );
-      refusal.catch((error: DOMException) => seen.push(error.name));
-      return refusal;
+      const result = original.call(this);
+      result.catch((error: unknown) => {
+        seen.push(error instanceof Error ? error.name : String(error));
+      });
+      return result;
     };
   });
   const rejections = () =>
@@ -474,36 +497,26 @@ test('observed autoplay rejection recovers explicitly without timer pause', asyn
       () => (window as unknown as { playRejections: string[] }).playRejections,
     );
 
-  // The guest presses Play after the reload, and the exam plays.
+  // The first signed address is refused by the media request; the page
+  // gets a new one and tries to continue the recording on it. Nobody has
+  // clicked anything, so Chromium refuses the sound.
+  await failMediaUntilPosts(page, asks, 2, '403');
   await page.goto(attemptUrl(exam.slug, attemptId));
-  await ensurePlaying(page);
+  await page.waitForTimeout(5000);
+  expect(asks.length).toBeGreaterThanOrEqual(2);
+  expect(await rejections()).toContain('NotAllowedError');
   const player = page.getByTestId('audio-player');
-  const deadline = await timerDeadline(page);
-  expect(deadline).toBe(startMs + SHORT_HOEREN.hoerenSeconds * SECOND_MS);
-  const known = (await rejections()).length;
-
-  // The read of the address fails and the new address arrives late, after
-  // the window of the automation's last script has closed, so the sound
-  // that tries to continue on it has no gesture. Nothing may touch the page
-  // meanwhile: a script run by the test would open a new window.
-  const LATE_MS = 6500;
-  await page.route(`**${audioPath(attemptId)}`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, LATE_MS));
-    await route.continue();
-  });
-  await examAudio(page).evaluate((element: HTMLAudioElement) => {
-    element.dispatchEvent(new Event('error'));
-  });
-  await page.waitForTimeout(LATE_MS + 3000);
-  expect(asks).toHaveLength(2);
-  expect((await rejections()).slice(known)).toContain('NotAllowedError');
   await expect(player).toHaveAttribute('data-blocked', 'true');
   await expect(page.getByTestId('audio-blocked')).toBeVisible();
+  await expect(page.getByTestId('audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+  );
   expect((await mediaOf(page)).paused).toBe(true);
-  expect(await timerDeadline(page)).toBe(deadline);
 
   // The timer ran through it all and the deadline is the server's.
-  expect(await timerDeadline(page)).toBe(deadline);
+  const deadline = await timerDeadline(page);
+  expect(deadline).toBe(startMs + SHORT_HOEREN.hoerenSeconds * SECOND_MS);
   const remaining = async () =>
     Number(
       await page.getByTestId('attempt-timer').getAttribute('data-remaining-ms'),

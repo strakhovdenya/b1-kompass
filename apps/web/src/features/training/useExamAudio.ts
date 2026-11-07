@@ -200,9 +200,11 @@ export const useExamAudioSync = (
       return;
     }
     renewals.current += 1;
-    shouldResume.current = shouldResume.current || element?.paused === false;
+    // The recording belongs to the exam time: on the new address it tries
+    // to sound again, and the browser says whether it may.
+    shouldResume.current = true;
     void fetchAddress.current();
-  }, [status, source, isLive, isFailed, element]);
+  }, [status, source, isLive, isFailed]);
 
   const targetNow = useCallback((): number | null => {
     if (!clock.current) return null;
