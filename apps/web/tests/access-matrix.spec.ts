@@ -1,3 +1,4 @@
+import { randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type {
   APIResponse,
@@ -6,15 +7,34 @@ import type {
   Page,
   Request,
 } from '@playwright/test';
+import type { CreatedGuest } from '../src/server/guest-session/session';
+import { hashGuestToken } from '../src/server/guest-session/session';
 import {
+  createPublicClient,
+  depsNow,
+  latestVersionOf,
+  newGuest,
+  readAnswerRows,
   readAnswers,
   readAttempts,
   readCommandRows,
   readEventKinds,
+  readProgress,
+  readResults,
+  readRunRows,
+  readSession,
   readSessionByToken,
+  serviceDb,
   startBody,
+  startFor,
 } from './support/db';
-import { FULL_EXAM, fullWrongOf } from './support/full-exam';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  FULL_TRACK_ID,
+  fullKeyOf,
+  fullWrongOf,
+} from './support/full-exam';
 import {
   CHOICE_URL,
   attemptLesenUrl,
@@ -24,9 +44,13 @@ import {
   goToHoeren,
   goToLesen,
   optionIn,
+  postCommand,
   startBrowserGuest,
   tokenOf,
 } from './support/guest-browser';
+import { createTestRecording } from './support/global-setup';
+import { installM2Fixtures, psql, psqlJson, quote } from './support/sql';
+import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 
 // Guest pages carry the answers of one attempt. Whatever sits between the
 // server and the browser must not hand them to the next visitor of the same
@@ -526,4 +550,574 @@ test('body query and header tokens cannot replace owned guest cookie', async ({
   await noCookie.close();
   await foreign.context.close();
   await owner.context.close();
+});
+
+// M2 actions over real HTTP (#48) ---------------------------------------------
+//
+// Ownership is judged with the trusted Origin and the cookie of the actor, so
+// that a refusal of the Origin can never hide a missing authorization; the
+// Origin has its own matrix below. Every step re-reads the rows of both
+// guests from the test database.
+
+const PROGRESS = {
+  block: 'lesen',
+  positionSeconds: 12,
+  hoeren: { itemId: 'hoeren-2' },
+  lesen: { itemId: 'lesen-3', textId: 'lesen-text-1', paragraph: 0 },
+} as const;
+
+const KEY_FIELDS = ['correctOptionId', 'correct_option_id', 'answer_keys'];
+
+const sessionIdOf = (created: CreatedGuest): string => created.guest.sessionId;
+
+interface AttemptRows {
+  id: string;
+  status: string;
+  answers: unknown;
+  progress: unknown;
+  results: unknown;
+  events: string[];
+  runs: unknown;
+}
+
+interface GuestDump {
+  session: unknown;
+  commands: unknown;
+  attempts: AttemptRows[];
+}
+
+// Everything the database holds for one guest, in a stable order.
+const rowsOfSession = async (sessionId: string): Promise<GuestDump> => {
+  const attempts = (await readAttempts(sessionId)).toSorted((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  return {
+    session: await readSession(sessionId),
+    commands: (await readCommandRows(sessionId)).toSorted((a, b) =>
+      a.command_id.localeCompare(b.command_id),
+    ),
+    attempts: await Promise.all(
+      attempts.map(async ({ id, status }) => ({
+        id,
+        status,
+        answers: await readAnswerRows(id),
+        progress: await readProgress(id),
+        results: await readResults(id),
+        events: await readEventKinds(id),
+        runs: await readRunRows(id),
+      })),
+    ),
+  };
+};
+
+const rowsOfGuest = (created: CreatedGuest): Promise<GuestDump> =>
+  rowsOfSession(sessionIdOf(created));
+
+const expectNoKey = (reply: { body: unknown }, where: string) => {
+  const text = JSON.stringify(reply.body);
+  for (const field of KEY_FIELDS) expect(text, where).not.toContain(field);
+};
+
+const startAccepted = async (created: CreatedGuest): Promise<string> => {
+  const started = await startFor(depsNow(), created.token, FULL_EXAM.slug);
+  if (!started.ok || started.result.outcome !== 'accepted') {
+    throw new Error(`start failed: ${JSON.stringify(started)}`);
+  }
+  return started.result.attemptId;
+};
+
+interface StatusBody {
+  result: {
+    outcome: string;
+    state: { phaseRevision: number };
+    skipped: number;
+  };
+}
+
+test('m2 owner controls and public role boundaries cover new actions', async ({
+  request,
+}) => {
+  const owner = await newGuest(depsNow());
+  const bystander = await newGuest(depsNow());
+  const bystanderAttempt = await startAccepted(bystander);
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full exam is not published');
+  const answered = await postCommand(
+    request,
+    `/api/attempts/${bystanderAttempt}/answer`,
+    {
+      questionId: 'hoeren-1',
+      optionId: fullKeyOf('hoeren-1'),
+      revision: 1,
+    },
+    { token: bystander.token },
+  );
+  expect(answered.status).toBe(200);
+  const bystanderBefore = await rowsOfGuest(bystander);
+
+  // Each action of the owner is judged against the owner's own rows and the
+  // untouched rows of the bystander.
+  const send = (pathname: string, body: unknown) =>
+    postCommand(request, pathname, body, { token: owner.token });
+  const ownerRows = async (attemptId: string) => {
+    const rows = await rowsOfGuest(owner);
+    const attempt = rows.attempts.find((item) => item.id === attemptId);
+    if (!attempt) throw new Error('owner attempt is missing');
+    return { rows, attempt };
+  };
+  const bystanderUntouched = async (where: string) => {
+    expect(await rowsOfGuest(bystander), where).toEqual(bystanderBefore);
+  };
+  const statusOf = async (attemptId: string) => {
+    const reply = await send(`/api/attempts/${attemptId}/status`, {});
+    expect(reply.status).toBe(200);
+    return (reply.body as unknown as StatusBody).result;
+  };
+  const confirmationOf = async (attemptId: string) => {
+    const status = await statusOf(attemptId);
+    return {
+      phaseRevision: status.state.phaseRevision,
+      skipped: status.skipped,
+    };
+  };
+  const startOf = async (overrides: Record<string, unknown>) => {
+    const reply = await send('/api/attempts/start', {
+      ...(await startBody(FULL_EXAM.slug)),
+      ...overrides,
+    });
+    expect(reply.status).toBe(200);
+    const result = reply.body.result as { outcome: string; attemptId: string };
+    expect(result.outcome).toBe('accepted');
+    return result.attemptId;
+  };
+
+  // 1. start the free training, answer, save the place, finish once.
+  const trainingId = await startOf({});
+  let state = await ownerRows(trainingId);
+  expect(state.attempt).toMatchObject({ status: 'active', answers: [] });
+  expect(state.rows.commands).toHaveLength(1);
+  await bystanderUntouched('start');
+
+  const wrong = await send(`/api/attempts/${trainingId}/answer`, {
+    questionId: 'hoeren-1',
+    optionId: fullWrongOf('hoeren-1'),
+    revision: 1,
+  });
+  expect(wrong).toMatchObject({ status: 200, body: { ok: true } });
+  state = await ownerRows(trainingId);
+  expect(state.attempt.answers).toEqual([
+    {
+      question_id: 'hoeren-1',
+      option_id: fullWrongOf('hoeren-1'),
+      revision: 1,
+    },
+  ]);
+  await bystanderUntouched('answer');
+
+  const progressed = await send(`/api/attempts/${trainingId}/progress`, {
+    progress: PROGRESS,
+  });
+  expect(progressed).toMatchObject({ status: 200, body: { ok: true } });
+  expect((await ownerRows(trainingId)).attempt.progress).toEqual(PROGRESS);
+  await bystanderUntouched('progress');
+
+  const submit = await send(`/api/attempts/${trainingId}/submit`, {
+    commandId: randomUUID(),
+    answers: [],
+    confirmation: await confirmationOf(trainingId),
+  });
+  expect(submit.status).toBe(200);
+  state = await ownerRows(trainingId);
+  expect(state.attempt.status).toBe('completed');
+  expect(state.attempt.results).toHaveLength(1);
+  await bystanderUntouched('submit');
+
+  // 2. repeat the own errors of the completed attempt, then cancel the run.
+  const repeatId = await startOf({
+    purpose: 'error-repeat',
+    sourceAttemptId: trainingId,
+  });
+  state = await ownerRows(repeatId);
+  const [repeatRun] = state.attempt.runs as {
+    purpose: string;
+    source_attempt_id: string;
+  }[];
+  expect(repeatRun).toMatchObject({
+    purpose: 'error-repeat',
+    source_attempt_id: trainingId,
+  });
+  await bystanderUntouched('repeat');
+  const cancelled = await send(`/api/attempts/${repeatId}/cancel`, {
+    commandId: randomUUID(),
+    confirmation: await confirmationOf(repeatId),
+  });
+  expect(cancelled.status).toBe(200);
+  state = await ownerRows(repeatId);
+  expect(state.attempt).toMatchObject({ status: 'cancelled', results: [] });
+  await bystanderUntouched('cancel');
+
+  // 3. prepare the recording, start the full exam, read its recording, answer
+  // and leave it.
+  const before = await rowsOfGuest(owner);
+  const prepared = await send('/api/attempts/prepare-audio', {
+    examSlug: FULL_EXAM.slug,
+    expectedVersionId: latest.versionId,
+  });
+  expect(prepared).toMatchObject({ status: 200, body: { ok: true } });
+  expect(await rowsOfGuest(owner)).toEqual(before);
+  await bystanderUntouched('prepare-audio');
+
+  const examId = await startOf({ mode: 'exam' });
+  const audio = await send(`/api/attempts/${examId}/audio`, {
+    trackId: FULL_TRACK_ID,
+  });
+  expect(audio).toMatchObject({ status: 200, body: { ok: true } });
+  expectNoKey(audio, 'audio');
+  const examAnswer = await send(`/api/attempts/${examId}/answer`, {
+    questionId: 'hoeren-2',
+    optionId: fullKeyOf('hoeren-2'),
+    revision: 1,
+  });
+  expect(examAnswer).toMatchObject({ status: 200, body: { ok: true } });
+  state = await ownerRows(examId);
+  expect(state.attempt.answers).toHaveLength(1);
+  expect((state.attempt.runs as { mode: string }[])[0]?.mode).toBe('exam');
+  await bystanderUntouched('exam');
+
+  const lesen = await send(`/api/attempts/${examId}/begin-lesen`, {});
+  expect(lesen).toMatchObject({ status: 200, body: { ok: true } });
+  await bystanderUntouched('begin-lesen');
+
+  // Every response of an action is private.
+  for (const reply of [wrong, progressed, submit, cancelled, prepared, audio]) {
+    expect(reply.cacheControl).toContain('no-store');
+  }
+
+  // The public role (the publishable key) holds no right on any of it.
+  const publicClient = createPublicClient();
+  const tables = [
+    'attempts',
+    'attempt_answers',
+    'attempt_runs',
+    'attempt_commands',
+    'attempt_results',
+    'answer_keys',
+    'guest_events',
+    'guest_sessions',
+    'exam_versions',
+    'exam_version_audio',
+  ];
+  for (const table of tables) {
+    const { data, error } = await publicClient.from(table).select('*');
+    expect(error !== null || (data ?? []).length === 0, table).toBe(true);
+    const insert = await publicClient.from(table).insert({});
+    expect(insert.error, `${table} insert`).not.toBeNull();
+  }
+  const functions = psqlJson<
+    { name: string; args: { name: string; type: string }[] }[]
+  >(`select json_agg(json_build_object('name', p.proname, 'args',
+      (select coalesce(json_agg(json_build_object('name', a.n, 'type', t.typname)
+        order by a.i), '[]'::json)
+      from unnest(p.proargnames, p.proargtypes::oid[])
+        with ordinality as a (n, o, i) join pg_type t on t.oid = a.o)))
+    from pg_proc p join pg_namespace s on s.oid = p.pronamespace
+    where s.nspname = 'public' and left(p.proname, 3) = 'm2_'`);
+  expect(functions.map((fn) => fn.name)).toEqual(
+    expect.arrayContaining(['m2_start_attempt', 'm2_save_answer']),
+  );
+  const dummy: Record<string, unknown> = {
+    uuid: randomUUID(),
+    text: 'x',
+    int4: 1,
+    jsonb: {},
+    numeric: 1,
+  };
+  for (const fn of functions) {
+    const args = Object.fromEntries(
+      fn.args.map((arg) => [arg.name, dummy[arg.type] ?? null]),
+    );
+    const { error } = await publicClient.rpc(fn.name, args);
+    expect(error?.code, fn.name).toBe('42501');
+  }
+  const bucket = publicClient.storage.from('exam-sources');
+  const listed = await bucket.list('audio');
+  expect(listed.error !== null || listed.data.length === 0).toBe(true);
+  const downloaded = await bucket.download('audio/anything.wav');
+  expect(downloaded.error).not.toBeNull();
+  await bystanderUntouched('public role');
+});
+
+interface Route {
+  name: string;
+  pathname: string;
+  body: unknown;
+  // Routes of an attempt of someone else; start and prepare-audio act on
+  // the slot of the guest of the cookie itself.
+  isAttemptRoute: boolean;
+}
+
+const ATTEMPT_COMMANDS: [string, unknown][] = [
+  ['answer', { questionId: 'hoeren-1', optionId: 'a', revision: 5 }],
+  ['progress', { progress: PROGRESS }],
+  ['status', {}],
+  [
+    'submit',
+    {
+      commandId: randomUUID(),
+      answers: [{ questionId: 'hoeren-1', optionId: 'a', revision: 5 }],
+      confirmation: { phaseRevision: 0, skipped: 44 },
+    },
+  ],
+  [
+    'cancel',
+    {
+      commandId: randomUUID(),
+      confirmation: { phaseRevision: 0, skipped: 45 },
+    },
+  ],
+  ['begin-lesen', {}],
+  ['audio', { trackId: FULL_TRACK_ID }],
+];
+
+const routesOf = (attemptId: string, versionId: string): Route[] => [
+  {
+    name: 'start',
+    pathname: '/api/attempts/start',
+    body: {
+      commandId: randomUUID(),
+      examSlug: FULL_EXAM.slug,
+      mode: 'training',
+      purpose: 'normal',
+      selection: 'all',
+      sourceAttemptId: null,
+      expectedVersionId: versionId,
+    },
+    isAttemptRoute: false,
+  },
+  {
+    name: 'prepare-audio',
+    pathname: '/api/attempts/prepare-audio',
+    body: { examSlug: FULL_EXAM.slug, expectedVersionId: versionId },
+    isAttemptRoute: false,
+  },
+  ...ATTEMPT_COMMANDS.map(([name, body]) => ({
+    name,
+    pathname: `/api/attempts/${attemptId}/${name}`,
+    body,
+    isAttemptRoute: true,
+  })),
+];
+
+const waitUntilExpired = (sessionId: string) =>
+  expect
+    .poll(
+      () =>
+        psql(`select clock_timestamp() >= expires_at
+          from public.guest_sessions where id = ${quote(sessionId)}`),
+      { timeout: 20_000 },
+    )
+    .toBe('t');
+
+test('m2 forged expired foreign and public requests are refused', async ({
+  request,
+}) => {
+  installM2Fixtures();
+  const owner = await newGuest(depsNow());
+  const stranger = await newGuest(depsNow());
+  const ownerAttempt = await startAccepted(owner);
+  await startAccepted(stranger);
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full exam is not published');
+  const saved = await postCommand(
+    request,
+    `/api/attempts/${ownerAttempt}/answer`,
+    { questionId: 'hoeren-1', optionId: fullKeyOf('hoeren-1'), revision: 1 },
+    { token: owner.token },
+  );
+  expect(saved.status).toBe(200);
+
+  // A guest whose term ends in a few seconds, with its own attempt.
+  const shortToken = randomBytes(32).toString('base64url');
+  const shortSession = psql(
+    `select m2_test.insert_guest_ending_in(${quote(hashGuestToken(shortToken))}, 12)`,
+  );
+  const shortStart = await startFor(depsNow(), shortToken, FULL_EXAM.slug);
+  if (!shortStart.ok || shortStart.result.outcome !== 'accepted') {
+    throw new Error('the short guest was not started');
+  }
+  const shortAttempt = shortStart.result.attemptId;
+
+  const snapshot = async () => ({
+    owner: await rowsOfGuest(owner),
+    stranger: await rowsOfGuest(stranger),
+    short: await rowsOfSession(shortSession),
+  });
+  const before = await snapshot();
+  const expectUntouched = async (where: string) =>
+    expect(await snapshot(), where).toEqual(before);
+
+  const routes = routesOf(ownerAttempt, latest.versionId);
+
+  // Ownership, with the trusted Origin: no cookie, a forged cookie and a
+  // guest of another session are refused on every route, the key unread.
+  const forged = randomBytes(32).toString('base64url');
+  for (const route of routes) {
+    for (const token of [null, forged]) {
+      const where = `${route.name} cookie ${token ? 'forged' : 'none'}`;
+      const reply = await postCommand(request, route.pathname, route.body, {
+        token,
+      });
+      expect(reply.status, where).toBe(401);
+      expect(JSON.stringify(reply.body), where).toContain('session-invalid');
+      expectNoKey(reply, where);
+      expect(reply.cacheControl, where).toContain('no-store');
+    }
+    if (route.isAttemptRoute) {
+      const where = `${route.name} foreign attempt`;
+      const reply = await postCommand(request, route.pathname, route.body, {
+        token: stranger.token,
+      });
+      expect(reply.status, where).toBe(404);
+      expectNoKey(reply, where);
+    }
+  }
+  await expectUntouched('no cookie, forged cookie, foreign attempt');
+
+  // A foreign or unknown source of a repeat, a foreign or unknown version and
+  // forged fields are refused without a trace.
+  const repeatBody = (overrides: Record<string, unknown>) => ({
+    commandId: randomUUID(),
+    examSlug: FULL_EXAM.slug,
+    mode: 'training',
+    purpose: 'error-repeat',
+    selection: 'all',
+    sourceAttemptId: ownerAttempt,
+    expectedVersionId: latest.versionId,
+    ...overrides,
+  });
+  const foreignSource = await postCommand(
+    request,
+    '/api/attempts/start',
+    repeatBody({}),
+    { token: stranger.token },
+  );
+  const unknownSource = await postCommand(
+    request,
+    '/api/attempts/start',
+    repeatBody({ sourceAttemptId: randomUUID() }),
+    { token: stranger.token },
+  );
+  expect(foreignSource.status).toBeGreaterThanOrEqual(400);
+  expect(foreignSource.body).toEqual(unknownSource.body);
+  expect(JSON.stringify(foreignSource.body)).not.toContain(ownerAttempt);
+  const wrongVersion = await postCommand(
+    request,
+    '/api/attempts/start',
+    repeatBody({
+      purpose: 'normal',
+      sourceAttemptId: null,
+      expectedVersionId: randomUUID(),
+    }),
+    { token: stranger.token },
+  );
+  expect(wrongVersion.status).toBeGreaterThanOrEqual(400);
+  const forgedFields: Record<string, unknown>[] = [
+    { role: 'owner' },
+    { guestSessionId: sessionIdOf(owner) },
+    { score: 45 },
+    { status: 'completed' },
+    { profileId: randomUUID(), profileStatus: 'confirmed' },
+    { now: '2020-01-01T00:00:00.000Z' },
+  ];
+  for (const extra of forgedFields) {
+    const reply = await postCommand(
+      request,
+      '/api/attempts/start',
+      repeatBody({ purpose: 'normal', sourceAttemptId: null, ...extra }),
+      { token: stranger.token },
+    );
+    expect(reply.status, JSON.stringify(extra)).toBe(400);
+    const answer = await postCommand(
+      request,
+      `/api/attempts/${ownerAttempt}/answer`,
+      {
+        questionId: 'hoeren-1',
+        optionId: fullWrongOf('hoeren-1'),
+        revision: 9,
+        ...extra,
+      },
+      { token: owner.token },
+    );
+    expect(answer.status, JSON.stringify(extra)).toBe(400);
+  }
+  await expectUntouched('foreign source, version and forged fields');
+
+  // A start of an exam without a confirmed profile is refused as not enabled.
+  const unconfirmed = `test-unconfirmed-${randomUUID().slice(0, 8)}`;
+  await publishExamVersion(serviceDb, {
+    slug: unconfirmed,
+    title: 'Unconfirmed profile',
+    format: 'DTZ',
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...createTestRecording() }],
+  });
+  const unconfirmedVersion = await latestVersionOf(unconfirmed);
+  if (!unconfirmedVersion) throw new Error('exam is missing');
+  const notEnabled = await postCommand(
+    request,
+    '/api/attempts/start',
+    {
+      ...repeatBody({}),
+      examSlug: unconfirmed,
+      mode: 'exam',
+      purpose: 'normal',
+      sourceAttemptId: null,
+      expectedVersionId: unconfirmedVersion.versionId,
+    },
+    { token: stranger.token },
+  );
+  expect(notEnabled.status).toBe(422);
+  expect(notEnabled.body).toMatchObject({ failure: 'not-enabled' });
+  await expectUntouched('unconfirmed profile');
+
+  // The Origin has its own matrix: a valid owner cookie is refused when the
+  // Origin is missing, foreign, a sibling server or the null origin.
+  const origins: [string, string | null][] = [
+    ['missing', null],
+    ['foreign', 'https://evil.example'],
+    ['sibling port', 'http://localhost:3101'],
+    ['null', 'null'],
+  ];
+  for (const route of routes) {
+    for (const [name, origin] of origins) {
+      const where = `${route.name} origin ${name}`;
+      const reply = await postCommand(request, route.pathname, route.body, {
+        token: owner.token,
+        origin,
+      });
+      expect(reply.status, where).toBe(403);
+      expect(reply.body, where).toEqual({
+        ok: false,
+        failure: 'origin-refused',
+      });
+    }
+  }
+  await expectUntouched('invalid origins');
+
+  // An expired guest is refused on every route of its own attempt; the
+  // answer it would have saved is not stored. The rows stay as they were.
+  await waitUntilExpired(shortSession);
+  const expiredRows = await rowsOfSession(shortSession);
+  for (const route of routesOf(shortAttempt, latest.versionId)) {
+    const where = `${route.name} expired`;
+    const reply = await postCommand(request, route.pathname, route.body, {
+      token: shortToken,
+    });
+    expect(reply.status, where).toBe(401);
+    expect(JSON.stringify(reply.body), where).toContain('session-invalid');
+  }
+  expect(await rowsOfSession(shortSession)).toEqual(expiredRows);
+  expect(await rowsOfGuest(owner)).toEqual(before.owner);
+  expect(await rowsOfGuest(stranger)).toEqual(before.stranger);
 });

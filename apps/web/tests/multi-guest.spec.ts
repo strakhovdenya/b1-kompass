@@ -1,24 +1,54 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
-import type { Browser, Page, Route } from '@playwright/test';
+import type { Browser, BrowserContext, Page, Route } from '@playwright/test';
 import { examContentSchema, selectScoringPolicy } from '@b1k/domain';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import type { AudioFileInput } from '../../../scripts/lib/publish-exam-version';
 import { publishFullPilot } from '../../../scripts/publish-pilot';
+import { saveAnswer } from '../src/server/attempts/attempts';
+import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
+import { setGuestLocale } from '../src/server/guest-session/session';
+import type { CreatedGuest } from '../src/server/guest-session/session';
 import { getPublishedVersion } from '../src/server/material/published';
-import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './support/full-exam';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  FULL_TIMING,
+  FULL_TRACK_ID,
+  fullKeyOf,
+  fullWrongOf,
+} from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
   depsNow,
+  latestVersionOf,
+  newGuest,
   readAnswers,
   readAttempts,
+  readEventKinds,
   readResults,
+  readRunRows,
+  readSession,
   serviceDb,
+  startFor,
+  submitStored,
 } from './support/db';
+import {
+  examRunTimes,
+  installM2Fixtures,
+  psql,
+  quote,
+  secondsAgoSql,
+} from './support/sql';
+import { goToStep } from './support/release';
 import {
   ANSWER_URL,
   CHOICE_URL,
   HOEREN_URL,
+  FULL_ORIGIN,
+  LESEN_URL,
+  attemptIdOf,
+  attemptUrl,
   card,
   expectStatus,
   finishFromShell,
@@ -26,6 +56,7 @@ import {
   goToLesen,
   optionIn,
   pausePlayer,
+  postCommand,
   playFrom,
   screenOf,
   seekTo,
@@ -105,12 +136,16 @@ const scoreOf = (selections: Record<string, string>): number => {
 // Contexts and held requests of the running test, released after it even
 // when an assertion fails, so that no playing guest outlives its test.
 const opened: BrowserGuest[] = [];
+const extraContexts: BrowserContext[] = [];
 const cleanups: (() => void)[] = [];
 
 test.afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   const guests = opened.splice(0);
-  await Promise.all(guests.map((guest) => guest.context.close()));
+  await Promise.all([
+    ...guests.map((guest) => guest.context.close()),
+    ...extraContexts.splice(0).map((context) => context.close()),
+  ]);
 });
 
 const startGuests = async (browser: Browser): Promise<BrowserGuest[]> => {
@@ -729,4 +764,576 @@ test('one delayed listener does not block others', async ({ browser }) => {
   expect(await readAttempts(delayed.sessionId)).toEqual([
     { id: delayed.attemptId, status: 'active' },
   ]);
+});
+
+// Four modes at once (#48) --------------------------------------------------
+//
+// One published synthetic full DTZ set, four guests in four browser contexts:
+// the free training (A), a timed Hören block (B), the full exam (C) and the
+// repeat of the own errors (D). B and C are started at an explicit earlier
+// moment through the test-only admission wrappers, so that the end of their
+// time is a matter of seconds; everything the guests do afterwards goes
+// through the real pages and routes. After each phase the rows of every guest
+// are re-read from the test database.
+
+const SECOND_MS = 1000;
+const H = FULL_TIMING.hoerenSeconds;
+const ALL_IDS = questions.map((question) => question.id);
+const HOEREN_IDS = questions
+  .filter((question) => question.id.startsWith('hoeren-'))
+  .map((question) => question.id);
+
+type Plan = Readonly<Record<string, 'right' | 'wrong' | 'skip'>>;
+
+// The source of the repeat: errors in a Teil 3 pair, the Teil 4 shared set
+// and a Lesen text; every other task right.
+const REPEAT_PLAN: Plan = {
+  'hoeren-10': 'wrong',
+  'hoeren-18': 'skip',
+  'lesen-12': 'wrong',
+};
+const REPEAT_IDS = ['hoeren-10', 'hoeren-18', 'lesen-12'];
+
+const contextWith = async (
+  browser: Browser,
+  token: string,
+): Promise<BrowserContext> => {
+  const context = await browser.newContext({
+    baseURL: FULL_ORIGIN,
+    viewport: { width: 1440, height: 900 },
+  });
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: token, url: FULL_ORIGIN },
+  ]);
+  return context;
+};
+
+// A run started through the admission kernel at the given moment: the time of
+// the run is judged from that moment, never from the browser.
+const startAt = (
+  created: CreatedGuest,
+  exam: { examId: string; versionId: string },
+  run: { mode: string; selection: string; ids: readonly string[] },
+  secondsAgo: number,
+): string =>
+  psql(`select attempt_id from m2_test.start_attempt_at(
+    ${quote(created.guest.sessionId)}, ${quote(exam.examId)}, gen_random_uuid(),
+    ${quote(run.mode)}, 'normal', ${quote(run.selection)}, null,
+    ${quote(exam.versionId)},
+    ${quote(run.selection === 'all' ? 'full-exam' : 'short-set')},
+    ${quote(JSON.stringify(run.ids))}::jsonb, ${secondsAgoSql(secondsAgo)})`);
+
+const answerDirect = async (
+  created: CreatedGuest,
+  attemptId: string,
+  ids: readonly string[],
+  plan: Plan,
+) => {
+  for (const id of ids) {
+    const kind = plan[id] ?? 'right';
+    if (kind === 'skip') continue;
+    const saved = await saveAnswer(depsNow(), created.token, {
+      attemptId,
+      questionId: id,
+      optionId: kind === 'right' ? fullKeyOf(id) : fullWrongOf(id),
+      revision: 1,
+    });
+    if (!saved.ok) throw new Error(`answer ${id}: ${saved.error}`);
+  }
+};
+
+const deadlineOf = async (page: Page): Promise<number> =>
+  Number(
+    await page.getByTestId('attempt-timer').getAttribute('data-deadline-ms'),
+  );
+
+const attemptsOf = async (guest: CreatedGuest) =>
+  (await readAttempts(guest.guest.sessionId)).toSorted((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+
+interface ResultRow {
+  score: number;
+  max_score: number;
+}
+
+test('four modes keep independent guests answers results and media', async ({
+  browser,
+  request,
+}) => {
+  test.setTimeout(240_000);
+  installM2Fixtures();
+  const latest = await latestVersionOf(FULL_EXAM.slug);
+  if (!latest) throw new Error('full exam is not published');
+  const exam = latest;
+
+  const [a, b, c, d] = await Promise.all(
+    Array.from({ length: GUESTS }, () => newGuest(depsNow())),
+  );
+  if (!a || !b || !c || !d) throw new Error('four guests expected');
+  const created = [a, b, c, d];
+  expect(new Set(created.map((guest) => guest.token)).size).toBe(4);
+  expect(new Set(created.map((guest) => guest.guest.sessionId)).size).toBe(4);
+  await setGuestLocale(depsNow(), b.guest, 'ru');
+  await setGuestLocale(depsNow(), d.guest, 'ru');
+  const locales = async () =>
+    Promise.all(
+      created.map(
+        async (guest) => (await readSession(guest.guest.sessionId)).locale,
+      ),
+    );
+  expect(await locales()).toEqual(['en', 'ru', 'en', 'ru']);
+
+  // D: a completed source of its own, repeated from its review.
+  const sourceId = await startFor(depsNow(), d.token, FULL_EXAM.slug).then(
+    (started) => {
+      if (!started.ok || started.result.outcome !== 'accepted') {
+        throw new Error('the source was not started');
+      }
+      return started.result.attemptId;
+    },
+  );
+  await answerDirect(d, sourceId, ALL_IDS, REPEAT_PLAN);
+  const finished = await submitStored(depsNow(), d.token, {
+    attemptId: sourceId,
+  });
+  if (!finished.ok) throw new Error(`source: ${finished.error}`);
+
+  const contexts = await Promise.all(
+    created.map((guest) => contextWith(browser, guest.token)),
+  );
+  extraContexts.push(...contexts);
+  const [aContext, bContext, cContext, dContext] = contexts;
+  if (!aContext || !bContext || !cContext || !dContext) {
+    throw new Error('four contexts expected');
+  }
+  const aPage = await aContext.newPage();
+  const bPage = await bContext.newPage();
+  const cPage = await cContext.newPage();
+  const dPage = await dContext.newPage();
+
+  // A: the free training by its explicit start, the recording playing.
+  await aPage.goto(`/practice/${FULL_EXAM.slug}`);
+  await aPage.getByTestId('start-attempt').click();
+  await aPage.waitForURL(HOEREN_URL);
+  const aAttempt = attemptIdOf(aPage);
+  await waitForPlayer(aPage);
+  await answer(aPage, 'hoeren', 1, fullKeyOf('hoeren-1'));
+  await expect(aPage.getByTestId('attempt-timer')).toHaveCount(0);
+
+  // D: its review, then the repeat of its own errors on its pinned version.
+  await dPage.goto(attemptUrl(FULL_EXAM.slug, sourceId));
+  await expect(dPage.getByTestId('attempt-review')).toBeVisible();
+  await dPage.getByTestId('repeat-errors').click();
+  await expect
+    .poll(() => new URL(dPage.url()).pathname)
+    .not.toContain(sourceId);
+  await dPage.waitForURL(HOEREN_URL);
+  const dRepeat = attemptIdOf(dPage);
+  expect(dRepeat).not.toBe(sourceId);
+  const [repeatRun] = await readRunRows(dRepeat);
+  expect(repeatRun).toMatchObject({
+    purpose: 'error-repeat',
+    source_attempt_id: sourceId,
+    assignment: { versionId: exam.versionId, questionIds: REPEAT_IDS },
+  });
+  // A fresh load of the repeat: the page of the review, still in the document
+  // of the client navigation, carries keys by design; the repeat must not.
+  await dPage.goto(attemptUrl(FULL_EXAM.slug, dRepeat));
+  const neighbour = dPage.getByTestId('context-card-hoeren-11');
+  await expect(neighbour).toBeVisible();
+  await expect(neighbour.locator('input')).toHaveCount(0);
+  await expect(dPage.getByTestId('review-solution')).toHaveCount(0);
+  expect(await dPage.content()).not.toContain('correctOptionId');
+  await expect(dPage.getByTestId('attempt-timer')).toHaveCount(0);
+
+  // B: a timed Hören block with forty seconds left. C: a full exam whose
+  // Hören ends in forty seconds. They are placed last, right before their
+  // pages open, so the slow steps of the other guests do not use their time.
+  const LEFT_SECONDS = 40;
+  const bAttempt = startAt(
+    b,
+    exam,
+    { mode: 'timed-block', selection: 'hoeren', ids: HOEREN_IDS },
+    H - LEFT_SECONDS,
+  );
+  const cAttempt = startAt(
+    c,
+    exam,
+    { mode: 'exam', selection: 'all', ids: ALL_IDS },
+    H - LEFT_SECONDS,
+  );
+  const bRun = examRunTimes(bAttempt);
+  const cRun = examRunTimes(cAttempt);
+
+  // B and C: their own server deadlines, from their own start.
+  await bPage.goto(attemptUrl(FULL_EXAM.slug, bAttempt));
+  await cPage.goto(attemptUrl(FULL_EXAM.slug, cAttempt));
+  const bDeadline = await deadlineOf(bPage);
+  const cDeadline = await deadlineOf(cPage);
+  expect(bDeadline).toBe(Date.parse(bRun.acceptedAt) + H * SECOND_MS);
+  expect(cDeadline).toBe(Date.parse(cRun.acceptedAt) + H * SECOND_MS);
+  await answer(bPage, 'hoeren', 2, fullKeyOf('hoeren-2'));
+  await answer(cPage, 'hoeren', 3, fullKeyOf('hoeren-3'));
+
+  // Audio controls and navigation do not move the deadline of B.
+  await waitForPlayer(bPage);
+  await playFrom(bPage, 5, 'guest-b');
+  await seekTo(bPage, 40);
+  await pausePlayer(bPage);
+  await bPage.getByTestId('go-to-question-1').click();
+  expect(await deadlineOf(bPage)).toBe(bDeadline);
+
+  // Four guests, four attempts, their own answers and the database proof.
+  // A's recording plays from here on, so that it is still running (the test
+  // recording lasts 60 seconds) when the other guests' time ends.
+  await playFrom(aPage, 3, 'guest-a');
+  const aSnap = await snapshotOf(aPage);
+  expect(aSnap).toMatchObject({ paused: false, marker: 'guest-a' });
+  expect(await readAnswers(aAttempt)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+  });
+  expect(await readAnswers(bAttempt)).toEqual({
+    'hoeren-2': fullKeyOf('hoeren-2'),
+  });
+  expect(await readAnswers(cAttempt)).toEqual({
+    'hoeren-3': fullKeyOf('hoeren-3'),
+  });
+  expect(await readAnswers(dRepeat)).toEqual({});
+  expect(new Set([aAttempt, bAttempt, cAttempt, dRepeat, sourceId]).size).toBe(
+    5,
+  );
+  expect((await attemptsOf(a)).map((row) => row.id)).toEqual([aAttempt]);
+  expect((await attemptsOf(b)).map((row) => row.id)).toEqual([bAttempt]);
+  expect((await attemptsOf(c)).map((row) => row.id)).toEqual([cAttempt]);
+  expect((await attemptsOf(d)).map((row) => row.id).toSorted()).toEqual(
+    [sourceId, dRepeat].toSorted(),
+  );
+  for (const [attemptId, mode] of [
+    [aAttempt, 'training'],
+    [bAttempt, 'timed-block'],
+    [cAttempt, 'exam'],
+    [dRepeat, 'training'],
+  ] as const) {
+    expect((await readRunRows(attemptId))[0]?.mode, attemptId).toBe(mode);
+  }
+
+  // B's time ends: its own page says so, the server closed its run with the
+  // answer that came before the deadline; nobody else is touched.
+  const expired = bPage.getByTestId('timed-expired');
+  await expect(expired).toBeVisible({ timeout: 90_000 });
+  expect(await readAttempts(b.guest.sessionId)).toEqual([
+    { id: bAttempt, status: 'completed' },
+  ]);
+  const bResults = (await readResults(bAttempt)) as ResultRow[];
+  expect(bResults).toHaveLength(1);
+  expect(bResults[0]).toMatchObject({ score: 1, max_score: 20 });
+  expect(await readAnswers(bAttempt)).toEqual({
+    'hoeren-2': fullKeyOf('hoeren-2'),
+  });
+  const late = await postCommand(
+    request,
+    `/api/attempts/${bAttempt}/answer`,
+    {
+      questionId: 'hoeren-4',
+      optionId: fullKeyOf('hoeren-4'),
+      revision: 1,
+    },
+    { token: b.token },
+  );
+  expect(late.status).toBe(404);
+  expect(await readAnswers(bAttempt)).toEqual({
+    'hoeren-2': fullKeyOf('hoeren-2'),
+  });
+  expect(await readAttempts(a.guest.sessionId)).toEqual([
+    { id: aAttempt, status: 'active' },
+  ]);
+  expect(await readResults(aAttempt)).toEqual([]);
+  expect(await readResults(cAttempt)).toEqual([]);
+  expect(await readResults(dRepeat)).toEqual([]);
+
+  // C's Hören is closed by the server: the transition, the frozen Hören
+  // answer, and a late save of a Hören task is refused.
+  await expect(cPage.getByTestId('transition-screen')).toBeVisible({
+    timeout: 90_000,
+  });
+  const frozen = await readAnswers(cAttempt);
+  expect(frozen).toEqual({ 'hoeren-3': fullKeyOf('hoeren-3') });
+  const lateC = await postCommand(
+    request,
+    `/api/attempts/${cAttempt}/answer`,
+    {
+      questionId: 'hoeren-5',
+      optionId: fullKeyOf('hoeren-5'),
+      revision: 1,
+    },
+    { token: c.token },
+  );
+  expect(lateC.status).toBe(404);
+  expect(await readAnswers(cAttempt)).toEqual(frozen);
+
+  // The other two guests still hold what they had: A plays on by the clock
+  // of its browser, D's tasks and context are in place.
+  const aLater = await snapshotOf(aPage);
+  expect(aLater).toMatchObject({ paused: false, marker: 'guest-a' });
+  const elapsed = aLater.nowSeconds - aSnap.nowSeconds;
+  expect(
+    Math.abs(aLater.currentTime - (aSnap.currentTime + elapsed)),
+  ).toBeLessThanOrEqual(TOLERANCE_SECONDS);
+  await expect(card(aPage, 'hoeren-1')).toBeVisible();
+  await expect(neighbour).toBeVisible();
+  expect(await readAnswers(aAttempt)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+  });
+
+  // A changes its language: no other guest's language moves.
+  await aPage.getByTestId('locale-ru').click();
+  await expect(aPage.locator('html')).toHaveAttribute('lang', 'ru');
+  expect(await locales()).toEqual(['ru', 'ru', 'en', 'ru']);
+  await expect(cPage.locator('html')).toHaveAttribute('lang', 'en');
+
+  // C: Lesen begins at its own request, the answer there is its own, and
+  // the exam is finished once.
+  await cPage.getByTestId('begin-lesen').click();
+  await cPage.waitForURL(LESEN_URL);
+  await answer(cPage, 'lesen', 1, fullKeyOf('lesen-1'));
+  await finishFromShell(cPage);
+  const cSelections = {
+    'hoeren-3': fullKeyOf('hoeren-3'),
+    'lesen-1': fullKeyOf('lesen-1'),
+  };
+  expect(await readAnswers(cAttempt)).toEqual(cSelections);
+  const cResults = (await readResults(cAttempt)) as ResultRow[];
+  expect(cResults).toHaveLength(1);
+  expect(cResults[0]).toMatchObject({
+    score: scoreOf(cSelections),
+    max_score: 45,
+  });
+  expect(await readAttempts(c.guest.sessionId)).toEqual([
+    { id: cAttempt, status: 'completed' },
+  ]);
+
+  // A finishes with its one answer; D answers its three tasks and finishes.
+  await finishFromShell(aPage);
+  const aSelections = { 'hoeren-1': fullKeyOf('hoeren-1') };
+  const aResults = (await readResults(aAttempt)) as ResultRow[];
+  expect(aResults).toHaveLength(1);
+  expect(aResults[0]).toMatchObject({
+    score: scoreOf(aSelections),
+    max_score: 45,
+  });
+  await expect(card(dPage, 'hoeren-10')).toBeVisible();
+  await optionIn(card(dPage, 'hoeren-10'), fullKeyOf('hoeren-10')).check();
+  await expectStatus(card(dPage, 'hoeren-10'), 'saved');
+  await goToStep(dPage, 18);
+  await optionIn(card(dPage, 'hoeren-18'), fullKeyOf('hoeren-18')).check();
+  await expectStatus(card(dPage, 'hoeren-18'), 'saved');
+  await goToLesen(dPage);
+  await optionIn(card(dPage, 'lesen-12'), fullKeyOf('lesen-12')).check();
+  await expectStatus(card(dPage, 'lesen-12'), 'saved');
+  // Every assigned task is answered: no confirmation of skipped tasks.
+  await dPage.getByTestId('finish-attempt').click();
+  await expect(dPage.getByTestId('attempt-review')).toBeVisible();
+  await expect(dPage.getByTestId('finish-confirm')).toHaveCount(0);
+  expect(await readAnswers(dRepeat)).toEqual({
+    'hoeren-10': fullKeyOf('hoeren-10'),
+    'hoeren-18': fullKeyOf('hoeren-18'),
+    'lesen-12': fullKeyOf('lesen-12'),
+  });
+  const dResults = (await readResults(dRepeat)) as ResultRow[];
+  expect(dResults).toHaveLength(1);
+  expect(dResults[0]).toMatchObject({ score: 3, max_score: 3 });
+  expect(await readResults(sourceId)).toHaveLength(1);
+
+  // The end: every guest has exactly its own results and events.
+  const expectedEvents: [string, string[]][] = [
+    [aAttempt, ['start', 'finish']],
+    [bAttempt, ['start', 'finish']],
+    [cAttempt, ['start', 'finish']],
+    [dRepeat, ['start', 'finish']],
+    [sourceId, ['start', 'finish']],
+  ];
+  for (const [attemptId, kinds] of expectedEvents) {
+    expect(await readEventKinds(attemptId), attemptId).toEqual(kinds);
+  }
+  expect(await locales()).toEqual(['ru', 'ru', 'en', 'ru']);
+  expect(await readAttempts(b.guest.sessionId)).toEqual([
+    { id: bAttempt, status: 'completed' },
+  ]);
+});
+
+// Lifecycle of one guest against two live ones (#48) --------------------------
+
+const examAudioOf = (page: Page) => page.getByTestId('exam-audio-element');
+
+interface ExamMedia {
+  currentTime: number;
+  nowSeconds: number;
+  paused: boolean;
+  marker: string | null;
+}
+
+const examMediaOf = (page: Page): Promise<ExamMedia> =>
+  examAudioOf(page).evaluate((element: HTMLAudioElement) => ({
+    currentTime: element.currentTime,
+    nowSeconds: performance.now() / 1000,
+    paused: element.paused,
+    marker: element.dataset.marker ?? null,
+  }));
+
+test('guest lifecycle mutations cannot affect other live sessions', async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const [live, paused, actor] = await Promise.all(
+    Array.from({ length: 3 }, () => newGuest(depsNow())),
+  );
+  if (!live || !paused || !actor) throw new Error('three guests expected');
+  const [liveContext, pausedContext, actorContext] = await Promise.all(
+    [live, paused, actor].map((guest) => contextWith(browser, guest.token)),
+  );
+  if (!liveContext || !pausedContext || !actorContext) {
+    throw new Error('three contexts expected');
+  }
+  extraContexts.push(liveContext, pausedContext, actorContext);
+  const livePage = await liveContext.newPage();
+  const pausedPage = await pausedContext.newPage();
+  const actorPage = await actorContext.newPage();
+
+  // The first observer: a full exam whose recording is playing.
+  await livePage.goto(`/practice/${FULL_EXAM.slug}`);
+  await livePage.getByTestId('mode-option-exam').click();
+  await expect(livePage.getByTestId('exam-audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+    { timeout: 20_000 },
+  );
+  await livePage.getByTestId('start-attempt').click();
+  await livePage.waitForURL(HOEREN_URL);
+  const liveAttempt = attemptIdOf(livePage);
+  await expect
+    .poll(async () => (await examMediaOf(livePage)).paused)
+    .toBe(false);
+  await examAudioOf(livePage).evaluate((element: HTMLAudioElement) => {
+    element.dataset.marker = 'live-exam';
+  });
+  await answer(livePage, 'hoeren', 1, fullKeyOf('hoeren-1'));
+
+  // The second observer: a timed block with its recording paused.
+  await pausedPage.goto(`/practice/${FULL_EXAM.slug}`);
+  await pausedPage.getByTestId('mode-option-timed-block').click();
+  await pausedPage.getByTestId('start-attempt').click();
+  await pausedPage.waitForURL(HOEREN_URL);
+  const pausedAttempt = attemptIdOf(pausedPage);
+  await waitForPlayer(pausedPage);
+  await playFrom(pausedPage, 12, 'paused-block');
+  await pausePlayer(pausedPage);
+  await answer(pausedPage, 'hoeren', 2, fullKeyOf('hoeren-2'));
+
+  const liveDeadline = await deadlineOf(livePage);
+  const pausedDeadline = await deadlineOf(pausedPage);
+  expect(liveDeadline).toBe(
+    Date.parse(examRunTimes(liveAttempt).acceptedAt) + H * SECOND_MS,
+  );
+  expect(pausedDeadline).toBe(
+    Date.parse(examRunTimes(pausedAttempt).acceptedAt) + H * SECOND_MS,
+  );
+  const liveBefore = await examMediaOf(livePage);
+  const pausedBefore = await snapshotOf(pausedPage);
+  expect(pausedBefore).toMatchObject({ paused: true, marker: 'paused-block' });
+
+  // The observers keep answers, status, deadline and media, the playing one
+  // by the browser clock that passed, the paused one exactly.
+  const expectObserversUntouched = async (step: string) => {
+    expect(await readAnswers(liveAttempt), step).toEqual({
+      'hoeren-1': fullKeyOf('hoeren-1'),
+    });
+    expect(await readAnswers(pausedAttempt), step).toEqual({
+      'hoeren-2': fullKeyOf('hoeren-2'),
+    });
+    expect(await readAttempts(live.guest.sessionId), step).toEqual([
+      { id: liveAttempt, status: 'active' },
+    ]);
+    expect(await readAttempts(paused.guest.sessionId), step).toEqual([
+      { id: pausedAttempt, status: 'active' },
+    ]);
+    expect(await readResults(liveAttempt), step).toEqual([]);
+    expect(await readResults(pausedAttempt), step).toEqual([]);
+    expect(await deadlineOf(livePage), step).toBe(liveDeadline);
+    expect(await deadlineOf(pausedPage), step).toBe(pausedDeadline);
+    const liveNow = await examMediaOf(livePage);
+    expect(liveNow.paused, step).toBe(false);
+    expect(liveNow.marker, step).toBe('live-exam');
+    const elapsed = liveNow.nowSeconds - liveBefore.nowSeconds;
+    expect(
+      Math.abs(liveNow.currentTime - (liveBefore.currentTime + elapsed)),
+      step,
+    ).toBeLessThanOrEqual(1);
+    const pausedNow = await snapshotOf(pausedPage);
+    expect(pausedNow.paused, step).toBe(true);
+    expect(pausedNow.marker, step).toBe('paused-block');
+    expect(
+      Math.abs(pausedNow.currentTime - pausedBefore.currentTime),
+      step,
+    ).toBeLessThanOrEqual(PAUSED_TOLERANCE_SECONDS);
+    expect(await locales(), step).toEqual(['en', 'en', actorLocale]);
+  };
+  let actorLocale = 'en';
+  const locales = () =>
+    Promise.all(
+      [live, paused, actor].map(
+        async (guest) => (await readSession(guest.guest.sessionId)).locale,
+      ),
+    );
+  await expectObserversUntouched('before');
+
+  // The actor: starts, errs, finishes, repeats its error, changes language
+  // and cancels the repeat.
+  await actorPage.goto(`/practice/${FULL_EXAM.slug}`);
+  await actorPage.getByTestId('start-attempt').click();
+  await actorPage.waitForURL(HOEREN_URL);
+  const source = attemptIdOf(actorPage);
+  await answer(actorPage, 'hoeren', 1, fullWrongOf('hoeren-1'));
+  await expectObserversUntouched('actor started');
+
+  await finishFromShell(actorPage);
+  expect(await readResults(source)).toHaveLength(1);
+  await expectObserversUntouched('actor finished');
+
+  await actorPage.getByTestId('repeat-errors').click();
+  await expect
+    .poll(() => new URL(actorPage.url()).pathname)
+    .not.toContain(source);
+  await actorPage.waitForURL(HOEREN_URL);
+  const repeat = attemptIdOf(actorPage);
+  expect((await readRunRows(repeat))[0]).toMatchObject({
+    purpose: 'error-repeat',
+    source_attempt_id: source,
+  });
+  await expectObserversUntouched('actor repeated');
+
+  await actorPage.getByTestId('locale-ru').click();
+  await expect(actorPage.locator('html')).toHaveAttribute('lang', 'ru');
+  actorLocale = 'ru';
+  await expectObserversUntouched('actor language');
+
+  await actorPage.getByTestId('cancel-attempt').click();
+  await actorPage.getByTestId('cancel-confirm').click();
+  await expect
+    .poll(
+      async () =>
+        (await readAttempts(actor.guest.sessionId)).find(
+          (row) => row.id === repeat,
+        )?.status,
+    )
+    .toBe('cancelled');
+  expect(await readResults(repeat)).toEqual([]);
+  await expectObserversUntouched('actor cancelled');
+
+  // The observers are still live: they can answer and finish on their own.
+  await answer(pausedPage, 'hoeren', 3, fullKeyOf('hoeren-3'));
+  expect(await readAnswers(pausedAttempt)).toEqual({
+    'hoeren-2': fullKeyOf('hoeren-2'),
+    'hoeren-3': fullKeyOf('hoeren-3'),
+  });
 });

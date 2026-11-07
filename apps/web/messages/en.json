@@ -8,7 +8,16 @@
     "description": "Listening and reading tasks from a real practice exam. No email or password needed.",
     "continue": "Continue as guest",
     "busy": "Too many people are starting right now. Please try again in a minute.",
-    "note": "A guest session lasts 30 days from the first visit in this browser."
+    "note": "A guest session lasts 30 days from the first visit in this browser.",
+    "guestTitle": "How guest access works",
+    "hoeren": {
+      "title": "Hören · listening",
+      "text": "Audio tasks in the DTZ format, Teil 1–4, with the recording of the exam."
+    },
+    "lesen": {
+      "title": "Lesen · reading",
+      "text": "Reading tasks in the DTZ format, Teil 1–5, checked by the server."
+    }
   },
   "locale": {
     "label": "Interface language",
@@ -36,6 +45,11 @@
       "training": "Free training",
       "timedBlock": "Timed block",
       "exam": "Full exam with time limit"
+    },
+    "modeFact": {
+      "training": "No time limit",
+      "timedBlock": "One skill, exam time",
+      "exam": "Hören and Lesen, server clock"
     },
     "trainingDetail": "Free practice with no time limit. Choose what to practise below. You can finish when you are ready.",
     "comingSoon": "Coming soon.",

@@ -9,10 +9,12 @@ import Button from '@mui/material/Button';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import FormLabel from '@mui/material/FormLabel';
+import Paper from '@mui/material/Paper';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import type { SxProps, Theme } from '@mui/material/styles';
 import type { AttemptMode, AttemptSelection } from '@b1k/domain';
 import {
   attemptPath,
@@ -84,6 +86,28 @@ const MODE_KEYS: Readonly<Record<AttemptMode, string>> = {
 };
 
 const SELECTIONS: readonly AttemptSelection[] = ['all', 'hoeren', 'lesen'];
+
+// A mode is a card the whole of which selects its radio. The selected card
+// has a thicker border (an inset shadow keeps the layout still) beside the
+// checked radio, so the state is not carried by colour alone.
+const cardSx = (isSelected: boolean): SxProps<Theme> => ({
+  alignItems: 'flex-start',
+  m: 0,
+  minHeight: 64,
+  minWidth: 0,
+  px: 1,
+  py: 0.5,
+  border: 1,
+  borderRadius: 2,
+  borderColor: isSelected ? 'primary.main' : 'divider',
+  bgcolor: isSelected ? 'action.selected' : 'background.paper',
+  boxShadow: (theme) =>
+    isSelected ? `inset 0 0 0 1px ${theme.palette.primary.main}` : 'none',
+  '& .MuiFormControlLabel-label': { minWidth: 0, flex: 1 },
+  '&.Mui-disabled': {
+    bgcolor: isSelected ? 'action.selected' : 'action.disabledBackground',
+  },
+});
 
 // The choice before a start. Opening it writes nothing; only the start
 // button sends a command. A lost answer is sent again with the same
@@ -375,7 +399,12 @@ export const ModeSelection = ({
   const isStartBlocked = isStarting || (isExam && examState !== 'ready');
 
   return (
-    <Stack spacing={3} data-testid="mode-selection" data-exam-slug={examSlug}>
+    <Stack
+      spacing={3}
+      data-testid="mode-selection"
+      data-exam-slug={examSlug}
+      sx={{ maxWidth: 720, mx: 'auto', minWidth: 0 }}
+    >
       <Typography component="h1" variant="h5" lang="de">
         {examTitle}
       </Typography>
@@ -397,11 +426,14 @@ export const ModeSelection = ({
           {t('active')}
         </Alert>
       ) : null}
-      <FormControl>
-        <FormLabel id="mode-label">{t('modeLabel')}</FormLabel>
+      <FormControl sx={{ minWidth: 0 }}>
+        <FormLabel id="mode-label" sx={{ mb: 1 }}>
+          {t('modeLabel')}
+        </FormLabel>
         <RadioGroup
           aria-labelledby="mode-label"
           value={mode}
+          sx={{ gap: 1.5 }}
           onChange={(_event, value) => {
             const picked = MODES.find(
               (item) => isEnabled(item) && item === value,
@@ -416,9 +448,15 @@ export const ModeSelection = ({
               disabled={!isEnabled(item) || isStarting}
               control={<Radio />}
               data-testid={`mode-option-${item}`}
+              sx={cardSx(mode === item)}
               label={
-                <Stack sx={{ py: 0.5 }}>
-                  <Typography>{t(`mode.${MODE_KEYS[item]}`)}</Typography>
+                <Stack sx={{ py: 0.5, minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 600 }}>
+                    {t(`mode.${MODE_KEYS[item]}`)}
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    {t(`modeFact.${MODE_KEYS[item]}`)}
+                  </Typography>
                   <Typography variant="body2" color="text.secondary">
                     {detailOf(item)}
                   </Typography>
@@ -428,31 +466,39 @@ export const ModeSelection = ({
           ))}
         </RadioGroup>
       </FormControl>
-      <FormControl>
-        <FormLabel id="selection-label">{t('selectionLabel')}</FormLabel>
-        <RadioGroup
-          aria-labelledby="selection-label"
-          value={selection}
-          onChange={(_event, value) => {
-            const picked = SELECTIONS.find((item) => item === value);
-            if (picked) select(picked);
-          }}
-        >
-          {SELECTIONS.map((item) => (
-            <FormControlLabel
-              key={item}
-              value={item}
-              control={<Radio />}
-              disabled={
-                isStarting || counts[item] === 0 || !isOffered(mode, item)
-              }
-              data-testid={`selection-option-${item}`}
-              label={t(`selection.${item}`, { count: counts[item] })}
-            />
-          ))}
-        </RadioGroup>
-      </FormControl>
-      <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
+      <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2 }}>
+        <FormControl sx={{ minWidth: 0, width: '100%' }}>
+          <FormLabel id="selection-label" sx={{ mb: 0.5 }}>
+            {t('selectionLabel')}
+          </FormLabel>
+          <RadioGroup
+            aria-labelledby="selection-label"
+            value={selection}
+            onChange={(_event, value) => {
+              const picked = SELECTIONS.find((item) => item === value);
+              if (picked) select(picked);
+            }}
+          >
+            {SELECTIONS.map((item) => (
+              <FormControlLabel
+                key={item}
+                value={item}
+                control={<Radio />}
+                disabled={
+                  isStarting || counts[item] === 0 || !isOffered(mode, item)
+                }
+                data-testid={`selection-option-${item}`}
+                sx={{ minHeight: 44, mx: 0 }}
+                label={t(`selection.${item}`, { count: counts[item] })}
+              />
+            ))}
+          </RadioGroup>
+        </FormControl>
+      </Paper>
+      <Stack
+        spacing={1.5}
+        sx={{ alignItems: { xs: 'stretch', sm: 'flex-start' } }}
+      >
         {examState ? (
           <Stack
             spacing={1}
@@ -481,6 +527,7 @@ export const ModeSelection = ({
           size="large"
           ref={startRef}
           data-testid="start-attempt"
+          sx={{ minHeight: 48, px: 4 }}
           disabled={isStartBlocked}
           onClick={onStart}
         >
