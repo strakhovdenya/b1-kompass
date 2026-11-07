@@ -23,12 +23,12 @@ const withTeil = (content: ExamContent, id: string, teil: number) => ({
 const audio = { contentType: 'audio/mpeg' as const, bytes: new Uint8Array(1) };
 
 describe('pilot publisher', () => {
-  it('pilot publisher uses common complete DTZ validation', () => {
+  it('pilot publisher uses common complete DTZ validation', async () => {
     const { content, keys } = buildSyntheticPilot();
     const wrong = withTeil(content, 'lesen-25', 4);
-    expect(() =>
+    await expect(
       publishFullPilot(forbiddenClient, { content: wrong, keys, audio }),
-    ).toThrow(/Pilot is not complete.*teil-mismatch:lesen:teil-4/);
+    ).rejects.toThrow(/Pilot is not complete.*teil-mismatch:lesen:teil-4/);
   });
 
   it('prepare pilot applies full DTZ structure policy', () => {

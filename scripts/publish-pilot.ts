@@ -41,7 +41,7 @@ export interface FullPilotInput {
 
 // The material contract and the full DTZ structure are checked before
 // anything is written.
-export const publishFullPilot = (
+export const publishFullPilot = async (
   db: SupabaseClient,
   input: FullPilotInput,
 ): Promise<PublishOutcome> => {
