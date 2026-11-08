@@ -50,6 +50,7 @@ const AttemptLayout = async ({ children, params }: AttemptLayoutProps) => {
     <TrainingShell
       key={practice.attemptId}
       examSlug={practice.examSlug}
+      examTitle={practice.examTitle}
       attemptId={practice.attemptId}
       questions={practice.questions}
       trackIds={practice.trackIds}

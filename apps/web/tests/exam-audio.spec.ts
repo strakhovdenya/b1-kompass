@@ -637,6 +637,83 @@ test('one full audio owner survives routes locale and allowed renewal', async ({
   await freeContext.close();
 });
 
+test('switching exams stops prior audio owner', async ({ browser }) => {
+  test.setTimeout(120_000);
+  const examA = await publishExam(FULL_TIMING, 613);
+  const examB = await publishExam(FULL_TIMING, 440);
+  const created = await newGuest(depsNow());
+  const context = await contextWith(browser, created.token);
+  const page = await context.newPage();
+
+  // A starts and its recording plays; the context line names the exam.
+  await page.goto(`/practice/${examA.slug}`);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await page.getByTestId('mode-option-exam').click();
+  await expect(page.getByTestId('exam-audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+    { timeout: 20_000 },
+  );
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  await expect(page.getByTestId('exam-context-where')).toHaveText(
+    'Exam · Hören',
+  );
+  await expect(examAudio(page)).toHaveCount(1);
+  await expect.poll(async () => (await mediaOf(page)).paused).toBe(false);
+
+  // The element of A is kept in the page: a stopped owner must stay silent
+  // even when nothing in the document points to it any more.
+  await examAudio(page).evaluate((element: HTMLAudioElement) => {
+    Object.assign(window, { ownerA: element });
+  });
+  const stateOfA = () =>
+    page.evaluate(() => {
+      const owner = (window as unknown as { ownerA: HTMLAudioElement }).ownerA;
+      return {
+        paused: owner.paused,
+        hasSource: owner.hasAttribute('src'),
+        isConnected: owner.isConnected,
+      };
+    });
+  expect((await stateOfA()).paused).toBe(false);
+
+  // The way back to the library is client navigation without a new document.
+  await page.getByTestId('exam-context-library').click();
+  await page.waitForURL('**/exams');
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+  await expect(page.locator('audio')).toHaveCount(0);
+  await expect.poll(async () => (await stateOfA()).paused).toBe(true);
+  expect(await stateOfA()).toMatchObject({
+    hasSource: false,
+    isConnected: false,
+  });
+
+  // B opens with an owner of its own; A is still silent.
+  await page
+    .getByTestId(`exam-card-${examB.slug}`)
+    .getByTestId('exam-card-open')
+    .click();
+  await page.waitForURL(`**/practice/${examB.slug}`);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await page.getByTestId('mode-option-exam').click();
+  await expect(page.getByTestId('exam-audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+    { timeout: 20_000 },
+  );
+  await expect(examAudio(page)).toHaveCount(1);
+  await expect(page.locator('audio')).toHaveCount(1);
+  const isSameElement = await examAudio(page).evaluate(
+    (element: HTMLAudioElement) =>
+      element === (window as unknown as { ownerA: HTMLAudioElement }).ownerA,
+  );
+  expect(isSameElement).toBe(false);
+  expect((await mediaOf(page)).paused).toBe(true);
+  expect((await stateOfA()).paused).toBe(true);
+  await context.close();
+});
+
 test('closed foreign and expired requests cannot renew audio', async ({
   browser,
 }) => {

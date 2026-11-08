@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import Alert from '@mui/material/Alert';
+import Stack from '@mui/material/Stack';
+import { ExamContextHeader } from '../../../features/training/ExamContextHeader';
 import { ModeSelection } from '../../../features/training/ModeSelection';
 import { readExamChoice } from '../../../server/attempts/read';
 import { replaceGuestAction } from '../../../server/next/actions';
@@ -29,18 +31,23 @@ const ChoicePage = async ({ params }: ChoicePageProps) => {
       </Alert>
     );
   }
+  // The context line shows the title the server read for this slug, nothing
+  // from the address or the browser.
   return (
-    <ModeSelection
-      examSlug={choice.examSlug}
-      examTitle={choice.examTitle}
-      versionId={choice.versionId}
-      questionCount={choice.questionCount}
-      hoerenCount={choice.hoerenCount}
-      lesenCount={choice.lesenCount}
-      activeAttemptId={choice.activeAttemptId}
-      examTiming={choice.examTiming}
-      replaceGuest={replaceGuestAction}
-    />
+    <Stack spacing={1} sx={{ maxWidth: 720, mx: 'auto', minWidth: 0 }}>
+      <ExamContextHeader examTitle={choice.examTitle} />
+      <ModeSelection
+        examSlug={choice.examSlug}
+        examTitle={choice.examTitle}
+        versionId={choice.versionId}
+        questionCount={choice.questionCount}
+        hoerenCount={choice.hoerenCount}
+        lesenCount={choice.lesenCount}
+        activeAttemptId={choice.activeAttemptId}
+        examTiming={choice.examTiming}
+        replaceGuest={replaceGuestAction}
+      />
+    </Stack>
   );
 };
 
