@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import type { ExamContent } from '@b1k/domain';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import {
@@ -28,6 +29,7 @@ import {
   latestVersionOf,
   newGuest,
   readAttempts,
+  readSessionByToken,
   serviceDb,
   startFor,
 } from './support/db';
@@ -40,6 +42,11 @@ import {
   ensureConfirmedTestProfile,
 } from './support/full-exam';
 import globalSetup, { createTestRecording } from './support/global-setup';
+import {
+  continueThroughLibrary,
+  startFromChoice,
+  tokenOf,
+} from './support/guest-browser';
 import {
   DB_CONTAINER,
   assertLocalTarget,
@@ -1228,4 +1235,129 @@ test('profile edits do not affect sibling fixtures', async () => {
   );
   expect(siblingBefore.head?.fingerprint).not.toBe(editedDraft.fingerprint);
   expect(revisionsOf(siblingVersion)).toHaveLength(1);
+});
+
+// The choice of one exam in the browser, as a new guest reaches it through
+// the library.
+const openChoice = async (page: Page, slug: string) => {
+  await page.goto('/');
+  await continueThroughLibrary(page, `/practice/${slug}`);
+  await expect(page.getByTestId('mode-selection')).toHaveAttribute(
+    'data-exam-slug',
+    slug,
+  );
+};
+
+const radioOf = (page: Page, mode: string) =>
+  page.getByTestId(`mode-option-${mode}`).getByRole('radio');
+
+const expectTimedModes = async (page: Page, isAvailable: boolean) => {
+  await expect(radioOf(page, 'training')).toBeEnabled();
+  for (const mode of ['timed-block', 'exam']) {
+    if (isAvailable) {
+      await expect(radioOf(page, mode)).toBeEnabled();
+      await expect(page.getByTestId(`mode-reason-${mode}`)).toHaveCount(0);
+      continue;
+    }
+    await expect(radioOf(page, mode)).toBeDisabled();
+    const reason = page.getByTestId(`mode-reason-${mode}`);
+    await expect(reason).toBeVisible();
+    await expect(radioOf(page, mode)).toHaveAttribute(
+      'aria-describedby',
+      `mode-reason-${mode}`,
+    );
+    await expect(reason).toHaveAttribute('id', `mode-reason-${mode}`);
+  }
+};
+
+// A direct start command the way the button sends it, for a timed mode.
+const postTimedStart = async (page: Page, slug: string, mode: string) => {
+  const latest = await latestVersionOf(slug);
+  if (!latest) throw new Error(`no published version of ${slug}`);
+  const origin = new URL(page.url()).origin;
+  return page.context().request.post('/api/attempts/start', {
+    headers: { Origin: origin },
+    data: {
+      commandId: randomUUID(),
+      examSlug: slug,
+      mode,
+      purpose: 'normal',
+      selection: mode === 'exam' ? 'all' : 'hoeren',
+      sourceAttemptId: null,
+      expectedVersionId: latest.versionId,
+    },
+    maxRedirects: 0,
+  });
+};
+
+const attemptsOf = async (page: Page) => {
+  const session = await readSessionByToken(await tokenOf(page.context()));
+  if (!session) throw new Error('guest session is missing');
+  return readAttempts(session.id);
+};
+
+test('unconfirmed second exam blocks timed modes in UI and API', async ({
+  page,
+}) => {
+  const confirmed = uniqueExam();
+  ensureConfirmedTestProfile(
+    owner,
+    await publishTimed(confirmed, 1040),
+    FULL_TIMING,
+  );
+  const unconfirmed = uniqueExam();
+  await publishTimed(unconfirmed, 1048);
+
+  // The profile of exam A does not enable anything on exam B.
+  await openChoice(page, confirmed.slug);
+  await expectTimedModes(page, true);
+  await openChoice(page, unconfirmed.slug);
+  await expectTimedModes(page, false);
+
+  for (const mode of ['timed-block', 'exam']) {
+    const reply = await postTimedStart(page, unconfirmed.slug, mode);
+    expect(reply.status()).toBe(422);
+    expect(await reply.json()).toEqual({ ok: false, failure: 'not-enabled' });
+  }
+  // A refused start writes nothing; the attempt events belong to attempts.
+  expect(await attemptsOf(page)).toEqual([]);
+});
+
+test('unconfirmed second exam still starts free training', async ({ page }) => {
+  const exam = uniqueExam();
+  await publishTimed(exam, 1056);
+
+  await openChoice(page, exam.slug);
+  await expectTimedModes(page, false);
+  await expect(radioOf(page, 'training')).toBeChecked();
+  await startFromChoice(page);
+
+  const attempts = await attemptsOf(page);
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0]?.status).toBe('active');
+  expect(pinnedRunOf(attempts[0]?.id ?? '').mode).toBe('training');
+});
+
+test('profile of previous version does not enable timed modes', async ({
+  page,
+}) => {
+  const exam = uniqueExam();
+  const v1 = await publishTimed(exam, 1064);
+  ensureConfirmedTestProfile(owner, v1, FULL_TIMING);
+
+  await openChoice(page, exam.slug);
+  await expectTimedModes(page, true);
+
+  // A new version has no profile of its own: v1 is not borrowed.
+  const v2 = await publishTimed(exam, 1072, corrected(FULL_PILOT.content));
+  expect(v2).not.toBe(v1);
+  expect(gateOf(v2)).toBeNull();
+  await openChoice(page, exam.slug);
+  await expectTimedModes(page, false);
+  for (const mode of ['timed-block', 'exam']) {
+    const reply = await postTimedStart(page, exam.slug, mode);
+    expect(reply.status()).toBe(422);
+    expect(await reply.json()).toEqual({ ok: false, failure: 'not-enabled' });
+  }
+  expect(await attemptsOf(page)).toEqual([]);
 });
