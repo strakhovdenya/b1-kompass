@@ -680,6 +680,8 @@ test('switching exams stops prior audio owner', async ({ browser }) => {
 
   // The way back to the library is client navigation without a new document.
   await page.getByTestId('exam-context-library').click();
+  // A running exam asks first; leaving is the guest's explicit choice.
+  await page.getByTestId('timed-leave-confirm').click();
   await page.waitForURL('**/exams');
   await expect(page.getByTestId('exam-library')).toBeVisible();
   await expect(page.locator('audio')).toHaveCount(0);

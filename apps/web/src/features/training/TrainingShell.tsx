@@ -89,7 +89,7 @@ const CLOSED_PHASES: readonly SubmissionPhase[] = [
 interface TrainingShellProps {
   examSlug: string;
   // The title of the exam of the verified attempt, for the context line.
-  examTitle?: string | null;
+  examTitle: string;
   attemptId: string;
   questions: readonly ExamQuestion[];
   trackIds: readonly string[];
@@ -177,7 +177,7 @@ const useErrorRepeat = (
 // still in flight, the server computes the result, the shell only shows it.
 export const TrainingShell = ({
   examSlug,
-  examTitle = null,
+  examTitle,
   attemptId,
   questions,
   trackIds,
@@ -431,13 +431,7 @@ export const TrainingShell = ({
           data-testid="training-shell"
           data-attempt-id={attemptId}
         >
-          {examTitle ? (
-            <ExamContextHeader
-              examTitle={examTitle}
-              mode={mode}
-              stage="review"
-            />
-          ) : null}
+          <ExamContextHeader examTitle={examTitle} mode={mode} stage="review" />
           {nav}
           <AttemptReviewView
             review={review}
@@ -542,9 +536,12 @@ export const TrainingShell = ({
         data-mode={mode}
         data-phase={trusted.phase ?? undefined}
       >
-        {examTitle ? (
-          <ExamContextHeader examTitle={examTitle} mode={mode} stage={stage} />
-        ) : null}
+        <ExamContextHeader
+          examTitle={examTitle}
+          mode={mode}
+          stage={stage}
+          warnOnLeave={mode !== 'training' && isOpen}
+        />
         {clock}
         {nav}
         {examAudio}

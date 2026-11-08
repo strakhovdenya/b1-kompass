@@ -194,6 +194,13 @@
       "review": "Result"
     }
   },
+  "timedLeave": {
+    "title": "The time keeps running",
+    "body": "Going to the library does not pause this attempt. The countdown runs on our server and continues while you are away.",
+    "hint": "You can come back with “Continue” while time is left. Your saved answers are kept.",
+    "stay": "Stay",
+    "leave": "Leave — time keeps running"
+  },
   "training": {
     "blocks": "Exam blocks",
     "hoeren": "Hören (listening)",
