@@ -26,6 +26,8 @@ import {
   findActiveAttempt,
   findExamById,
   findExamBySlug,
+  listActiveAttempts,
+  listFullResults,
   readLatestVersion,
   readOwnedAttempt,
   readRun,
@@ -560,4 +562,68 @@ export const readExamChoice = async (
         }
       : null,
   };
+};
+
+// What the library card of one exam needs from the guest's own attempts.
+export interface ExamCardState {
+  active: { attemptId: string; block: 'hoeren' | 'lesen' } | null;
+  latestResult: { attemptId: string } | null;
+}
+
+// The states of the given exams in a fixed number of reads, whatever their
+// count: the guest's active attempts and their completed full results, read
+// by owner and cut to the given exams here. Both are bound to the guest
+// session; a repeat of mistakes is never the latest result, a legacy
+// completion without a run is. Read only.
+export const readExamCardStates = async (
+  deps: ServerDeps,
+  guest: GuestContext,
+  examIds: readonly string[],
+): Promise<Map<string, ExamCardState>> => {
+  const [actives, results] = await Promise.all([
+    listActiveAttempts(deps, guest.sessionId),
+    listFullResults(deps, guest.sessionId),
+  ]);
+  const wanted = new Set(examIds);
+  const states = new Map<string, ExamCardState>();
+  const stateOf = (examId: string): ExamCardState => {
+    const known = states.get(examId);
+    if (known) return known;
+    const created: ExamCardState = { active: null, latestResult: null };
+    states.set(examId, created);
+    return created;
+  };
+  const newestActive = new Map<string, (typeof actives)[number]>();
+  for (const row of actives) {
+    if (!wanted.has(row.examId)) continue;
+    const seen = newestActive.get(row.examId);
+    if (!seen || row.createdAt > seen.createdAt)
+      newestActive.set(row.examId, row);
+  }
+  for (const row of newestActive.values()) {
+    const progress = parseStoredProgress(row.progress);
+    stateOf(row.examId).active = {
+      attemptId: row.attemptId,
+      block: progress?.block === 'lesen' ? 'lesen' : 'hoeren',
+    };
+  }
+  // The latest result is chosen here by computed_at, whatever the order of
+  // the rows; equal moments fall to the smaller attempt id.
+  const latestMs = new Map<string, number>();
+  for (const row of results) {
+    if (!wanted.has(row.examId) || row.purpose === 'error-repeat') continue;
+    const state = stateOf(row.examId);
+    const ms = Date.parse(row.computedAt);
+    const known = latestMs.get(row.examId);
+    const current = state.latestResult;
+    const isNewer =
+      current === null ||
+      known === undefined ||
+      ms > known ||
+      (ms === known && row.attemptId < current.attemptId);
+    if (!isNewer) continue;
+    latestMs.set(row.examId, ms);
+    state.latestResult = { attemptId: row.attemptId };
+  }
+  return states;
 };

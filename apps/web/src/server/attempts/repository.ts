@@ -207,6 +207,115 @@ export const findActiveAttempt = async (
   return data ? toAttempt(data) : null;
 };
 
+export interface CardActiveRow {
+  attemptId: string;
+  examId: string;
+  progress: unknown;
+  createdAt: string;
+}
+
+interface CardActiveRecord {
+  id: string;
+  exam_id: string;
+  progress: unknown;
+  created_at: string;
+}
+
+// The guest's own active attempts of every exam in one read. The filter is
+// the owner alone: a list of exam ids would grow the request address with the
+// number of exams, while the guest holds at most one active attempt per exam
+// version. Only identity and the stored position are selected: no answers,
+// no key.
+export const listActiveAttempts = async (
+  deps: ServerDeps,
+  sessionId: string,
+): Promise<CardActiveRow[]> => {
+  const { data, error } = await deps.db
+    .from('attempts')
+    .select('id, exam_id, progress, created_at')
+    .eq('guest_session_id', sessionId)
+    .eq('status', 'active')
+    .returns<CardActiveRecord[]>();
+  if (error) throw new Error('Active attempts lookup failed', { cause: error });
+  return data.map((row) => ({
+    attemptId: row.id,
+    examId: row.exam_id,
+    progress: row.progress,
+    createdAt: row.created_at,
+  }));
+};
+
+export interface CardResultRow {
+  attemptId: string;
+  examId: string;
+  computedAt: string;
+  // Null for a legacy M1 completion that has no run.
+  purpose: string | null;
+}
+
+interface CardResultRecord {
+  attempt_id: string;
+  computed_at: string;
+  attempts: {
+    exam_id: string;
+    attempt_runs: { purpose: string } | { purpose: string }[] | null;
+  };
+}
+
+const purposeOf = (runs: CardResultRecord['attempts']['attempt_runs']) => {
+  const run = Array.isArray(runs) ? (runs[0] ?? null) : runs;
+  return run ? run.purpose : null;
+};
+
+const RESULT_COLUMNS_OF_CARD =
+  'attempt_id, computed_at, attempts!inner(exam_id, attempt_runs!attempt_runs_attempt_id_fkey(purpose))';
+
+// Below the max_rows of the Data API, so a page is never cut silently.
+export const RESULT_PAGE_SIZE = 500;
+
+const readResultPage = async (
+  deps: ServerDeps,
+  sessionId: string,
+  from: number,
+): Promise<CardResultRecord[]> => {
+  const { data, error } = await deps.db
+    .from('attempt_results')
+    .select(RESULT_COLUMNS_OF_CARD)
+    .eq('scope', 'full-exam')
+    .eq('attempts.guest_session_id', sessionId)
+    .eq('attempts.status', 'completed')
+    .order('computed_at', { ascending: false })
+    .order('attempt_id', { ascending: true })
+    .range(from, from + RESULT_PAGE_SIZE - 1)
+    .returns<CardResultRecord[]>();
+  if (error) throw new Error('Results lookup failed', { cause: error });
+  return data;
+};
+
+// The completed full-exam results of the guest's own attempts at every exam,
+// with the purpose of the run (null without a run), read page by page in a
+// stable order: the number of reads follows the guest's own results, never
+// the number of exams. The owner, the status and the scope are filtered by
+// the database; the caller drops repeats of mistakes and picks the latest.
+// Scores, answers and reviews are not selected.
+export const listFullResults = async (
+  deps: ServerDeps,
+  sessionId: string,
+): Promise<CardResultRow[]> => {
+  const records: CardResultRecord[] = [];
+  for (let from = 0; ; from += RESULT_PAGE_SIZE) {
+    const page = await readResultPage(deps, sessionId, from);
+    records.push(...page);
+    if (page.length < RESULT_PAGE_SIZE) break;
+  }
+  return records.map((row) => ({
+    attemptId: row.attempt_id,
+    examId: row.attempts.exam_id,
+    computedAt: row.computed_at,
+    purpose: purposeOf(row.attempts.attempt_runs),
+  }));
+};
+
 export const readRun = async (
   deps: ServerDeps,
   attemptId: string,
