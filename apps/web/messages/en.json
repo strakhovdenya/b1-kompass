@@ -52,7 +52,7 @@
       "exam": "Hören and Lesen, server clock"
     },
     "trainingDetail": "Free practice with no time limit. Choose what to practise below. You can finish when you are ready.",
-    "comingSoon": "Coming soon.",
+    "needsProfile": "Not available for this exam yet: its time limits are not confirmed.",
     "start": "Start training",
     "starting": "Starting…",
     "active": "You have a training of this exam in progress. Continue it or finish it before starting a new one.",
@@ -69,6 +69,7 @@
       "hoeren": "Hören only ({count, plural, one {# task} other {# tasks}})",
       "lesen": "Lesen only ({count, plural, one {# task} other {# tasks}})"
     },
+    "timedBlockTimes": "Time: Hören {hoeren} min, Lesen {lesen} min.",
     "timedBlockDetail": "One block against the clock: Hören or Lesen, with the time of the exam. The time keeps running if you pause the recording or leave the page.",
     "guestTooShort": "Your guest session ends too soon for this timed block. Choose the free training, or start the block in a new guest session.",
     "replaceOpen": "Start in a new guest session",

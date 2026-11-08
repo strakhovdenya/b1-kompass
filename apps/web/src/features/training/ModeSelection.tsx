@@ -150,8 +150,10 @@ export const ModeSelection = ({
     setSelection(value);
   };
 
+  // Both timed modes need the confirmed profile of this version; the server
+  // checks it again on every start.
   const isEnabled = (value: AttemptMode): boolean =>
-    value !== 'exam' || examTiming !== null;
+    value === 'training' || examTiming !== null;
 
   // The preparation of the full exam: the one recording, before any
   // attempt. The address must cover the whole Hören when the exam starts;
@@ -372,8 +374,14 @@ export const ModeSelection = ({
   const isStarting = status === 'starting';
 
   const detailOf = (item: AttemptMode): string => {
-    if (item !== 'exam') return t(DETAIL_KEYS[item]);
-    if (!examTiming) return t('comingSoon');
+    if (item === 'training') return t(DETAIL_KEYS[item]);
+    if (!examTiming) return item === 'exam' ? '' : t(DETAIL_KEYS[item]);
+    if (item === 'timed-block') {
+      return `${t(DETAIL_KEYS[item])} ${t('timedBlockTimes', {
+        hoeren: Math.round(examTiming.hoerenSeconds / MINUTE_SECONDS),
+        lesen: Math.round(examTiming.lesenSeconds / MINUTE_SECONDS),
+      })}`;
+    }
     return t('examDetail', {
       hoeren: Math.round(examTiming.hoerenSeconds / MINUTE_SECONDS),
       transition: examTiming.transitionSeconds,
@@ -446,7 +454,17 @@ export const ModeSelection = ({
               key={item}
               value={item}
               disabled={!isEnabled(item) || isStarting}
-              control={<Radio />}
+              control={
+                <Radio
+                  slotProps={{
+                    input: {
+                      'aria-describedby': isEnabled(item)
+                        ? undefined
+                        : `mode-reason-${item}`,
+                    },
+                  }}
+                />
+              }
               data-testid={`mode-option-${item}`}
               sx={cardSx(mode === item)}
               label={
@@ -457,9 +475,21 @@ export const ModeSelection = ({
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
                     {t(`modeFact.${MODE_KEYS[item]}`)}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {detailOf(item)}
-                  </Typography>
+                  {detailOf(item) ? (
+                    <Typography variant="body2" color="text.secondary">
+                      {detailOf(item)}
+                    </Typography>
+                  ) : null}
+                  {isEnabled(item) ? null : (
+                    <Typography
+                      id={`mode-reason-${item}`}
+                      variant="body2"
+                      color="text.secondary"
+                      data-testid={`mode-reason-${item}`}
+                    >
+                      {t('needsProfile')}
+                    </Typography>
+                  )}
                 </Stack>
               }
             />
