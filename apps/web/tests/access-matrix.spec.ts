@@ -24,6 +24,8 @@ import {
   readRunRows,
   readSession,
   readSessionByToken,
+  countVersionKeys,
+  readExamState,
   serviceDb,
   startBody,
   startFor,
@@ -50,7 +52,13 @@ import {
   continueThroughLibrary,
 } from './support/guest-browser';
 import { createTestRecording } from './support/global-setup';
-import { installM2Fixtures, psql, psqlJson, quote } from './support/sql';
+import {
+  installM2Fixtures,
+  psql,
+  psqlJson,
+  quote,
+  sqlRunnerAs,
+} from './support/sql';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 
 // Guest pages carry the answers of one attempt. Whatever sits between the
@@ -1121,4 +1129,223 @@ test('m2 forged expired foreign and public requests are refused', async ({
   expect(await rowsOfSession(shortSession)).toEqual(expiredRows);
   expect(await rowsOfGuest(owner)).toEqual(before.owner);
   expect(await rowsOfGuest(stranger)).toEqual(before.stranger);
+});
+
+// Owner material (#81) ------------------------------------------------------
+
+const PUBLISH_SIGNATURE =
+  'public.publish_exam_version(text,text,text,jsonb,jsonb,jsonb,text,boolean)';
+const OLD_PUBLISH_SIGNATURE =
+  'public.publish_exam_version(text,text,text,jsonb,jsonb,jsonb)';
+
+const objectExists = async (objectPath: string): Promise<boolean> => {
+  const folder = objectPath.slice(0, objectPath.lastIndexOf('/'));
+  const name = objectPath.slice(objectPath.lastIndexOf('/') + 1);
+  const { data, error } = await serviceDb.storage
+    .from('exam-sources')
+    .list(folder, { search: name });
+  if (error) throw error;
+  return data.some((object) => object.name === name);
+};
+
+const tracksOf = async (versionId: string): Promise<unknown[]> => {
+  const { data, error } = await serviceDb
+    .from('exam_version_audio')
+    .select('track_id, kind, object_path, content_type, sha256')
+    .eq('exam_version_id', versionId)
+    .order('track_id');
+  if (error) throw error;
+  return data;
+};
+
+test('public roles cannot publish or mutate owner material', async () => {
+  const slug = `test-owner-${randomUUID().slice(0, 8)}`;
+  const forged = `test-forged-${randomUUID().slice(0, 8)}`;
+  const forgedObject = `audio/forged-${randomUUID()}.wav`;
+  const recording = createTestRecording();
+  const published = await publishExamVersion(serviceDb, {
+    slug,
+    title: 'Owner material',
+    format: 'DTZ',
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...recording }],
+  });
+  const [track] = (await tracksOf(published.versionId)) as {
+    object_path: string;
+  }[];
+  if (!track) throw new Error('track is missing');
+  const objectPath = track.object_path;
+
+  // The SQL re-read of everything a public role could try to change.
+  const snapshot = async () => ({
+    exam: await readExamState(slug),
+    keys: await countVersionKeys(published.versionId),
+    tracks: await tracksOf(published.versionId),
+    forged: await readExamState(forged),
+    forgedObject: await objectExists(forgedObject),
+    object: await objectExists(objectPath),
+  });
+  const before = await snapshot();
+  expect(before.exam).toEqual({
+    title: 'Owner material',
+    format: 'DTZ',
+    versionIds: [published.versionId],
+  });
+  expect(before.keys).toBe(45);
+  expect(before.forged).toBeNull();
+  expect(before.forgedObject).toBe(false);
+  expect(before.object).toBe(true);
+
+  // The function exists only with its new signature, for service_role
+  // alone, as SECURITY INVOKER with an empty search_path.
+  const catalog = psqlJson<Record<string, unknown>>(
+    `select json_build_object(
+      'oldSignature', to_regprocedure(${quote(OLD_PUBLISH_SIGNATURE)}),
+      'overloads', (select count(*) from pg_proc
+        where pronamespace = 'public'::regnamespace
+          and proname = 'publish_exam_version'),
+      'anon', has_function_privilege('anon', ${quote(PUBLISH_SIGNATURE)},
+        'execute'),
+      'authenticated', has_function_privilege('authenticated',
+        ${quote(PUBLISH_SIGNATURE)}, 'execute'),
+      'serviceRole', has_function_privilege('service_role',
+        ${quote(PUBLISH_SIGNATURE)}, 'execute'),
+      'publicGrant', exists (select 1 from pg_proc p,
+        aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+        where p.oid = to_regprocedure(${quote(PUBLISH_SIGNATURE)})
+          and x.grantee = 0),
+      'definer', (select prosecdef from pg_proc
+        where oid = to_regprocedure(${quote(PUBLISH_SIGNATURE)})),
+      'config', (select array_to_string(proconfig, ',') from pg_proc
+        where oid = to_regprocedure(${quote(PUBLISH_SIGNATURE)})))`,
+  );
+  expect(catalog).toEqual({
+    oldSignature: null,
+    overloads: 1,
+    anon: false,
+    authenticated: false,
+    serviceRole: true,
+    publicGrant: false,
+    definer: false,
+    config: 'search_path=""',
+  });
+
+  // Data API and Storage with the publishable key (anon).
+  const anon = createPublicClient();
+  const publishArgs = {
+    p_slug: slug,
+    p_title: 'Forged',
+    p_format: 'DTZ',
+    p_content: FULL_PILOT.content,
+    p_keys: FULL_PILOT.keys,
+    p_audio: [],
+  };
+  for (const args of [
+    publishArgs,
+    { ...publishArgs, p_slug: forged },
+    { ...publishArgs, p_intent: 'new-version', p_rename: true },
+    { ...publishArgs, p_slug: forged, p_intent: 'new-exam', p_rename: false },
+  ]) {
+    const { data, error } = await anon.rpc('publish_exam_version', args);
+    expect(data, JSON.stringify(Object.keys(args))).toBeNull();
+    expect(error?.code, args.p_slug).toBe('42501');
+  }
+  const writes = [
+    anon.from('exams').insert({ slug: forged, title: 'Forged', format: 'DTZ' }),
+    anon.from('exams').update({ title: 'Forged' }).eq('slug', slug),
+    anon.from('exams').delete().eq('slug', slug),
+    anon.from('exam_versions').insert({
+      exam_id: randomUUID(),
+      version: 99,
+      content: { questions: [] },
+    }),
+    anon.from('answer_keys').insert({
+      exam_version_id: published.versionId,
+      question_id: 'forged-1',
+      correct_option_id: 'a',
+    }),
+    anon
+      .from('answer_keys')
+      .update({ correct_option_id: 'a' })
+      .eq('exam_version_id', published.versionId),
+    anon.from('exam_version_audio').insert({
+      exam_version_id: published.versionId,
+      track_id: 'forged',
+      kind: 'file',
+      object_path: forgedObject,
+      content_type: 'audio/wav',
+      sha256: '0'.repeat(64),
+    }),
+  ];
+  for (const [index, write] of writes.entries()) {
+    const { error } = await write;
+    expect(error, `anon write ${index}`).not.toBeNull();
+  }
+  const bucket = anon.storage.from('exam-sources');
+  const upload = await bucket.upload(forgedObject, recording.bytes, {
+    contentType: 'audio/wav',
+  });
+  expect(upload.error).not.toBeNull();
+  const overwrite = await bucket.upload(objectPath, recording.bytes, {
+    contentType: 'audio/wav',
+    upsert: true,
+  });
+  expect(overwrite.error).not.toBeNull();
+  await bucket.remove([objectPath]);
+  await bucket.move(objectPath, forgedObject);
+
+  // The same writes straight in SQL as anon and authenticated: refused by
+  // privileges or by RLS of storage.objects.
+  const forgedPublish = (target: string, intent: string) =>
+    `select * from public.publish_exam_version(${quote(target)}, 'Forged',
+      'DTZ', '{"questions": []}'::jsonb, '{}'::jsonb, '[]'::jsonb,
+      ${quote(intent)}, true)`;
+  const refused = [
+    forgedPublish(forged, 'new-exam'),
+    forgedPublish(slug, 'new-version'),
+    `select * from public.publish_exam_version(${quote(slug)}, 'Forged',
+      'DTZ', '{"questions": []}'::jsonb, '{}'::jsonb, '[]'::jsonb)`,
+    `insert into public.exams (slug, title, format)
+      values (${quote(forged)}, 'Forged', 'DTZ')`,
+    `update public.exams set title = 'Forged' where slug = ${quote(slug)}`,
+    `insert into public.exam_versions (exam_id, version, content)
+      select id, 99, '{"questions": []}'::jsonb from public.exams
+      where slug = ${quote(slug)}`,
+    `insert into public.answer_keys
+      (exam_version_id, question_id, correct_option_id)
+      values (${quote(published.versionId)}, 'forged-1', 'a')`,
+    `update public.answer_keys set correct_option_id = 'a'
+      where exam_version_id = ${quote(published.versionId)}`,
+    `insert into public.exam_version_audio
+      (exam_version_id, track_id, kind, object_path, content_type, sha256)
+      values (${quote(published.versionId)}, 'forged', 'file',
+        ${quote(forgedObject)}, 'audio/wav', ${quote('0'.repeat(64))})`,
+    `insert into storage.objects (bucket_id, name)
+      values ('exam-sources', ${quote(forgedObject)})`,
+  ];
+  // Rows a public role cannot see are not changed by RLS: no error, no effect.
+  const unseen = [
+    `update storage.objects set name = ${quote(forgedObject)}
+      where bucket_id = 'exam-sources' and name = ${quote(objectPath)}`,
+    `delete from storage.objects
+      where bucket_id = 'exam-sources' and name = ${quote(objectPath)}`,
+  ];
+  for (const role of ['anon', 'authenticated'] as const) {
+    const run = sqlRunnerAs(role);
+    for (const sql of refused) {
+      expect(() => run(sql, {}), `${role}: ${sql}`).toThrow(
+        /permission denied|row-level security/,
+      );
+    }
+    for (const sql of unseen) {
+      try {
+        run(sql, {});
+      } catch {
+        // A refusal is as good as no effect; the re-read decides.
+      }
+    }
+  }
+
+  expect(await snapshot()).toEqual(before);
 });

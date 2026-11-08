@@ -1,7 +1,15 @@
 // The one trusted publication function of the owner tools: validates the
-// material contract, uploads the audio objects and calls the database
-// function that writes version, keys and tracks in one transaction. The short
-// set and the full pilot both publish through it.
+// material contract, checks the identity of the exam, uploads the audio
+// objects and calls the database function that writes version, keys and
+// tracks in one transaction. The short set, the full pilot and the owner CLI
+// (`exam:publish`) all publish through it.
+//
+// The identity guard lives in the database function
+// (supabase/migrations/20261114000000_m3_publish_guard.sql): under the row
+// lock of the exam it rejects a changed format, a changed title without
+// `rename` and an intent that does not match, and returns the existing
+// version for an identical package. The read-only checks here only avoid
+// uploading objects for a publication the database would refuse.
 
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -9,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { examContentSchema, findMaterialProblems } from '@b1k/domain';
+import { ruleViolation } from '../../apps/web/src/server/db';
 import type { AnswerKeys, ExamContent } from '@b1k/domain';
 
 export const AUDIO_BUCKET = 'exam-sources';
@@ -44,10 +53,25 @@ export interface AudioFileInput {
   bytes: Uint8Array;
 }
 
-export interface PublishInput {
+// 'new-exam': the slug must not exist yet; 'new-version': it must exist.
+// Optional for the trusted callers that publish fixed test and pilot sets;
+// the owner CLI always passes it.
+export type PublishIntent = 'new-exam' | 'new-version';
+
+export interface ExamIdentity {
   slug: string;
   title: string;
   format: string;
+}
+
+export interface PublicationRequest extends ExamIdentity {
+  intent?: PublishIntent;
+  // Allows a changed `exams.title` of an existing exam; the new title is
+  // visible in the reviews of every earlier version.
+  rename?: boolean;
+}
+
+export interface PublishInput extends PublicationRequest {
   content: ExamContent;
   keys: AnswerKeys;
   audio: readonly AudioFileInput[];
@@ -56,6 +80,37 @@ export interface PublishInput {
 export interface PublishOutcome {
   versionId: string;
   isNew: boolean;
+}
+
+// Expected refusals of a publication as stable codes. The database function
+// reports the same codes as the hint of its P0001 errors.
+export const PUBLICATION_REJECTIONS = [
+  'exam_exists',
+  'exam_not_found',
+  'exam_format_mismatch',
+  'exam_title_mismatch',
+  'exam_identity_conflict',
+  'publish_intent_invalid',
+  'material_invalid',
+] as const;
+
+export type PublicationRejection = (typeof PUBLICATION_REJECTIONS)[number];
+
+const isPublicationRejection = (
+  value: unknown,
+): value is PublicationRejection =>
+  typeof value === 'string' &&
+  (PUBLICATION_REJECTIONS as readonly string[]).includes(value);
+
+// An operational refusal: it carries only its code, never material or keys.
+export class PublicationRejectedError extends Error {
+  readonly code: PublicationRejection;
+
+  constructor(code: PublicationRejection) {
+    super(`Publication rejected: ${code}`);
+    this.name = 'PublicationRejectedError';
+    this.code = code;
+  }
 }
 
 interface AudioTrack {
@@ -121,6 +176,48 @@ const toTracks = (files: readonly AudioFileInput[]): AudioTrack[] => {
   return tracks.toSorted((a, b) => a.trackId.localeCompare(b.trackId));
 };
 
+// The exam of the slug as it is stored now, or null. Read-only.
+export const readExamIdentity = async (
+  db: SupabaseClient,
+  slug: string,
+): Promise<ExamIdentity | null> => {
+  const { data, error } = await db
+    .from('exams')
+    .select('slug, title, format')
+    .eq('slug', slug)
+    .maybeSingle<ExamIdentity>();
+  if (error) throw new Error('Exam lookup failed', { cause: error });
+  return data;
+};
+
+// The rule of the database guard applied to a read snapshot.
+export const findIdentityProblem = (
+  existing: ExamIdentity | null,
+  request: PublicationRequest,
+): PublicationRejection | null => {
+  if (!existing) {
+    return request.intent === 'new-version' ? 'exam_not_found' : null;
+  }
+  if (request.intent === 'new-exam') return 'exam_exists';
+  if (existing.format !== request.format) return 'exam_format_mismatch';
+  const isRenamed = existing.title !== request.title;
+  if (isRenamed && request.rename !== true) return 'exam_title_mismatch';
+  return null;
+};
+
+// Read-only preflight: refuses before any upload what the database function
+// would refuse. It cannot see a concurrent publication; the database
+// function decides again under the row lock of the exam.
+export const preflightPublication = async (
+  db: SupabaseClient,
+  request: PublicationRequest,
+): Promise<ExamIdentity | null> => {
+  const existing = await readExamIdentity(db, request.slug);
+  const problem = findIdentityProblem(existing, request);
+  if (problem) throw new PublicationRejectedError(problem);
+  return existing;
+};
+
 const sameTracks = async (
   db: SupabaseClient,
   versionId: string,
@@ -144,6 +241,7 @@ const sameTracks = async (
   return isDeepStrictEqual(stored, tracks);
 };
 
+// The latest version when content, keys and tracks are identical to it.
 const findSameVersion = async (
   db: SupabaseClient,
   input: PublishInput,
@@ -175,6 +273,18 @@ const findSameVersion = async (
   return (await sameTracks(db, data.id, tracks)) ? data.id : null;
 };
 
+// The early exit without upload and without the database function is taken
+// only when all five parts (content, keys, tracks, title, format) are
+// unchanged and the intent allows an existing exam.
+const mayReuseVersion = (
+  existing: ExamIdentity | null,
+  input: PublishInput,
+): boolean =>
+  existing !== null &&
+  input.intent !== 'new-exam' &&
+  existing.title === input.title &&
+  existing.format === input.format;
+
 const uploadTrack = async (
   db: SupabaseClient,
   track: AudioTrack,
@@ -195,10 +305,25 @@ const uploadTrack = async (
   if (error) throw new Error('Audio upload failed', { cause: error });
 };
 
-// Validates the material contract and the audio files before anything is
-// written: a rejected set uploads nothing and creates no version or key. The
-// database function repeats the key checks, requires every audio object and
-// writes version, keys and tracks in one transaction.
+// The function returns exactly one row.
+const publishedRowsSchema = z.tuple([
+  z.object({ version_id: z.uuid(), is_new: z.boolean() }),
+]);
+
+// A refusal of the database function becomes its code; anything else stays
+// an internal failure with the database error only as its cause.
+const publicationError = (error: unknown): Error => {
+  const hint = ruleViolation(error);
+  return isPublicationRejection(hint)
+    ? new PublicationRejectedError(hint)
+    : new Error('Publication failed', { cause: error });
+};
+
+// Validates the material contract, the audio files and the identity of the
+// exam before anything is written: a rejected set uploads nothing and
+// creates no exam, version or key. The database function repeats the key
+// and identity checks under the row lock of the exam, requires every audio
+// object and writes version, keys and tracks in one transaction.
 export const publishExamVersion = async (
   db: SupabaseClient,
   input: PublishInput,
@@ -211,8 +336,11 @@ export const publishExamVersion = async (
     const list = problems.map((p) => `${p.code}:${p.questionId}`).join(', ');
     throw new Error(`Material is not publishable: ${list}`);
   }
-  const existing = await findSameVersion(db, input, tracks);
-  if (existing) return { versionId: existing, isNew: false };
+  const existing = await preflightPublication(db, input);
+  if (mayReuseVersion(existing, input)) {
+    const same = await findSameVersion(db, input, tracks);
+    if (same) return { versionId: same, isNew: false };
+  }
   for (const file of input.audio) {
     const track = tracks.find((item) => item.trackId === file.trackId);
     if (track) await uploadTrack(db, track, file);
@@ -224,7 +352,14 @@ export const publishExamVersion = async (
     p_content: content,
     p_keys: input.keys,
     p_audio: tracks,
+    p_intent: input.intent ?? null,
+    p_rename: input.rename === true,
   });
-  if (error) throw new Error('Publication failed', { cause: error });
-  return { versionId: z.uuid().parse(data), isNew: true };
+  if (error) throw publicationError(error);
+  // The transaction is committed here: an unreadable answer must not look
+  // like a failed publication.
+  const parsed = publishedRowsSchema.safeParse(data);
+  if (!parsed.success) throw new Error('Publication result unreadable');
+  const row = parsed.data[0];
+  return { versionId: row.version_id, isNew: row.is_new };
 };
