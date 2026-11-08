@@ -421,6 +421,18 @@ describe('exam library CLI audit-audio', () => {
     expect(audit).not.toContain('.remove(');
     expect(publisher).not.toContain('.remove(');
     expect(publisher).not.toContain('upsert: true');
+    // No owner tool outside the tests deletes or moves a Storage object.
+    const names = await readdir(import.meta.dirname, { recursive: true });
+    const sources = names.filter(
+      (name) =>
+        name.endsWith('.ts') &&
+        !name.endsWith('.test.ts') &&
+        !name.startsWith('prepare-pilot'),
+    );
+    for (const name of sources) {
+      const text = await readFile(path.join(import.meta.dirname, name), 'utf8');
+      expect(text, name).not.toMatch(/\.(remove|move)\(/);
+    }
   });
 });
 

@@ -280,8 +280,7 @@ const auditCommand = async (
     if (parsed.positionals.length > 0) throw new Error('unexpected argument');
     json = parsed.values.json === true;
   } catch {
-    io.stderr(`${USAGE}
-`);
+    io.stderr(`${USAGE}\n`);
     return EXIT_INVALID;
   }
   let db: SupabaseClient;
@@ -295,8 +294,7 @@ const auditCommand = async (
     io.stdout(formatAuditReport(await auditAudio(db), json));
     return EXIT_OK;
   } catch (error) {
-    io.stderr(`${describeAuditFailure(error)}
-`);
+    io.stderr(`${describeAuditFailure(error)}\n`);
     return EXIT_INVALID;
   }
 };

@@ -55,6 +55,9 @@ const listFolder = async (
         found.push(entryPath);
       } else if (depth < MAX_DEPTH) {
         found.push(...(await listFolder(db, entryPath, depth + 1)));
+      } else {
+        // An unlisted folder would hide objects from the report.
+        throw new Error(LISTING_FAILED);
       }
     }
     if (data.length === 0) return found;
@@ -82,7 +85,8 @@ const readReferencedPaths = async (
 export const auditAudio = async (
   db: SupabaseClient,
 ): Promise<AudioAuditReport> => {
-  const objects = await listFolder(db, '', 0);
+  // A set: paging by offset over a live listing may return a name twice.
+  const objects = [...new Set(await listFolder(db, '', 0))];
   const references = await readReferencedPaths(db);
   const unreferenced = objects.filter((object) => !references.has(object));
   return {
