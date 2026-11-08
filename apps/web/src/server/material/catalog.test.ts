@@ -111,8 +111,13 @@ describe('catalog states', () => {
       { ...row({ slug: 'a', title: 'A' }, [1, full]) },
       { ...row({ slug: 'b', title: 'B' }, [1, full]) },
     ];
-    // Newest first, as the database returns them; a repeat is skipped.
+    // Deliberately not in time order: the choice must not rely on row order.
     const results = [
+      {
+        attempt_id: 'older-a',
+        computed_at: '2026-11-08T10:00:00Z',
+        attempts: { exam_id: 'id-a', attempt_runs: { purpose: 'normal' } },
+      },
       {
         attempt_id: 'repeat-a',
         computed_at: '2026-11-08T12:00:00Z',
@@ -124,11 +129,6 @@ describe('catalog states', () => {
       {
         attempt_id: 'newer-a',
         computed_at: '2026-11-08T11:00:00Z',
-        attempts: { exam_id: 'id-a', attempt_runs: { purpose: 'normal' } },
-      },
-      {
-        attempt_id: 'older-a',
-        computed_at: '2026-11-08T10:00:00Z',
         attempts: { exam_id: 'id-a', attempt_runs: { purpose: 'normal' } },
       },
       {

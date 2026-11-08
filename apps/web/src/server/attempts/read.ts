@@ -607,11 +607,23 @@ export const readExamCardStates = async (
       block: progress?.block === 'lesen' ? 'lesen' : 'hoeren',
     };
   }
-  // Newest first: the first accepted row of an exam is its latest result.
+  // The latest result is chosen here by computed_at, whatever the order of
+  // the rows; equal moments fall to the smaller attempt id.
+  const latestMs = new Map<string, number>();
   for (const row of results) {
     if (!wanted.has(row.examId) || row.purpose === 'error-repeat') continue;
     const state = stateOf(row.examId);
-    if (!state.latestResult) state.latestResult = { attemptId: row.attemptId };
+    const ms = Date.parse(row.computedAt);
+    const known = latestMs.get(row.examId);
+    const current = state.latestResult;
+    const isNewer =
+      current === null ||
+      known === undefined ||
+      ms > known ||
+      (ms === known && row.attemptId < current.attemptId);
+    if (!isNewer) continue;
+    latestMs.set(row.examId, ms);
+    state.latestResult = { attemptId: row.attemptId };
   }
   return states;
 };

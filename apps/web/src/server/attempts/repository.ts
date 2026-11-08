@@ -268,7 +268,7 @@ const purposeOf = (runs: CardResultRecord['attempts']['attempt_runs']) => {
 };
 
 // The completed full-exam results of the guest's own attempts at every exam,
-// newest first, with the purpose of the run (null without a run). The
+// with the purpose of the run (null without a run). The
 // owner, the status and the scope are filtered by the database; the caller
 // drops repeats of mistakes. Scores, answers and reviews are not selected.
 export const listFullResults = async (
@@ -283,8 +283,6 @@ export const listFullResults = async (
     .eq('scope', 'full-exam')
     .eq('attempts.guest_session_id', sessionId)
     .eq('attempts.status', 'completed')
-    .order('computed_at', { ascending: false })
-    .order('attempt_id', { ascending: true })
     .returns<CardResultRecord[]>();
   if (error) throw new Error('Results lookup failed', { cause: error });
   return data.map((row) => ({
