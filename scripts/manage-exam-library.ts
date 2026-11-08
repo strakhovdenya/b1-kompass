@@ -353,7 +353,13 @@ export const runOwnerCli = async (
   const { values, positionals } = parsed;
   const [command, manifestArgument, ...rest] = positionals;
   const isKnown = command === 'validate' || command === 'publish';
-  if (!isKnown || !manifestArgument || rest.length > 0) {
+  // An unknown subcommand is refused like a bad `audit-audio` call (#82).
+  if (command !== undefined && !isKnown) {
+    io.stderr(`${USAGE}
+`);
+    return EXIT_INVALID;
+  }
+  if (!manifestArgument || rest.length > 0) {
     io.stderr(`${USAGE}\n`);
     return EXIT_USAGE;
   }

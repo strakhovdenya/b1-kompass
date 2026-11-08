@@ -387,9 +387,11 @@ describe('exam library CLI audit-audio', () => {
       expect(result.err, argv.join(' ')).toContain('Usage');
       expect(result.out, argv.join(' ')).toBe('');
     }
-    const unknown = await run(['audit-audios'], connect);
-    expect(unknown.code).toBe(2);
-    expect(unknown.err).toContain('Usage');
+    for (const argv of [['audit-audios'], ['frobnicate', 'a.json']]) {
+      const unknown = await run(argv, connect);
+      expect(unknown.code, argv.join(' ')).toBe(1);
+      expect(unknown.err, argv.join(' ')).toContain('Usage');
+    }
     expect(connect).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
