@@ -71,8 +71,16 @@ describe('ModeSelection', () => {
       expect(radioOf(html, mode)).not.toContain('aria-describedby');
     }
     expect(html).not.toContain('mode-reason-');
-    expect(html).toContain('25 min');
-    expect(html).toContain('45 min');
+    const cardOf = (mode: string): string => {
+      const start = html.indexOf(`data-testid="mode-option-${mode}"`);
+      return html.slice(
+        start,
+        html.indexOf('data-testid="mode-option-', start + 30),
+      );
+    };
+    expect(cardOf('timed-block')).toContain('Hören 25 min, Lesen 45 min');
+    expect(cardOf('exam')).toContain('Hören (25 min)');
+    expect(cardOf('exam')).toContain('Lesen with its full time (45 min)');
   });
 
   it('unavailable reason is localized and described', () => {

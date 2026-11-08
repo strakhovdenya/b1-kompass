@@ -69,6 +69,7 @@
       "hoeren": "Hören only ({count, plural, one {# task} other {# tasks}})",
       "lesen": "Lesen only ({count, plural, one {# task} other {# tasks}})"
     },
+    "timedBlockTimes": "Time: Hören {hoeren} min, Lesen {lesen} min.",
     "timedBlockDetail": "One block against the clock: Hören or Lesen, with the time of the exam. The time keeps running if you pause the recording or leave the page.",
     "guestTooShort": "Your guest session ends too soon for this timed block. Choose the free training, or start the block in a new guest session.",
     "replaceOpen": "Start in a new guest session",

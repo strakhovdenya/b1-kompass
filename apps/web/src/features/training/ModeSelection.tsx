@@ -374,8 +374,14 @@ export const ModeSelection = ({
   const isStarting = status === 'starting';
 
   const detailOf = (item: AttemptMode): string => {
-    if (item !== 'exam') return t(DETAIL_KEYS[item]);
-    if (!examTiming) return '';
+    if (item === 'training') return t(DETAIL_KEYS[item]);
+    if (!examTiming) return item === 'exam' ? '' : t(DETAIL_KEYS[item]);
+    if (item === 'timed-block') {
+      return `${t(DETAIL_KEYS[item])} ${t('timedBlockTimes', {
+        hoeren: Math.round(examTiming.hoerenSeconds / MINUTE_SECONDS),
+        lesen: Math.round(examTiming.lesenSeconds / MINUTE_SECONDS),
+      })}`;
+    }
     return t('examDetail', {
       hoeren: Math.round(examTiming.hoerenSeconds / MINUTE_SECONDS),
       transition: examTiming.transitionSeconds,
