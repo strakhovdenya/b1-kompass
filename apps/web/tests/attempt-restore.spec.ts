@@ -29,6 +29,7 @@ import {
   attemptLesenUrl,
   attemptUrl,
   enterAndStart,
+  continueThroughLibrary,
 } from './support/guest-browser';
 
 // The synthetic full set: lesen-11 is the first task of the long Teil 3 text
@@ -343,7 +344,9 @@ test('restore recovers server confirmed position and answers', async ({
 
   const other = await context.newPage();
   await other.goto('/');
-  await other.getByRole('button', { name: 'Continue as guest' }).click();
+  // The entry opens the library; the saved Lesen place is reached through the
+  // legacy Lesen address of the same attempt (own Continue is #75).
+  await continueThroughLibrary(other, '/practice/lesen');
   await other.waitForURL(LESEN_URL);
   expect(attemptIdOf(other)).toBe(attemptId);
   await expectPlaceRestored(other);

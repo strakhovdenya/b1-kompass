@@ -15,6 +15,7 @@ import {
   ANSWER_URL,
   CHOICE_URL,
   startFromChoice,
+  continueThroughLibrary,
 } from './support/guest-browser';
 
 // The seeded pilot short set: four single-choice Hören tasks of one recording.
@@ -30,7 +31,7 @@ const promptOf = (number: number): string => PROMPTS[number - 1] ?? '';
 
 const startGuest = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
   await expect(page.getByText(promptOf(1))).toBeVisible();

@@ -14,6 +14,7 @@ import {
   ANSWER_URL,
   CHOICE_URL,
   startFromChoice,
+  continueThroughLibrary,
 } from './support/guest-browser';
 import { PAIR_PROMPTS } from './support/pair-exam';
 
@@ -30,7 +31,7 @@ const TOLERANCE_SECONDS = 0.5;
 
 const startGuest = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
   await expect(page.getByText(PAIR_PROMPTS.trueFalse)).toBeVisible();

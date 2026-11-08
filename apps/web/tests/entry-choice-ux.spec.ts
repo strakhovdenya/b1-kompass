@@ -26,6 +26,7 @@ import {
   HOEREN_URL,
   LESEN_URL,
   attemptIdOf,
+  passLibrary,
   tokenOf,
 } from './support/guest-browser';
 import {
@@ -93,6 +94,7 @@ const enter = async (browser: Browser, viewport: Viewport) => {
   const page = await context.newPage();
   await page.goto('/');
   await page.getByTestId('guest-continue').click();
+  await passLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await expect(page.getByTestId('mode-selection')).toBeVisible();
   return { context, page };
@@ -185,6 +187,7 @@ test('guest entry has clear responsive hierarchy and explicit session creation',
     expect(cookieRequests, screen).toEqual([]);
 
     await cta.click();
+    await passLibrary(page);
     await page.waitForURL(CHOICE_URL);
     await expect(page.getByTestId('mode-selection')).toBeVisible();
     const session = await sessionOf(context);
@@ -198,6 +201,8 @@ test('guest entry has clear responsive hierarchy and explicit session creation',
 test('mode choice is scannable accessible and preserves explicit start', async ({
   browser,
 }) => {
+  // Four guests enter through the library and the legacy address each.
+  test.slow();
   const slug = await publishWithoutProfile();
   const unconfirmed = await contextOf(
     browser,
@@ -304,6 +309,7 @@ test('entry and mode controls remain usable with zoom keyboard and errors', asyn
     await expectNoFocusTrap(page, `home ${screen}`);
     await tabTo(page, page.getByTestId('guest-continue'), `home ${screen}`);
     await page.keyboard.press('Enter');
+    await passLibrary(page);
     await page.waitForURL(CHOICE_URL);
     await expect(page.getByTestId('mode-selection')).toBeVisible();
     const session = await sessionOf(context);

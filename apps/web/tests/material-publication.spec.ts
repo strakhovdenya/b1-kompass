@@ -25,7 +25,7 @@ import {
   submitStored,
 } from './support/db';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
-import { CHOICE_URL } from './support/guest-browser';
+import { CHOICE_URL, continueThroughLibrary } from './support/guest-browser';
 import { psql, quote } from './support/sql';
 
 const AUDIO_BUCKET = 'exam-sources';
@@ -490,7 +490,7 @@ test('pilot exam slug is the default of openPractice', async ({ page }) => {
   // The entry of a new guest on a server without PRACTICE_EXAM_SLUG opens the
   // choice of the pilot exam, and the legacy address leads there too.
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   expect(new URL(page.url()).pathname).toBe(`/practice/${PILOT_EXAM.slug}`);
   await page.goto('/practice');

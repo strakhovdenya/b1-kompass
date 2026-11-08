@@ -47,6 +47,7 @@ import {
   postCommand,
   startBrowserGuest,
   tokenOf,
+  continueThroughLibrary,
 } from './support/guest-browser';
 import { createTestRecording } from './support/global-setup';
 import { installM2Fixtures, psql, psqlJson, quote } from './support/sql';
@@ -302,7 +303,7 @@ const enterWithoutStart = async (browser: Browser) => {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await expect(page.getByTestId('mode-selection')).toBeVisible();
   const token = await tokenOf(context);

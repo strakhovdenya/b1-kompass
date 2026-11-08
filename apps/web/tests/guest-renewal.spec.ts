@@ -56,6 +56,7 @@ import {
   attemptLesenUrl,
   attemptUrl,
   startFromChoice,
+  continueThroughLibrary,
 } from './support/guest-browser';
 
 // The synthetic full set. Events are read per visitor_id or attempt_id:
@@ -209,7 +210,7 @@ const sessionOf = async (context: BrowserContext) => {
 // the page language is English here.
 const enterAsGuest = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
   await expect(page.getByTestId('question-card-hoeren-1')).toBeVisible();
@@ -638,7 +639,7 @@ test('repeated requests do not duplicate events', async ({ browser }) => {
   // Entry again from the same browser keeps its session and continues its
   // active attempt at the attempt's own address, without a start.
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(HOEREN_URL);
   expect(attemptIdOf(page)).toBe(attemptId);
   expect((await sessionOf(context)).id).toBe(sessionId);

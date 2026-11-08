@@ -21,7 +21,11 @@ import {
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT, FULL_TRACK_ID } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
-import { CHOICE_URL, startFromChoice } from './support/guest-browser';
+import {
+  CHOICE_URL,
+  continueThroughLibrary,
+  startFromChoice,
+} from './support/guest-browser';
 
 const { content, keys } = FULL_PILOT;
 
@@ -147,7 +151,7 @@ const expectActiveWithoutResult = async (
 test('full version attempt opens with full exam scope', async ({ page }) => {
   // A new guest starts in English, so the entry button has its English name.
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
   await expect(page.getByTestId('set-position')).toBeVisible();
