@@ -26,7 +26,8 @@
     "publish:pilot": "tsx scripts/publish-pilot.ts",
     "prepare:pilot": "tsx scripts/prepare-pilot/prepare-pilot.ts",
     "exam:validate": "tsx scripts/manage-exam-library.ts validate",
-    "exam:publish": "tsx scripts/manage-exam-library.ts publish"
+    "exam:publish": "tsx scripts/manage-exam-library.ts publish",
+    "exam:audit-audio": "tsx scripts/manage-exam-library.ts audit-audio"
   },
   "devDependencies": {
     "@supabase/supabase-js": "2.118.0",

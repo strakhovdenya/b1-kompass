@@ -3,6 +3,7 @@
 //   npm run exam:validate -- <manifest.json> [--json]
 //   SUPABASE_URL=... SUPABASE_SECRET_KEY=... \
 //   npm run exam:publish -- <manifest.json> --new-exam | --new-version [--rename]
+//   npm run exam:audit-audio [-- --json]
 //
 // `validate` is a dry run: it reads the owner manifest and checks the
 // content, the answer keys and the local audio files. It needs no secrets,
@@ -14,6 +15,9 @@
 // exam identity (slug, title, format) and only then uploads the audio and
 // calls the guarded database function through publishExamVersion. A refused
 // preflight uploads nothing and writes nothing.
+//
+// `audit-audio` (#82) is read-only: it lists the objects of the private audio
+// bucket that no version refers to and prints their paths. It deletes nothing.
 //
 // Reports hold codes, JSON paths, ids, the slug and the version id only:
 // never keys, task texts, manifest content, secrets, signed URLs or absolute
@@ -28,11 +32,18 @@ import {
   readServiceConfig,
 } from '../apps/web/src/server/db';
 import {
+  LISTING_FAILED,
+  REFERENCES_FAILED,
+  auditAudio,
+  formatAuditReport,
+} from './lib/audio-audit';
+import {
   loadOwnerPackage,
   validateOwnerManifestFile,
 } from './lib/owner-exam-manifest';
 import type { ManifestValidation } from './lib/owner-exam-manifest';
 import {
+  AudioObjectMismatchError,
   PublicationRejectedError,
   preflightPublication,
   publishExamVersion,
@@ -60,7 +71,9 @@ export const USAGE = `Usage:
   validate <manifest.json> [--json]   check an owner manifest v1; writes nothing
   publish <manifest.json> --new-exam | --new-version [--rename] [--json]
                                       validate again and publish one version
-                                      (needs SUPABASE_URL, SUPABASE_SECRET_KEY)`;
+                                      (needs SUPABASE_URL, SUPABASE_SECRET_KEY)
+  audit-audio [--json]                list audio objects without a version
+                                      (read-only; deletes nothing)`;
 
 const REJECTION_MESSAGES: Readonly<Record<PublicationRejection, string>> = {
   exam_exists: 'The slug already belongs to an exam; use --new-version.',
@@ -80,6 +93,7 @@ const SAFE_FAILURES = new Set([
   'Key lookup failed',
   'Audio lookup failed',
   'Audio upload failed',
+  'Audio verification failed',
   'Publication failed',
 ]);
 
@@ -101,6 +115,13 @@ const codeOf = (cause: unknown): string | null => {
 // A failure as one safe line: the code of a refusal, a fixed message of the
 // publisher with the code of its cause, or nothing about the internals.
 const describeFailure = (error: unknown): string => {
+  if (error instanceof AudioObjectMismatchError) {
+    return (
+      `Publication stopped: ${error.code} (track ${error.trackId}) - ` +
+      'the stored audio object does not match its SHA-256; nothing was ' +
+      'overwritten or deleted'
+    );
+  }
   if (error instanceof PublicationRejectedError) {
     const message = REJECTION_MESSAGES[error.code];
     return `Publication rejected: ${error.code} - ${message}`;
@@ -232,6 +253,52 @@ const publishCommand = async (
   }
 };
 
+const AUDIT_FAILURES = new Set([LISTING_FAILED, REFERENCES_FAILED]);
+
+const describeAuditFailure = (error: unknown): string => {
+  if (error instanceof Error && AUDIT_FAILURES.has(error.message)) {
+    const code = codeOf(error.cause);
+    return `Audit failed: ${error.message}${code ? ` (${code})` : ''}`;
+  }
+  return 'Audit aborted by an internal error';
+};
+
+// `audit-audio` takes no manifest and no publish flag; anything else is a
+// refusal before a client exists.
+const auditCommand = async (
+  args: readonly string[],
+  io: OwnerCliIo,
+): Promise<number> => {
+  let json = false;
+  try {
+    const parsed = parseArgs({
+      args: [...args],
+      options: { json: { type: 'boolean' } },
+      allowPositionals: true,
+      strict: true,
+    });
+    if (parsed.positionals.length > 0) throw new Error('unexpected argument');
+    json = parsed.values.json === true;
+  } catch {
+    io.stderr(`${USAGE}\n`);
+    return EXIT_INVALID;
+  }
+  let db: SupabaseClient;
+  try {
+    db = (io.connect ?? connectFromEnv)();
+  } catch {
+    io.stderr('Audit needs SUPABASE_URL and SUPABASE_SECRET_KEY\n');
+    return EXIT_INVALID;
+  }
+  try {
+    io.stdout(formatAuditReport(await auditAudio(db), json));
+    return EXIT_OK;
+  } catch (error) {
+    io.stderr(`${describeAuditFailure(error)}\n`);
+    return EXIT_INVALID;
+  }
+};
+
 interface IntentFlags {
   'new-exam'?: boolean;
   'new-version'?: boolean;
@@ -265,6 +332,7 @@ export const runOwnerCli = async (
   argv: readonly string[],
   io: OwnerCliIo,
 ): Promise<number> => {
+  if (argv[0] === 'audit-audio') return auditCommand(argv.slice(1), io);
   let parsed;
   try {
     parsed = parseArgs({
@@ -285,7 +353,13 @@ export const runOwnerCli = async (
   const { values, positionals } = parsed;
   const [command, manifestArgument, ...rest] = positionals;
   const isKnown = command === 'validate' || command === 'publish';
-  if (!isKnown || !manifestArgument || rest.length > 0) {
+  // An unknown subcommand is refused like a bad `audit-audio` call (#82).
+  if (command !== undefined && !isKnown) {
+    io.stderr(`${USAGE}
+`);
+    return EXIT_INVALID;
+  }
+  if (!manifestArgument || rest.length > 0) {
     io.stderr(`${USAGE}\n`);
     return EXIT_USAGE;
   }

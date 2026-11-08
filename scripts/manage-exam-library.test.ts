@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   rm,
   symlink,
@@ -13,6 +14,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSyntheticPilot } from '@b1k/domain';
 import type { ExamContent } from '@b1k/domain';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { auditAudio, formatAuditReport } from './lib/audio-audit';
 import { AUDIO_MAX_BYTES } from './lib/owner-exam-manifest';
 import { runOwnerCli } from './manage-exam-library';
 import type { OwnerCliIo } from './manage-exam-library';
@@ -357,5 +360,166 @@ describe('exam library CLI publish', () => {
     expect(err).toContain('SUPABASE_URL and SUPABASE_SECRET_KEY');
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(await files()).toEqual(before);
+  });
+});
+
+describe('exam library CLI audit-audio', () => {
+  const unreachable = () => {
+    throw new Error('the database client must not be created');
+  };
+
+  it('audit command rejects unexpected arguments', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('network used'));
+    const connect = vi.fn(unreachable);
+    const cases = [
+      ['audit-audio', 'extra'],
+      ['audit-audio', 'manifest.json'],
+      ['audit-audio', '--nope'],
+      ['audit-audio', '--new-exam'],
+      ['audit-audio', '--rename'],
+      ['audit-audio', '--json', 'extra'],
+    ];
+    for (const argv of cases) {
+      const result = await run(argv, connect);
+      expect(result.code, argv.join(' ')).toBe(1);
+      expect(result.err, argv.join(' ')).toContain('Usage');
+      expect(result.out, argv.join(' ')).toBe('');
+    }
+    for (const argv of [['audit-audios'], ['frobnicate', 'a.json']]) {
+      const unknown = await run(argv, connect);
+      expect(unknown.code, argv.join(' ')).toBe(1);
+      expect(unknown.err, argv.join(' ')).toContain('Usage');
+    }
+    expect(connect).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('audit without secrets stops before any request', async () => {
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith('SUPABASE') || name.startsWith('NEXT_PUBLIC')) {
+        vi.stubEnv(name, '');
+      }
+    }
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('network used'));
+    const { code, out, err } = await run(['audit-audio']);
+    expect(code).toBe(1);
+    expect(out).toBe('');
+    expect(err).toContain('SUPABASE_URL and SUPABASE_SECRET_KEY');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('audit and publisher hold no code that deletes objects', async () => {
+    const lib = path.join(import.meta.dirname, 'lib');
+    const audit = await readFile(path.join(lib, 'audio-audit.ts'), 'utf8');
+    const publisher = await readFile(
+      path.join(lib, 'publish-exam-version.ts'),
+      'utf8',
+    );
+    expect(audit).not.toContain('storage.remove');
+    expect(audit).not.toContain('.remove(');
+    expect(publisher).not.toContain('.remove(');
+    expect(publisher).not.toContain('upsert: true');
+    // No owner tool outside the tests deletes or moves a Storage object.
+    const names = await readdir(import.meta.dirname, { recursive: true });
+    const sources = names.filter(
+      (name) =>
+        name.endsWith('.ts') &&
+        !name.endsWith('.test.ts') &&
+        !name.startsWith('prepare-pilot'),
+    );
+    for (const name of sources) {
+      const text = await readFile(path.join(import.meta.dirname, name), 'utf8');
+      expect(text, name).not.toMatch(/\.(remove|move)\(/);
+    }
+  });
+});
+
+// An in-memory bucket and table behind the two read calls of the audit. The
+// fake offers no other method, so a call that writes or deletes would fail.
+const fakeDatabase = (
+  entries: Record<string, { name: string; id: string | null }[]>,
+  references: string[],
+): SupabaseClient => {
+  const list = (folder: string, options: { limit: number; offset: number }) =>
+    Promise.resolve({
+      data: (entries[folder] ?? []).slice(
+        options.offset,
+        options.offset + options.limit,
+      ),
+      error: null,
+    });
+  const select = () => {
+    const query = {
+      order: () => query,
+      range: (from: number, to: number) => ({
+        returns: () =>
+          Promise.resolve({
+            data: references
+              .slice(from, to + 1)
+              .map((object_path) => ({ object_path })),
+            error: null,
+          }),
+      }),
+    };
+    return query;
+  };
+  return {
+    storage: { from: () => ({ list }) },
+    from: () => ({ select }),
+  } as unknown as SupabaseClient;
+};
+
+describe('audio audit report', () => {
+  const objectNames = Array.from({ length: 250 }, (_, i) =>
+    `${i}`.padStart(4, '0'),
+  );
+  const entries = {
+    '': [
+      { name: 'audio', id: null },
+      { name: 'other', id: null },
+    ],
+    audio: objectNames.map((name) => ({
+      name: `${name}.wav`,
+      id: `id-${name}`,
+    })),
+    other: [
+      { name: '.emptyFolderPlaceholder', id: 'id-placeholder' },
+      { name: 'stray.mp3', id: 'id-stray' },
+    ],
+  };
+
+  it('pages through the listing and the references', async () => {
+    const referenced = objectNames
+      .filter((name) => Number(name) % 2 === 0)
+      .map((name) => `audio/${name}.wav`);
+    // More references than one page of the table, most of them dangling.
+    const dangling = Array.from({ length: 1500 }, (_, i) => `gone/${i}.wav`);
+    const db = fakeDatabase(entries, [...dangling, ...referenced]);
+    const report = await auditAudio(db);
+    expect(report.objects).toBe(251);
+    expect(report.referenced).toBe(125);
+    expect(report.unreferenced).toHaveLength(126);
+    expect(report.unreferenced).toContain('other/stray.mp3');
+    expect(report.unreferenced).toContain('audio/0001.wav');
+    expect(report.unreferenced).not.toContain('audio/0000.wav');
+    expect(report.unreferenced).toEqual(report.unreferenced.toSorted());
+  });
+
+  it('prints paths and counts only, as text or JSON', () => {
+    const report = { objects: 2, referenced: 1, unreferenced: ['audio/a.wav'] };
+    const text = formatAuditReport(report, false);
+    expect(text).toContain('unreferenced audio/a.wav');
+    expect(text).toContain('Nothing was deleted');
+    expect(JSON.parse(formatAuditReport(report, true))).toEqual(report);
+  });
+
+  it('audio audit without orphans prints no path', () => {
+    const report = { objects: 1, referenced: 1, unreferenced: [] };
+    expect(formatAuditReport(report, false)).not.toContain('audio/');
+    expect(JSON.parse(formatAuditReport(report, true))).toEqual(report);
   });
 });

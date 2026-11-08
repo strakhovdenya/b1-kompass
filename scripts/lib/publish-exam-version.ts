@@ -113,6 +113,22 @@ export class PublicationRejectedError extends Error {
   }
 }
 
+// An object under the content-addressed path holds other bytes than the path
+// promises. The publication stops before the database function; the object is
+// left untouched. The error carries the code and the track id only.
+export const AUDIO_OBJECT_MISMATCH = 'audio-object-mismatch';
+
+export class AudioObjectMismatchError extends Error {
+  readonly code = AUDIO_OBJECT_MISMATCH;
+  readonly trackId: string;
+
+  constructor(trackId: string) {
+    super(`Publication stopped: ${AUDIO_OBJECT_MISMATCH}`);
+    this.name = 'AudioObjectMismatchError';
+    this.trackId = trackId;
+  }
+}
+
 interface AudioTrack {
   trackId: string;
   kind: 'file';
@@ -144,6 +160,9 @@ export const audioContentTypeOf = (filePath: string): AudioContentType => {
   return contentType;
 };
 
+const sha256Of = (bytes: Uint8Array): string =>
+  createHash('sha256').update(bytes).digest('hex');
+
 // The object path is derived from the bytes: the same file is uploaded once,
 // and a changed file never overwrites the audio of a published version.
 const toTrack = (file: AudioFileInput): AudioTrack => {
@@ -156,7 +175,7 @@ const toTrack = (file: AudioFileInput): AudioTrack => {
   if (file.bytes.byteLength === 0) {
     throw new Error(`Audio file of ${file.trackId} is empty`);
   }
-  const sha256 = createHash('sha256').update(file.bytes).digest('hex');
+  const sha256 = sha256Of(file.bytes);
   const extension = AUDIO_EXTENSIONS[file.contentType];
   return {
     trackId: file.trackId,
@@ -208,6 +227,14 @@ export const findIdentityProblem = (
 // Read-only preflight: refuses before any upload what the database function
 // would refuse. It cannot see a concurrent publication; the database
 // function decides again under the row lock of the exam.
+//
+// The audio objects are content addressed (`audio/<sha256>.<ext>`), but the
+// name of an object does not prove its bytes: an object that already exists
+// (listed, or reported as a duplicate by a concurrent upload) is accepted only
+// after its downloaded bytes give the expected SHA-256 (#82). Nothing is
+// overwritten and this module never deletes an object: an upload that was not
+// followed by a committed version stays in the private bucket and is found by
+// the read-only audit (`exam:audit-audio`).
 export const preflightPublication = async (
   db: SupabaseClient,
   request: PublicationRequest,
@@ -285,6 +312,37 @@ const mayReuseVersion = (
   existing.title === input.title &&
   existing.format === input.format;
 
+// The upload answer of a name that is already taken (a concurrent upload of
+// the same content addressed object won the race).
+const isDuplicateObject = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) return false;
+  const { status, statusCode, code } = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+  };
+  return (
+    status === 409 || statusCode === '409' || code === 'ResourceAlreadyExists'
+  );
+};
+
+// Reads the stored object back and compares its SHA-256 with the one its
+// path promises. Read-only: a mismatch is reported, never repaired.
+const verifyObject = async (
+  bucket: ReturnType<SupabaseClient['storage']['from']>,
+  track: AudioTrack,
+): Promise<void> => {
+  const { data, error } = await bucket.download(track.objectPath);
+  if (error) throw new Error('Audio verification failed', { cause: error });
+  const stored = new Uint8Array(await data.arrayBuffer());
+  if (sha256Of(stored) !== track.sha256) {
+    throw new AudioObjectMismatchError(track.trackId);
+  }
+};
+
+// Makes sure the object of the track exists with the right bytes: an existing
+// object is verified instead of trusted, a missing one is uploaded without
+// overwrite, and a lost race against another upload is verified the same way.
 const uploadTrack = async (
   db: SupabaseClient,
   track: AudioTrack,
@@ -297,12 +355,19 @@ const uploadTrack = async (
   if (listed.error) {
     throw new Error('Audio lookup failed', { cause: listed.error });
   }
-  if (listed.data.some((object) => object.name === name)) return;
+  if (listed.data.some((object) => object.name === name)) {
+    await verifyObject(bucket, track);
+    return;
+  }
   const { error } = await bucket.upload(track.objectPath, file.bytes, {
     contentType: track.contentType,
     upsert: false,
   });
-  if (error) throw new Error('Audio upload failed', { cause: error });
+  if (!error) return;
+  if (!isDuplicateObject(error)) {
+    throw new Error('Audio upload failed', { cause: error });
+  }
+  await verifyObject(bucket, track);
 };
 
 // The function returns exactly one row.
