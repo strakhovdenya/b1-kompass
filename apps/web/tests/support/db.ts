@@ -35,6 +35,53 @@ export const serviceDb: SupabaseClient = createServiceClient({
   secretKey: env.secretKey,
 });
 
+// Another privileged client of the same test database: its requests go
+// through their own HTTP connections, as a second owner run would.
+export const createServiceTestClient = (): SupabaseClient =>
+  createServiceClient({ url: env.url, secretKey: env.secretKey });
+
+export interface StoredExamState {
+  title: string;
+  format: string;
+  // Ids of the versions, oldest first.
+  versionIds: string[];
+}
+
+// The identity of an exam and its versions as stored, or null (#81).
+export const readExamState = async (
+  slug: string,
+): Promise<StoredExamState | null> => {
+  const exam = await serviceDb
+    .from('exams')
+    .select('id, title, format')
+    .eq('slug', slug)
+    .maybeSingle<{ id: string; title: string; format: string }>();
+  if (exam.error) throw exam.error;
+  if (!exam.data) return null;
+  const versions = await serviceDb
+    .from('exam_versions')
+    .select('id')
+    .eq('exam_id', exam.data.id)
+    .order('version', { ascending: true })
+    .returns<{ id: string }[]>();
+  if (versions.error) throw versions.error;
+  return {
+    title: exam.data.title,
+    format: exam.data.format,
+    versionIds: versions.data.map((row) => row.id),
+  };
+};
+
+// The number of answer keys stored for one version (privileged read).
+export const countVersionKeys = async (versionId: string): Promise<number> => {
+  const { count, error } = await serviceDb
+    .from('answer_keys')
+    .select('question_id', { count: 'exact', head: true })
+    .eq('exam_version_id', versionId);
+  if (error) throw error;
+  return count ?? 0;
+};
+
 // A browser-side client with the ordinary publishable key: what any visitor
 // could call directly against the Data API and Storage.
 export const createPublicClient = (): SupabaseClient =>

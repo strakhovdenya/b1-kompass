@@ -1,7 +1,7 @@
 // Owner manifest v1: the private description of one full DTZ package (content,
-// answer keys, local audio files) and its read-only validation. Nothing here
-// touches the database, Storage, the network or the environment, and nothing
-// is written. The manifest holds answer keys, so a problem carries only a
+// answer keys, local audio files), its read-only validation and the hand-over
+// of a validated package to the publication (#81). Nothing here touches the
+// database, Storage, the network or the environment, and nothing is written. The manifest holds answer keys, so a problem carries only a
 // code, a JSON path, an id of a task or track and a fixed message — never a
 // key, a task text, a manifest fragment or an absolute path.
 
@@ -15,7 +15,12 @@ import {
   sourceSchema,
 } from '@b1k/domain';
 import type { ExamContent } from '@b1k/domain';
-import { findAudioContentType, isValidTrackId } from './publish-exam-version';
+import {
+  audioContentTypeOf,
+  findAudioContentType,
+  isValidTrackId,
+} from './publish-exam-version';
+import type { AudioFileInput, ExamIdentity } from './publish-exam-version';
 
 // The version of this administrative input. It is not `exam_versions.version`
 // and not the format of the stored content.
@@ -305,31 +310,128 @@ export const validateOwnerManifest = async (
   };
 };
 
+type ManifestRead =
+  | { raw: unknown; manifestDir: string; problems: null }
+  | { raw: null; manifestDir: null; problems: ManifestProblem[] };
+
+const unreadable = (code: string): ManifestRead => ({
+  raw: null,
+  manifestDir: null,
+  problems: [problem(code, '$')],
+});
+
+const readManifestFile = async (
+  manifestPath: string,
+): Promise<ManifestRead> => {
+  const resolved = path.resolve(manifestPath);
+  let text: string;
+  try {
+    const info = await stat(resolved);
+    if (!info.isFile()) return unreadable('manifest-unreadable');
+    if (info.size > MANIFEST_MAX_BYTES) return unreadable('manifest-too-large');
+    text = await readFile(resolved, 'utf8');
+  } catch {
+    return unreadable('manifest-unreadable');
+  }
+  try {
+    const raw: unknown = JSON.parse(text);
+    return { raw, manifestDir: path.dirname(resolved), problems: null };
+  } catch {
+    // The parser message quotes the input; it is deliberately dropped.
+    return unreadable('manifest-invalid-json');
+  }
+};
+
 // Reads the manifest file (the only file whose bytes are read) and validates
 // it. Audio paths are relative to the directory of the manifest.
 export const validateOwnerManifestFile = async (
   manifestPath: string,
 ): Promise<ManifestValidation> => {
-  const resolved = path.resolve(manifestPath);
-  let text: string;
+  const read = await readManifestFile(manifestPath);
+  if (read.problems) return { problems: read.problems };
+  return validateOwnerManifest(read.raw, read.manifestDir);
+};
+
+// A validated package as the input of publishExamVersion, without intent.
+export interface OwnerPackage extends ExamIdentity {
+  content: ExamContent;
+  keys: Record<string, string>;
+  audio: AudioFileInput[];
+}
+
+export interface OwnerPackageLoad {
+  validation: ManifestValidation;
+  // Present only when the validation found no problem.
+  ownerPackage: OwnerPackage | null;
+}
+
+const readAudio = async (
+  manifestDir: string,
+  entry: OwnerExamManifest['audio'][number],
+  index: number,
+): Promise<AudioFileInput | ManifestProblem> => {
+  const at = `$.audio[${index}].file`;
+  // The file may have changed after the validation: the containment, type
+  // and size checks run again right before its bytes are read.
+  const code = await fileProblem(manifestDir, entry.file);
+  if (code) return problem(code, at, entry.trackId);
+  let bytes: Uint8Array;
   try {
-    const info = await stat(resolved);
-    if (!info.isFile()) {
-      return { problems: [problem('manifest-unreadable', '$')] };
-    }
-    if (info.size > MANIFEST_MAX_BYTES) {
-      return { problems: [problem('manifest-too-large', '$')] };
-    }
-    text = await readFile(resolved, 'utf8');
+    const real = await realpath(path.resolve(manifestDir, entry.file));
+    bytes = new Uint8Array(await readFile(real));
   } catch {
-    return { problems: [problem('manifest-unreadable', '$')] };
+    return problem('audio-unreadable', at, entry.trackId);
   }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    // The parser message quotes the input; it is deliberately dropped.
-    return { problems: [problem('manifest-invalid-json', '$')] };
+  if (bytes.byteLength === 0) return problem('audio-empty', at, entry.trackId);
+  if (bytes.byteLength > AUDIO_MAX_BYTES) {
+    return problem('audio-too-large', at, entry.trackId);
   }
-  return validateOwnerManifest(raw, path.dirname(resolved));
+  return {
+    trackId: entry.trackId,
+    contentType: audioContentTypeOf(entry.file),
+    bytes,
+  };
+};
+
+const isAudioFile = (
+  item: AudioFileInput | ManifestProblem,
+): item is AudioFileInput => 'bytes' in item;
+
+// Repeats the full validation of the manifest and, only when it passes,
+// reads the audio bytes for the publication. No problem, no package.
+export const loadOwnerPackage = async (
+  manifestPath: string,
+): Promise<OwnerPackageLoad> => {
+  const read = await readManifestFile(manifestPath);
+  if (read.problems) {
+    return { validation: { problems: read.problems }, ownerPackage: null };
+  }
+  const validation = await validateOwnerManifest(read.raw, read.manifestDir);
+  const parsed = ownerManifestSchema.safeParse(read.raw);
+  if (validation.problems.length > 0 || !parsed.success) {
+    return { validation, ownerPackage: null };
+  }
+  const manifest = parsed.data;
+  const { manifestDir } = read;
+  const items = await Promise.all(
+    manifest.audio.map((entry, index) => readAudio(manifestDir, entry, index)),
+  );
+  const audio = items.filter(isAudioFile);
+  if (audio.length !== items.length) {
+    const problems = items.filter(
+      (item): item is ManifestProblem => !isAudioFile(item),
+    );
+    return { validation: { problems }, ownerPackage: null };
+  }
+  return {
+    validation,
+    ownerPackage: {
+      slug: manifest.slug,
+      title: manifest.title,
+      format: manifest.format,
+      content: manifest.content,
+      keys: manifest.keys,
+      audio,
+    },
+  };
 };

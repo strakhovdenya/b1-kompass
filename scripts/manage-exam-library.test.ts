@@ -15,6 +15,7 @@ import { buildSyntheticPilot } from '@b1k/domain';
 import type { ExamContent } from '@b1k/domain';
 import { AUDIO_MAX_BYTES } from './lib/owner-exam-manifest';
 import { runOwnerCli } from './manage-exam-library';
+import type { OwnerCliIo } from './manage-exam-library';
 
 let dir = '';
 
@@ -54,13 +55,14 @@ const write = async (manifest: unknown, name = 'manifest.json') => {
   return file;
 };
 
-const run = async (argv: string[]) => {
+const run = async (argv: string[], connect?: OwnerCliIo['connect']) => {
   let out = '';
   let err = '';
   const code = await runOwnerCli(argv, {
     cwd: dir,
     stdout: (text) => (out += text),
     stderr: (text) => (err += text),
+    ...(connect ? { connect } : {}),
   });
   return { code, out, err, all: out + err };
 };
@@ -266,8 +268,9 @@ describe('exam library CLI validate', () => {
   it('prints a usage error and exit code 2 for bad arguments', async () => {
     const bad = [
       [],
-      ['publish', 'x'],
+      ['publish'],
       ['validate'],
+      ['validate', 'a', '--new-exam'],
       ['validate', 'a', 'b'],
       ['validate', '--nope'],
     ];
@@ -276,5 +279,83 @@ describe('exam library CLI validate', () => {
       expect(result.code).toBe(2);
       expect(result.err).toContain('Usage');
     }
+  });
+});
+
+describe('exam library CLI publish', () => {
+  const unreachable = () => {
+    throw new Error('the database client must not be created');
+  };
+
+  const blankSecrets = () => {
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith('SUPABASE') || name.startsWith('NEXT_PUBLIC')) {
+        vi.stubEnv(name, '');
+      }
+    }
+  };
+
+  it('publish requires explicit intent flag', async () => {
+    blankSecrets();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('network used'));
+    const connect = vi.fn(unreachable);
+    const file = await write(validManifest());
+    const cases: [string[], string][] = [
+      [['publish', file], 'exactly one of --new-exam or --new-version'],
+      [['publish', file, '--json'], 'exactly one of --new-exam'],
+      [['publish', file, '--rename'], 'exactly one of --new-exam'],
+      [
+        ['publish', file, '--new-exam', '--new-version'],
+        'exactly one of --new-exam',
+      ],
+      [
+        ['publish', file, '--new-exam', '--rename'],
+        '--rename is allowed only with --new-version',
+      ],
+    ];
+    for (const [argv, message] of cases) {
+      const result = await run(argv, connect);
+      expect(result.code, argv.join(' ')).toBe(1);
+      expect(result.err, argv.join(' ')).toContain(message);
+      expect(result.out, argv.join(' ')).toBe('');
+    }
+    expect(connect).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('publish validates the package before any client', async () => {
+    const connect = vi.fn(unreachable);
+    const { content, keys } = buildSyntheticPilot();
+    const manifest = manifestOf(content, {
+      ...keys,
+      'hoeren-2': 'SECRETKEY',
+    });
+    const file = await write(manifest);
+    const { code, out, all } = await run(
+      ['publish', file, '--new-exam'],
+      connect,
+    );
+    expect(code).toBe(1);
+    expect(out).toMatch(/key-not-option \$\.keys id=hoeren-2/);
+    expect(all).not.toContain('SECRETKEY');
+    expect(all).not.toContain(dir);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('publish without secrets stops after validation', async () => {
+    blankSecrets();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('network used'));
+    const file = await write(validManifest());
+    const before = await files();
+    const { code, out, err } = await run(['publish', file, '--new-version']);
+    expect(code).toBe(1);
+    expect(out).toBe('');
+    expect(err).toContain('SUPABASE_URL and SUPABASE_SECRET_KEY');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await files()).toEqual(before);
   });
 });
