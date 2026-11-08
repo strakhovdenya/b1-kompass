@@ -55,6 +55,70 @@
 
 Новые коды: `teil-mismatch` (id `hoeren:teil-N` / `lesen:teil-N`), `numbering-gap` (id задания), `teil-order` (id задания), `invalid-question-kind` (id задания), `multiple-hoeren-tracks` (id `hoeren`). Для групп используется существующий `invalid-group` (id группы или `hoeren:teil-3` / `hoeren:teil-4`).
 
+## Owner manifest v1 (комплект полного DTZ)
+
+Один приватный JSON описывает весь комплект: материал, ключ и локальные файлы записи. Он содержит правильные ответы, поэтому лежит в `private/` и в Git не попадает. Схема — `scripts/lib/owner-exam-manifest.ts` (Zod, строгая: неизвестные поля отклоняются). `schemaVersion` — версия этого административного входа; она не связана с `exam_versions.version` и не входит в сохранённый контент. Публичная `examContentSchema` не менялась.
+
+| Поле | Содержимое |
+| --- | --- |
+| `schemaVersion` | число `1`; другое значение отклоняется |
+| `slug` | `a-z`, цифры и одиночные дефисы, до 100 символов |
+| `title` | название экзамена, до 200 символов |
+| `format` | строка `"DTZ"` |
+| `source` | `{ publisher, title, url, page }`; должен совпадать с `content.source` |
+| `content` | публичная проекция материала (`examContentSchema`) |
+| `keys` | `{ "<id задания>": "<id варианта>" }` |
+| `audio` | `[{ "trackId": "...", "file": "<путь>" }]`; весь Hören — одна дорожка |
+
+Пути `audio[].file` — относительные, от каталога файла manifest. Отклоняются до чтения файла: абсолютный путь (включая диск `C:` и UNC-путь с двойным обратным слэшем), сегмент `..`, URL (`https://`, `file://`), символическая ссылка, ведущая за пределы каталога, и расширение не из `.mp3`, `.wav`, `.m4a`, `.ogg`. Дальше проверяются существование, обычный файл, непустой размер и верхний предел `AUDIO_MAX_BYTES` = 50 MiB (лимит бакета `exam-sources`, `supabase/config.toml`; MP3 полного Hören около 25 МБ, WAV такой длины не поместится). Manifest не больше `MANIFEST_MAX_BYTES` = 5 MiB (полный DTZ занимает сотни килобайт). Значения лежат в `scripts/lib/owner-exam-manifest.ts`.
+
+Структуру материала проверяет `findFullDtzProblems` (см. выше), второго валидатора нет. Вымышленный пример (тексты сокращены, настоящий `content` содержит 20 + 25 заданий):
+
+```json
+{
+  "schemaVersion": 1,
+  "slug": "beispiel-pruefung",
+  "title": "Beispiel-Prüfung (вымышленная)",
+  "format": "DTZ",
+  "source": {
+    "publisher": "Beispielverlag",
+    "title": "Beispiel DTZ Übungstest",
+    "url": "https://example.com/beispiel-dtz.pdf",
+    "page": 1
+  },
+  "content": {
+    "source": { "publisher": "Beispielverlag", "title": "Beispiel DTZ Übungstest", "url": "https://example.com/beispiel-dtz.pdf", "page": 1 },
+    "questions": [
+      {
+        "id": "hoeren-1",
+        "number": 1,
+        "skill": "hoeren",
+        "teil": 1,
+        "kind": "single-choice",
+        "prompt": "Wann fährt der Zug ab?",
+        "sourcePage": 2,
+        "trackId": "beispiel-hoeren",
+        "options": [
+          { "id": "a", "text": "Um acht Uhr." },
+          { "id": "b", "text": "Um neun Uhr." },
+          { "id": "c", "text": "Um zehn Uhr." }
+        ]
+      }
+    ]
+  },
+  "keys": { "hoeren-1": "b" },
+  "audio": [{ "trackId": "beispiel-hoeren", "file": "audio/hoeren.mp3" }]
+}
+```
+
+Проверка (ничего не пишет, секреты и сеть не нужны):
+
+```sh
+npm run exam:validate -- private/beispiel/manifest.json
+```
+
+Код выхода 0 — проблем нет, выводится сводка `slug`, `title`, число заданий и дорожек. Код 1 — выведен весь список проблем сразу, строками `код путь id=<задание или дорожка> - пояснение`; `--json` печатает тот же список как JSON. Код 2 — неверные аргументы. Отчёт не содержит ключей, текстов заданий, содержимого manifest и абсолютных путей. Публикует комплект отдельная команда (#81); `exam:validate` её не заменяет.
+
 ## Подготовка
 
 1. Получить структурированный черновик из PDF: текст извлекает владелец (программно или в аккаунте модели). Модель не назначает ключ.
