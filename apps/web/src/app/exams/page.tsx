@@ -1,14 +1,17 @@
 import { redirect } from 'next/navigation';
 import { ExamLibrary } from '../../features/exams/ExamLibrary';
-import { listCatalog } from '../../server/material/catalog';
-import type { CatalogEntry } from '../../server/material/catalog';
+import { listLibrary } from '../../server/material/catalog';
+import type { LibraryCard } from '../../server/material/catalog';
+import type { GuestContext } from '../../server/guest-session/session';
 import { getCurrentGuest, getServerDeps } from '../../server/next/request';
 
 export const dynamic = 'force-dynamic';
 
-const readEntries = async (): Promise<CatalogEntry[] | null> => {
+const readEntries = async (
+  guest: GuestContext,
+): Promise<LibraryCard[] | null> => {
   try {
-    return await listCatalog(getServerDeps());
+    return await listLibrary(getServerDeps(), guest);
   } catch (error) {
     console.error({ error });
     return null;
@@ -20,7 +23,7 @@ const readEntries = async (): Promise<CatalogEntry[] | null> => {
 const ExamsPage = async () => {
   const guest = await getCurrentGuest();
   if (!guest) redirect('/');
-  const entries = await readEntries();
+  const entries = await readEntries(guest);
   return entries ? (
     <ExamLibrary entries={entries} />
   ) : (

@@ -207,6 +207,94 @@ export const findActiveAttempt = async (
   return data ? toAttempt(data) : null;
 };
 
+export interface CardActiveRow {
+  attemptId: string;
+  examId: string;
+  progress: unknown;
+  createdAt: string;
+}
+
+interface CardActiveRecord {
+  id: string;
+  exam_id: string;
+  progress: unknown;
+  created_at: string;
+}
+
+// The guest's own active attempts of every exam in one read. The filter is
+// the owner alone: a list of exam ids would grow the request address with the
+// number of exams, while the guest holds at most one active attempt per exam
+// version. Only identity and the stored position are selected: no answers,
+// no key.
+export const listActiveAttempts = async (
+  deps: ServerDeps,
+  sessionId: string,
+): Promise<CardActiveRow[]> => {
+  const { data, error } = await deps.db
+    .from('attempts')
+    .select('id, exam_id, progress, created_at')
+    .eq('guest_session_id', sessionId)
+    .eq('status', 'active')
+    .returns<CardActiveRecord[]>();
+  if (error) throw new Error('Active attempts lookup failed', { cause: error });
+  return data.map((row) => ({
+    attemptId: row.id,
+    examId: row.exam_id,
+    progress: row.progress,
+    createdAt: row.created_at,
+  }));
+};
+
+export interface CardResultRow {
+  attemptId: string;
+  examId: string;
+  computedAt: string;
+  // Null for a legacy M1 completion that has no run.
+  purpose: string | null;
+}
+
+interface CardResultRecord {
+  attempt_id: string;
+  computed_at: string;
+  attempts: {
+    exam_id: string;
+    attempt_runs: { purpose: string } | { purpose: string }[] | null;
+  };
+}
+
+const purposeOf = (runs: CardResultRecord['attempts']['attempt_runs']) => {
+  const run = Array.isArray(runs) ? (runs[0] ?? null) : runs;
+  return run ? run.purpose : null;
+};
+
+// The completed full-exam results of the guest's own attempts at every exam,
+// newest first, with the purpose of the run (null without a run). The
+// owner, the status and the scope are filtered by the database; the caller
+// drops repeats of mistakes. Scores, answers and reviews are not selected.
+export const listFullResults = async (
+  deps: ServerDeps,
+  sessionId: string,
+): Promise<CardResultRow[]> => {
+  const { data, error } = await deps.db
+    .from('attempt_results')
+    .select(
+      'attempt_id, computed_at, attempts!inner(exam_id, attempt_runs!attempt_runs_attempt_id_fkey(purpose))',
+    )
+    .eq('scope', 'full-exam')
+    .eq('attempts.guest_session_id', sessionId)
+    .eq('attempts.status', 'completed')
+    .order('computed_at', { ascending: false })
+    .order('attempt_id', { ascending: true })
+    .returns<CardResultRecord[]>();
+  if (error) throw new Error('Results lookup failed', { cause: error });
+  return data.map((row) => ({
+    attemptId: row.attempt_id,
+    examId: row.attempts.exam_id,
+    computedAt: row.computed_at,
+    purpose: purposeOf(row.attempts.attempt_runs),
+  }));
+};
+
 export const readRun = async (
   deps: ServerDeps,
   attemptId: string,

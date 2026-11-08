@@ -16,12 +16,23 @@ export interface LibraryEntry {
   hoerenCount: number;
   lesenCount: number;
   totalCount: number;
+  // The guest's own next steps; null when there is none.
+  continueHref?: string | null;
+  resultHref?: string | null;
 }
 
 interface ExamLibraryProps {
   entries: readonly LibraryEntry[];
   hasError?: boolean;
 }
+
+const actionSx = {
+  minHeight: 48,
+  width: { xs: '100%', sm: 'auto' },
+  minWidth: 0,
+  whiteSpace: 'normal',
+  textAlign: 'center',
+} as const;
 
 const ExamCard = ({ entry }: { entry: LibraryEntry }) => {
   const t = useTranslations('library');
@@ -49,19 +60,45 @@ const ExamCard = ({ entry }: { entry: LibraryEntry }) => {
             total: entry.totalCount,
           })}
         </Typography>
-        <Button
-          component={Link}
-          href={`/practice/${entry.slug}`}
-          variant="contained"
-          data-testid="exam-card-open"
-          sx={{
-            minHeight: 48,
-            width: { xs: '100%', sm: 'auto' },
-            alignSelf: 'flex-start',
-          }}
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1.5}
+          useFlexGap
+          sx={{ flexWrap: 'wrap', minWidth: 0 }}
         >
-          {t('choose')}
-        </Button>
+          {entry.continueHref ? (
+            <Button
+              component={Link}
+              href={entry.continueHref}
+              variant="contained"
+              data-testid="exam-card-continue"
+              sx={actionSx}
+            >
+              {t('continue')}
+            </Button>
+          ) : (
+            <Button
+              component={Link}
+              href={`/practice/${entry.slug}`}
+              variant="contained"
+              data-testid="exam-card-open"
+              sx={actionSx}
+            >
+              {t('choose')}
+            </Button>
+          )}
+          {entry.resultHref ? (
+            <Button
+              component={Link}
+              href={entry.resultHref}
+              variant="outlined"
+              data-testid="exam-card-result"
+              sx={actionSx}
+            >
+              {t('latestResult')}
+            </Button>
+          ) : null}
+        </Stack>
       </Stack>
     </Paper>
   );

@@ -60,4 +60,48 @@ describe('ExamLibrary', () => {
     expect(html).toContain('45 заданий');
     expect(html.match(/data-testid="exam-card-open"/g)).toHaveLength(1);
   });
+
+  it('state read failure shows retry instead of cards', () => {
+    const failed = render({
+      entries: [
+        {
+          ...entry('exam-a', 'Exam A'),
+          continueHref: '/practice/exam-a/attempts/x',
+        },
+      ],
+      hasError: true,
+    });
+    expect(failed).toContain('data-testid="library-error"');
+    expect(failed).toContain('href="/exams"');
+    expect(failed).not.toContain('exam-card-');
+    expect(failed).not.toContain('Choose mode');
+    expect(failed).not.toContain('Continue');
+  });
+
+  it('continue is the main action and latest result the second one', () => {
+    const html = render({
+      entries: [
+        {
+          ...entry('exam-a', 'Exam A'),
+          continueHref: '/practice/exam-a/attempts/a1/lesen',
+          resultHref: '/practice/exam-a/attempts/a0',
+        },
+        {
+          ...entry('exam-b', 'Exam B'),
+          resultHref: '/practice/exam-b/attempts/b0',
+        },
+        entry('exam-c', 'Exam C'),
+      ],
+    });
+    expect(html).toContain('href="/practice/exam-a/attempts/a1/lesen"');
+    expect(html).toContain('href="/practice/exam-a/attempts/a0"');
+    expect(html).not.toContain('href="/practice/exam-a"');
+    expect(html.match(/data-testid="exam-card-continue"/g)).toHaveLength(1);
+    expect(html.match(/data-testid="exam-card-open"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="exam-card-result"/g)).toHaveLength(2);
+    expect(html).toContain('Latest result');
+    expect(
+      render({ entries: [{ ...entry('a', 'A'), resultHref: '/r' }] }, 'ru'),
+    ).toContain('Последний результат');
+  });
 });

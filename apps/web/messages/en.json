@@ -262,6 +262,8 @@
     "title": "Choose an exam",
     "counts": "{format} · {hoeren} Hören + {lesen} Lesen · {total} tasks",
     "choose": "Choose mode",
+    "continue": "Continue",
+    "latestResult": "Latest result",
     "empty": "No full exams are available yet. Please check back later.",
     "error": "The exams could not be loaded.",
     "retry": "Try again",
