@@ -537,3 +537,101 @@ export const readAnswerRows = async (
   if (error) throw error;
   return data;
 };
+
+const AUDIO_BUCKET = 'exam-sources';
+const AUDIO_FOLDER = 'audio';
+
+// Whether the object of a path such as `audio/<sha256>.wav` is stored.
+export const audioObjectExists = async (
+  objectPath: string,
+): Promise<boolean> => {
+  const name = objectPath.slice(`${AUDIO_FOLDER}/`.length);
+  const { data, error } = await serviceDb.storage
+    .from(AUDIO_BUCKET)
+    .list(AUDIO_FOLDER, { search: name });
+  if (error) throw error;
+  return data.some((object) => object.name === name);
+};
+
+// How many stored objects carry this exact name: a content addressed object
+// exists once.
+export const countAudioObjects = async (objectPath: string): Promise<number> => {
+  const name = objectPath.slice(`${AUDIO_FOLDER}/`.length);
+  const { data, error } = await serviceDb.storage
+    .from(AUDIO_BUCKET)
+    .list(AUDIO_FOLDER, { search: name });
+  if (error) throw error;
+  return data.filter((object) => object.name === name).length;
+};
+
+// The bytes of a stored audio object (privileged download).
+export const readAudioObject = async (
+  objectPath: string,
+): Promise<Uint8Array> => {
+  const { data, error } = await serviceDb.storage
+    .from(AUDIO_BUCKET)
+    .download(objectPath);
+  if (error) throw error;
+  return new Uint8Array(await data.arrayBuffer());
+};
+
+// Plants an object straight into the bucket, past the publisher, without
+// overwriting: a stored object that the publisher then finds.
+export const plantAudioObject = async (
+  objectPath: string,
+  bytes: Uint8Array,
+  contentType: string,
+): Promise<void> => {
+  const { error } = await serviceDb.storage
+    .from(AUDIO_BUCKET)
+    .upload(objectPath, bytes, { contentType, upsert: false });
+  if (error) throw error;
+};
+
+export interface StoredVersion {
+  version: Record<string, unknown>;
+  keys: { question_id: string; correct_option_id: string }[];
+  audio: { track_id: string; object_path: string; sha256: string }[];
+}
+
+// One version as stored: its row, answer keys and audio tracks, for a
+// before/after comparison.
+export const readStoredVersion = async (
+  versionId: string,
+): Promise<StoredVersion> => {
+  const [version, keys, audio] = await Promise.all([
+    serviceDb.from('exam_versions').select('*').eq('id', versionId).single(),
+    serviceDb
+      .from('answer_keys')
+      .select('question_id, correct_option_id')
+      .eq('exam_version_id', versionId)
+      .order('question_id')
+      .returns<StoredVersion['keys']>(),
+    serviceDb
+      .from('exam_version_audio')
+      .select('track_id, object_path, sha256')
+      .eq('exam_version_id', versionId)
+      .order('track_id')
+      .returns<StoredVersion['audio']>(),
+  ]);
+  if (version.error) throw version.error;
+  if (keys.error) throw keys.error;
+  if (audio.error) throw audio.error;
+  return {
+    version: version.data as Record<string, unknown>,
+    keys: keys.data,
+    audio: audio.data,
+  };
+};
+
+// The number of tracks that refer to a stored object path.
+export const countAudioReferences = async (
+  objectPath: string,
+): Promise<number> => {
+  const { count, error } = await serviceDb
+    .from('exam_version_audio')
+    .select('track_id', { count: 'exact', head: true })
+    .eq('object_path', objectPath);
+  if (error) throw error;
+  return count ?? 0;
+};
