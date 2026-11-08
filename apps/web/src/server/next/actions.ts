@@ -16,10 +16,8 @@ import {
 import type { GuestReplacementAnswer } from '../../features/training/attempt-client';
 import {
   getServerDeps,
-  readDefaultExamSlug,
   readGuestSessionsPerMinute,
   readGuestToken,
-  resolveExamEntry,
   writeGuestCookie,
 } from './request';
 
@@ -33,7 +31,7 @@ export const continueAsGuest = async (): Promise<void> => {
     if (result.status === 'rate-limited') redirect('/?busy=1');
     await writeGuestCookie(result.created);
   }
-  redirect(await resolveExamEntry(deps, current, readDefaultExamSlug()));
+  redirect('/exams');
 };
 
 // Saves, the submission, the cancel and the status are independent HTTP

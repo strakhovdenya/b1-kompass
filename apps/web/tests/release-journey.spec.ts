@@ -78,6 +78,8 @@ import {
   snapshotOf,
   startBrowserGuest,
   waitForPlayer,
+  continueThroughLibrary,
+  passLibrary,
 } from './support/guest-browser';
 import {
   NARROW,
@@ -131,7 +133,9 @@ const enterAsGuestByKeyboard = async (page: Page, screen: string) => {
   const entry = page.getByRole('button', { name: 'Continue as guest' });
   await tabTo(page, entry, `${screen} home`);
   await page.keyboard.press('Enter');
-  // The entry opens the choice; the training starts only by its own button.
+  // The entry opens the library; the legacy address leads to the choice, and
+  // the training starts only by its own button.
+  await passLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await expect(page.getByTestId('mode-selection')).toBeVisible();
   await expectUsableLayout(page, `${screen} choice`);
@@ -244,7 +248,7 @@ test('release failures never fake saved state', async ({ browser }) => {
     await context.route(SIGN_URL, (route) => route.abort());
     const page = await context.newPage();
     await page.goto('/');
-    await page.getByRole('button', { name: 'Continue as guest' }).click();
+    await continueThroughLibrary(page);
     await page.waitForURL(CHOICE_URL);
     await page.getByTestId('start-attempt').click();
     await page.waitForURL(HOEREN_URL);
@@ -1081,7 +1085,7 @@ test('narrow enlarged text keeps actions visible without focus trap', async ({
   await page.goto('/');
   await expectEnlargedText(page);
   await expectAccessibleScreen(page, 'home');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await expectAccessibleScreen(page, 'choice');
   await page.getByTestId('start-attempt').click();

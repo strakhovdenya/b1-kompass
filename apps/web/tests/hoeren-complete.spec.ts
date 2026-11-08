@@ -12,6 +12,7 @@ import {
   ANSWER_URL,
   CHOICE_URL,
   startFromChoice,
+  continueThroughLibrary,
 } from './support/guest-browser';
 
 // The synthetic full set: hoeren-1..4 Teil 1, 5..9 Teil 2, 10..17 four Teil 3
@@ -32,7 +33,7 @@ const statusOf = (cardLocator: Locator) =>
 
 const startGuest = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
   await expect(card(page, 'hoeren-1')).toBeVisible();

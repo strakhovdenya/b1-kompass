@@ -40,10 +40,28 @@ export const startFromChoice = async (page: Page) => {
   await page.waitForURL(HOEREN_URL);
 };
 
+// The guest CTA opens the library of full exams; the legacy address then leads
+// to the choice of the default exam of the server. Nothing is started.
+export const LIBRARY_URL = '**/exams';
+
+export const passLibrary = async (page: Page, legacyPath = '/practice') => {
+  await page.waitForURL(LIBRARY_URL);
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+  await page.goto(legacyPath);
+};
+
+export const continueThroughLibrary = async (
+  page: Page,
+  legacyPath = '/practice',
+) => {
+  await page.getByTestId('guest-continue').click();
+  await passLibrary(page, legacyPath);
+};
+
 // A new guest enters through the home page and stops at the choice.
 export const enterAtChoice = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await expect(page.getByTestId('mode-selection')).toBeVisible();
 };
@@ -62,7 +80,7 @@ export const startSelection = async (page: Page, selection: FreeSelection) => {
 // A new guest enters through the home page and starts the training.
 export const enterAndStart = async (page: Page) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(CHOICE_URL);
   await startFromChoice(page);
 };

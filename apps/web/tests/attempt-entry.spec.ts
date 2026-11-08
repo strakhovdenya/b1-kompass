@@ -45,6 +45,7 @@ import {
   finishFromShell,
   optionIn,
   expectStatus,
+  continueThroughLibrary,
 } from './support/guest-browser';
 import { TEST_PILOT_KEYS, createTestRecording } from './support/global-setup';
 import {
@@ -201,7 +202,7 @@ test('selection and restart navigation do not start a run', async ({
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  await continueThroughLibrary(page);
   await page.waitForURL(`**/practice/${FULL_EXAM.slug}`);
   await expect(page.getByTestId('mode-selection')).toBeVisible();
   const token = (await context.cookies()).find(

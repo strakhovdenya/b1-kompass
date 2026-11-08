@@ -34,8 +34,10 @@ export const readGuestSessionsPerMinute = (): number => {
   return isValid ? value : DEFAULT_GUEST_SESSIONS_PER_MINUTE;
 };
 
-// The exam of the legacy addresses and of the entry: the configured pilot
-// by default. It never chooses the exam of an attempt already started.
+// The exam of the legacy addresses `/practice` and `/practice/lesen` only: the
+// configured pilot by default. The guest entry goes through the library
+// (`/exams`) and never uses it. It never chooses the exam of an attempt
+// already started.
 export const readDefaultExamSlug = (): string =>
   process.env.PRACTICE_EXAM_SLUG || PILOT_EXAM_SLUG;
 

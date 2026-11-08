@@ -1,4 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { SYNTHETIC_TRACK_ID, buildSyntheticPilot } from '@b1k/domain';
+import { publishExamVersion } from '../../../../scripts/lib/publish-exam-version';
+import type { AudioFileInput } from '../../../../scripts/lib/publish-exam-version';
 import {
   confirmTimingProfileRevision,
   createTimingProfileRevision,
@@ -75,4 +79,44 @@ export const ensureConfirmedTestProfile = (
     fingerprint: drafted.revision.fingerprint,
   });
   return confirmed.revision;
+};
+
+export interface PublishedFullExam {
+  slug: string;
+  title: string;
+}
+
+// A full DTZ set (20 Hören, 25 Lesen) under a slug of its own, published
+// through the trusted owner path. Specs of a shared database look only at
+// their own slugs. `pilot` may replace the synthetic material (for a later,
+// incomplete version of the same slug).
+export const publishUniqueFullExam = async (
+  db: SupabaseClient,
+  audio: Omit<AudioFileInput, 'trackId'>,
+  title: string,
+  slug: string = `test-lib-${randomUUID().slice(0, 8)}`,
+  pilot: Pick<typeof FULL_PILOT, 'content' | 'keys'> = FULL_PILOT,
+): Promise<PublishedFullExam> => {
+  await publishExamVersion(db, {
+    slug,
+    title,
+    format: 'DTZ',
+    content: pilot.content,
+    keys: pilot.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...audio }],
+  });
+  return { slug, title };
+};
+
+// The synthetic set cut to its Hören tasks: a short set of the same exam.
+export const shortOf = (
+  pilot: typeof FULL_PILOT,
+): Pick<typeof FULL_PILOT, 'content' | 'keys'> => {
+  const questions = pilot.content.questions.filter(
+    (question) => question.skill === 'hoeren',
+  );
+  const keys = Object.fromEntries(
+    questions.map((question) => [question.id, pilot.keys[question.id] ?? '']),
+  );
+  return { content: { ...pilot.content, questions }, keys };
 };
