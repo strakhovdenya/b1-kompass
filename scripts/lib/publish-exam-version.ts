@@ -31,6 +31,9 @@ const CONTENT_TYPES: Readonly<Record<string, AudioContentType>> = {
 
 const TRACK_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+export const isValidTrackId = (trackId: string): boolean =>
+  TRACK_ID.test(trackId);
+
 export const keysFileSchema = z.record(z.string(), z.string());
 
 // One audio file of the version, read by the owner from outside the
@@ -71,10 +74,16 @@ interface AudioTrackRow {
   sha256: string;
 }
 
+// The content type of a supported audio extension, or undefined.
+export const findAudioContentType = (
+  filePath: string,
+): AudioContentType | undefined =>
+  CONTENT_TYPES[path.extname(filePath).toLowerCase()];
+
 export const audioContentTypeOf = (filePath: string): AudioContentType => {
-  const extension = path.extname(filePath).toLowerCase();
-  const contentType = CONTENT_TYPES[extension];
+  const contentType = findAudioContentType(filePath);
   if (!contentType) {
+    const extension = path.extname(filePath).toLowerCase();
     throw new Error(`Audio file type is not supported: ${extension}`);
   }
   return contentType;
@@ -83,7 +92,7 @@ export const audioContentTypeOf = (filePath: string): AudioContentType => {
 // The object path is derived from the bytes: the same file is uploaded once,
 // and a changed file never overwrites the audio of a published version.
 const toTrack = (file: AudioFileInput): AudioTrack => {
-  if (!TRACK_ID.test(file.trackId)) {
+  if (!isValidTrackId(file.trackId)) {
     throw new Error(`Audio track id is not valid: ${file.trackId}`);
   }
   if (!Object.hasOwn(AUDIO_EXTENSIONS, file.contentType)) {
