@@ -68,6 +68,7 @@ const render = (
     <NextIntlClientProvider locale="en" messages={messages}>
       <TrainingShell
         examSlug="test-exam"
+        examTitle="DTZ Übungstest 2"
         attemptId={ATTEMPT_ID}
         questions={questions}
         trackIds={['track-1']}
@@ -203,6 +204,32 @@ describe('TrainingShell', () => {
     expect(render(review)).not.toContain('repeat-errors');
   });
 
+  it('shell always renders exam context header', () => {
+    const open = render(null, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 60_000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    expect(open).toContain('data-testid="exam-context"');
+    expect(open).toContain('href="/exams"');
+    expect(open).toContain('DTZ Übungstest 2');
+    // A free training shows the line as well, and its link is never held back.
+    const free = render(null);
+    expect(free).toContain('data-testid="exam-context"');
+    expect(free).toContain('DTZ Übungstest 2');
+  });
+
+  it('shell review keeps exam context header', () => {
+    const html = render(review);
+    expect(html).toContain('<nav');
+    expect(html).toContain('data-testid="exam-context"');
+    expect(html).toContain('href="/exams"');
+    expect(html).toContain('DTZ Übungstest 2');
+    expect(html).toContain('Result');
+    expect(html).not.toContain('timed-leave');
+  });
+
   it('shows only the review of the open block once completed', () => {
     const html = render(review);
     expect(html).not.toContain('block page');
@@ -237,6 +264,7 @@ describe('TrainingShell', () => {
         <NextIntlClientProvider locale="en" messages={messages}>
           <TrainingShell
             examSlug="test-exam"
+            examTitle="DTZ Übungstest 2"
             attemptId={ATTEMPT_ID}
             questions={shown}
             trackIds={phase === 'lesen' ? [] : ['track-1']}

@@ -1,15 +1,20 @@
 'use client';
 
+import { useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 import Box from '@mui/material/Box';
 import MuiLink from '@mui/material/Link';
 import Typography from '@mui/material/Typography';
 import type { AttemptMode } from '@b1k/domain';
+import {
+  LIBRARY_PATH,
+  TimedLeaveDialog,
+  useBeforeUnloadWarning,
+} from './TimedLeaveDialog';
 
 export type ExamStage = 'hoeren' | 'lesen' | 'transition' | 'review';
-
-const LIBRARY_PATH = '/exams';
 
 const MODE_KEYS: Readonly<Record<AttemptMode, string>> = {
   training: 'training',
@@ -24,6 +29,9 @@ interface ExamContextHeaderProps {
   // Known only on an attempt; the choice of an exam shows neither.
   mode?: AttemptMode | null;
   stage?: ExamStage | null;
+  // True only for a running timed block or exam: the link then asks before
+  // leaving. The time runs on the server whatever the guest chooses.
+  warnOnLeave?: boolean;
 }
 
 // The place of the guest: the way back to the library, the exam and, where
@@ -34,8 +42,31 @@ export const ExamContextHeader = ({
   examTitle,
   mode = null,
   stage = null,
+  warnOnLeave = false,
 }: ExamContextHeaderProps) => {
   const t = useTranslations('examContext');
+  const linkRef = useRef<HTMLAnchorElement>(null);
+  const [isAsking, setAsking] = useState(false);
+  const [isLeaving, setLeaving] = useState(false);
+  useBeforeUnloadWarning(warnOnLeave && !isLeaving);
+
+  // Only a plain left click is held back; a new tab or window (modifier or
+  // middle click) leaves this page where it is and needs no question.
+  const onLinkClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!warnOnLeave) return;
+    if (event.button !== 0 || event.metaKey || event.ctrlKey) return;
+    if (event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    setAsking(true);
+  };
+  const stay = () => {
+    setAsking(false);
+    linkRef.current?.focus();
+  };
+  const leave = () => {
+    setLeaving(true);
+    setAsking(false);
+  };
   const modeLabel = mode ? t(`mode.${MODE_KEYS[mode]}`) : null;
   const stageLabel = stage ? t(`stage.${stage}`) : null;
   const where =
@@ -59,6 +90,8 @@ export const ExamContextHeader = ({
       <MuiLink
         component={Link}
         href={LIBRARY_PATH}
+        ref={linkRef}
+        onClick={onLinkClick}
         underline="hover"
         data-testid="exam-context-library"
         sx={{
@@ -130,6 +163,9 @@ export const ExamContextHeader = ({
         >
           {where}
         </Typography>
+      ) : null}
+      {warnOnLeave ? (
+        <TimedLeaveDialog open={isAsking} onStay={stay} onLeave={leave} />
       ) : null}
     </Box>
   );
