@@ -267,25 +267,48 @@ const purposeOf = (runs: CardResultRecord['attempts']['attempt_runs']) => {
   return run ? run.purpose : null;
 };
 
+const RESULT_COLUMNS_OF_CARD =
+  'attempt_id, computed_at, attempts!inner(exam_id, attempt_runs!attempt_runs_attempt_id_fkey(purpose))';
+
+// Below the max_rows of the Data API, so a page is never cut silently.
+export const RESULT_PAGE_SIZE = 500;
+
+const readResultPage = async (
+  deps: ServerDeps,
+  sessionId: string,
+  from: number,
+): Promise<CardResultRecord[]> => {
+  const { data, error } = await deps.db
+    .from('attempt_results')
+    .select(RESULT_COLUMNS_OF_CARD)
+    .eq('scope', 'full-exam')
+    .eq('attempts.guest_session_id', sessionId)
+    .eq('attempts.status', 'completed')
+    .order('computed_at', { ascending: false })
+    .order('attempt_id', { ascending: true })
+    .range(from, from + RESULT_PAGE_SIZE - 1)
+    .returns<CardResultRecord[]>();
+  if (error) throw new Error('Results lookup failed', { cause: error });
+  return data;
+};
+
 // The completed full-exam results of the guest's own attempts at every exam,
-// with the purpose of the run (null without a run). The
-// owner, the status and the scope are filtered by the database; the caller
-// drops repeats of mistakes. Scores, answers and reviews are not selected.
+// with the purpose of the run (null without a run), read page by page in a
+// stable order: the number of reads follows the guest's own results, never
+// the number of exams. The owner, the status and the scope are filtered by
+// the database; the caller drops repeats of mistakes and picks the latest.
+// Scores, answers and reviews are not selected.
 export const listFullResults = async (
   deps: ServerDeps,
   sessionId: string,
 ): Promise<CardResultRow[]> => {
-  const { data, error } = await deps.db
-    .from('attempt_results')
-    .select(
-      'attempt_id, computed_at, attempts!inner(exam_id, attempt_runs!attempt_runs_attempt_id_fkey(purpose))',
-    )
-    .eq('scope', 'full-exam')
-    .eq('attempts.guest_session_id', sessionId)
-    .eq('attempts.status', 'completed')
-    .returns<CardResultRecord[]>();
-  if (error) throw new Error('Results lookup failed', { cause: error });
-  return data.map((row) => ({
+  const records: CardResultRecord[] = [];
+  for (let from = 0; ; from += RESULT_PAGE_SIZE) {
+    const page = await readResultPage(deps, sessionId, from);
+    records.push(...page);
+    if (page.length < RESULT_PAGE_SIZE) break;
+  }
+  return records.map((row) => ({
     attemptId: row.attempt_id,
     examId: row.attempts.exam_id,
     computedAt: row.computed_at,

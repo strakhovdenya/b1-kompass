@@ -2,6 +2,7 @@ import { buildSyntheticPilot } from '@b1k/domain';
 import { describe, expect, it } from 'vitest';
 import { attachStates, listLibrary, projectCatalog } from './catalog';
 import type { CatalogRow } from './catalog';
+import { RESULT_PAGE_SIZE } from '../attempts/repository';
 import type { ServerDeps } from '../db';
 import type { GuestContext } from '../guest-session/session';
 
@@ -54,18 +55,25 @@ describe('catalog projection', () => {
   });
 });
 
-// A database that answers every query of a table with fixed rows and counts
-// the queries; the filters themselves are proven against the real database in
-// the E2E specs.
+// A database that answers every query of a table with fixed rows, applies
+// only range() and counts the queries; the filters and the order themselves
+// are proven against the real database in the E2E specs.
 const fakeDeps = (tables: Record<string, unknown[]>) => {
   const calls: string[] = [];
   const reply = (table: string) => {
     const builder: Record<string, unknown> = {};
-    const chain = new Proxy(builder, {
+    let rows = tables[table] ?? [];
+    const chain: unknown = new Proxy(builder, {
       get: (_target, key) => {
         if (key === 'then') {
           return (done: (value: unknown) => unknown) =>
-            done({ data: tables[table] ?? [], error: null });
+            done({ data: rows, error: null });
+        }
+        if (key === 'range') {
+          return (from: number, to: number) => {
+            rows = rows.slice(from, to + 1);
+            return chain;
+          };
         }
         return () => chain;
       },
@@ -166,5 +174,25 @@ describe('catalog states', () => {
     const [card] = attachStates(entries, new Map());
     expect(card).toMatchObject({ continueHref: null, resultHref: null });
     expect(card).not.toHaveProperty('id');
+  });
+
+  it('own results beyond one page are read to the end', async () => {
+    const exams = [row({ slug: 'a', title: 'A' }, [1, full])];
+    const resultOf = (attemptId: string, computedAt: string) => ({
+      attempt_id: attemptId,
+      computed_at: computedAt,
+      attempts: { exam_id: 'id-a', attempt_runs: { purpose: 'normal' } },
+    });
+    // Two full pages of older results; the latest one is on the third page.
+    const older = Array.from({ length: RESULT_PAGE_SIZE * 2 }, (_, index) =>
+      resultOf(`old-${index}`, '2026-11-01T10:00:00Z'),
+    );
+    const results = [...older, resultOf('latest', '2026-11-08T10:00:00Z')];
+    const { deps, calls } = fakeDeps({ exams, attempt_results: results });
+    const [card] = await listLibrary(deps, guest);
+    expect(card?.resultHref).toBe('/practice/a/attempts/latest');
+    expect(calls.filter((table) => table === 'attempt_results')).toHaveLength(
+      3,
+    );
   });
 });
