@@ -43,6 +43,7 @@ import { syncOf } from './exam-clock';
 import type { ClockSync } from './exam-clock';
 import { audioTargetSeconds } from './exam-audio-position';
 import { ExamAudioPanel } from './ExamAudioSession';
+import { ExamContextHeader } from './ExamContextHeader';
 import { TrainingContext } from './TrainingContext';
 import type { TrainingState } from './TrainingContext';
 import { TransitionScreen } from './TransitionScreen';
@@ -87,6 +88,8 @@ const CLOSED_PHASES: readonly SubmissionPhase[] = [
 
 interface TrainingShellProps {
   examSlug: string;
+  // The title of the exam of the verified attempt, for the context line.
+  examTitle?: string | null;
   attemptId: string;
   questions: readonly ExamQuestion[];
   trackIds: readonly string[];
@@ -174,6 +177,7 @@ const useErrorRepeat = (
 // still in flight, the server computes the result, the shell only shows it.
 export const TrainingShell = ({
   examSlug,
+  examTitle = null,
   attemptId,
   questions,
   trackIds,
@@ -427,6 +431,13 @@ export const TrainingShell = ({
           data-testid="training-shell"
           data-attempt-id={attemptId}
         >
+          {examTitle ? (
+            <ExamContextHeader
+              examTitle={examTitle}
+              mode={mode}
+              stage="review"
+            />
+          ) : null}
           {nav}
           <AttemptReviewView
             review={review}
@@ -466,6 +477,7 @@ export const TrainingShell = ({
         onZero={onZero}
       />
     ) : null;
+  const stage = isTransition ? 'transition' : current;
   const [examTrackId] = trackIds;
   const examAudio =
     isExam && examTrackId && examStartedAtMs !== null ? (
@@ -530,6 +542,9 @@ export const TrainingShell = ({
         data-mode={mode}
         data-phase={trusted.phase ?? undefined}
       >
+        {examTitle ? (
+          <ExamContextHeader examTitle={examTitle} mode={mode} stage={stage} />
+        ) : null}
         {clock}
         {nav}
         {examAudio}

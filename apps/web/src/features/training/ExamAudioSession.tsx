@@ -129,6 +129,21 @@ export const ExamAudioSession = ({ children }: ExamAudioSessionProps) => {
     setElement(ref.current);
   }, []);
 
+  // Leaving the exam, or opening another one, lets the recording go: a
+  // removed element is paused by the browser's own rule, but it would keep
+  // its signed address, and some browsers keep sound of a detached element.
+  // Nothing is left to resume it from the system controls.
+  useEffect(() => {
+    const media = ref.current;
+    return () => {
+      isActiveRef.current = false;
+      if (!media) return;
+      media.pause();
+      media.removeAttribute('src');
+      media.load();
+    };
+  }, []);
+
   const pause = useCallback(() => {
     ref.current?.pause();
   }, []);

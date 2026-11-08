@@ -178,6 +178,22 @@
     "message": "Что-то пошло не так. Сохранённые ответы не потеряны.",
     "retry": "Повторить"
   },
+  "examContext": {
+    "label": "Текущий экзамен",
+    "library": "Все экзамены",
+    "modeStage": "{mode} · {stage}",
+    "mode": {
+      "training": "Тренировка",
+      "timedBlock": "Блок на время",
+      "exam": "Экзамен"
+    },
+    "stage": {
+      "hoeren": "Hören",
+      "lesen": "Lesen",
+      "transition": "Перерыв",
+      "review": "Результат"
+    }
+  },
   "training": {
     "blocks": "Части экзамена",
     "hoeren": "Hören (аудирование)",

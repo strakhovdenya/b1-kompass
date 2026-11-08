@@ -178,6 +178,22 @@
     "message": "Something went wrong. Your saved answers are kept.",
     "retry": "Try again"
   },
+  "examContext": {
+    "label": "Current exam",
+    "library": "All exams",
+    "modeStage": "{mode} · {stage}",
+    "mode": {
+      "training": "Free training",
+      "timedBlock": "Timed block",
+      "exam": "Exam"
+    },
+    "stage": {
+      "hoeren": "Hören",
+      "lesen": "Lesen",
+      "transition": "Break",
+      "review": "Result"
+    }
+  },
   "training": {
     "blocks": "Exam blocks",
     "hoeren": "Hören (listening)",
