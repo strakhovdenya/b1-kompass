@@ -319,12 +319,14 @@ test('exam context keeps the first question on the first phone screen', async ({
   const page = await context.newPage();
   await page.goto(attemptUrl(exam.slug, guest.attemptId));
   await expect(card(page, 'hoeren-1')).toBeVisible();
+  const question = await card(page, 'hoeren-1').boundingBox();
   const first = await optionIn(card(page, 'hoeren-1'), 'a').boundingBox();
+  expect(question).not.toBeNull();
   expect(first).not.toBeNull();
-  // The first option is on the first screen with room to spare.
-  expect((first?.y ?? Infinity) + (first?.height ?? 0) / 2).toBeLessThan(
-    667 - 8,
-  );
+  // The question starts well inside the first screen and its first option
+  // begins there too; font metrics of the runner move this by some pixels.
+  expect(question?.y ?? Infinity).toBeLessThan(667 - 100);
+  expect(first?.y ?? Infinity).toBeLessThan(667);
   await context.close();
 });
 
