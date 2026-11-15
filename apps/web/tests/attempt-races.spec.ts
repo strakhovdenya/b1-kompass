@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type {
@@ -13,6 +13,7 @@ import { selectScoringPolicy } from '@b1k/domain';
 import { saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import { DB_CONTAINER, psql } from './support/sql';
 import {
   depsNow,
   newGuest,
@@ -37,28 +38,6 @@ import {
 // and the test database. Saves carry the revision of the choice: the order
 // of the changes of one answer, stored with it. The browser network is
 // intercepted to delay, lose or repeat requests; the database is re-read.
-
-const DB_CONTAINER = 'supabase_db_b1-kompass';
-
-const psql = (sql: string): string =>
-  execFileSync(
-    'docker',
-    [
-      'exec',
-      DB_CONTAINER,
-      'psql',
-      '-U',
-      'postgres',
-      '-tA',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-c',
-      sql,
-    ],
-    { stdio: 'pipe' },
-  )
-    .toString()
-    .trim();
 
 const { questions } = FULL_PILOT.content;
 const { keys } = FULL_PILOT;

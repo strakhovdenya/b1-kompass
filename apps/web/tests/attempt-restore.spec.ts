@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
@@ -21,6 +20,7 @@ import {
   submitStored,
 } from './support/db';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import { psql } from './support/sql';
 import {
   HOEREN_URL,
   LESEN_URL,
@@ -48,25 +48,7 @@ const SEEK_TOLERANCE = 1;
 const RECORDING_SECONDS = 60;
 const TERM_HOURS = 720;
 const HOUR_MS = 3_600_000;
-const DB_CONTAINER = 'supabase_db_b1-kompass';
 const LOCALE_CHECK = 'guest_sessions_locale_check';
-
-const psql = (sql: string) =>
-  execFileSync(
-    'docker',
-    [
-      'exec',
-      DB_CONTAINER,
-      'psql',
-      '-U',
-      'postgres',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-c',
-      sql,
-    ],
-    { stdio: 'pipe' },
-  );
 
 // Stores a locale the application does not support; the check of the column
 // is replaced by an unvalidated copy in one transaction.
