@@ -56,3 +56,9 @@ private/
 
 # Vercel CLI link of this machine
 .vercel/
+
+# Local E2E stack (#96): run lock and reports, the link to the canonical migrations
+.e2e/
+supabase/e2e/supabase/migrations
+supabase/e2e/supabase/.temp/
+supabase/e2e/supabase/.branches/

@@ -4,13 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { psqlVarArgs } from '../../../../scripts/manage-timing-profile';
-import { readTestSupabaseEnv } from './env';
+import { attestedTarget } from './env';
 
 // Direct SQL against the local, isolated test database only, through psql
 // inside its Docker container. Every entry point checks the target first: a
 // cloud URL or another container is refused before anything connects.
 
-export const DB_CONTAINER = 'supabase_db_b1-kompass';
+// The container of the attested test database: the isolated E2E stack, or the
+// fresh stack of a CI job. Never the development container (#96).
+export const DB_CONTAINER = attestedTarget().container;
 
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '[::1]'];
 
@@ -20,7 +22,7 @@ export interface SqlTarget {
 }
 
 export const localTarget = (): SqlTarget => ({
-  url: readTestSupabaseEnv().url,
+  url: attestedTarget().url,
   container: DB_CONTAINER,
 });
 

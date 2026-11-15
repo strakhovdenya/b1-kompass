@@ -22,6 +22,8 @@ const SHORT_SET_SPECS = [
   '**/material-publication.spec.ts',
   '**/short-practice.spec.ts',
 ];
+// Attests the target (#96) before anything else of this config is used: the
+// global setup and the servers below start only for the verified test stack.
 const env = readTestSupabaseEnv();
 
 // Each server trusts exactly its own origin: a request from a sibling port
@@ -91,11 +93,13 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
+  // A server that is already listening was not started for this verified
+  // database: it is never reused (the runner also refuses busy ports).
   webServer: [
     {
       command: `npm run start -- --port ${PORT}`,
       url: `http://localhost:${PORT}`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: { ...serverEnv, APP_ORIGIN: originOf(PORT) },
     },
@@ -103,7 +107,7 @@ export default defineConfig({
     {
       command: `npm run start -- --port ${PAIR_PORT}`,
       url: `http://localhost:${PAIR_PORT}`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
         ...serverEnv,
@@ -115,7 +119,7 @@ export default defineConfig({
     {
       command: `npm run start -- --port ${FULL_PORT}`,
       url: `http://localhost:${FULL_PORT}`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
         ...serverEnv,

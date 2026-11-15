@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import type { BrowserContext, Locator, Page } from '@playwright/test';
 import { FULL_EXAM, FULL_PILOT } from './support/full-exam';
+import { psql } from './support/sql';
 import { getAttemptReview, saveAnswer } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
@@ -24,25 +24,7 @@ import {
   enterAndStart,
 } from './support/guest-browser';
 
-const DB_CONTAINER = 'supabase_db_b1-kompass';
 const LOCALE_CHECK = 'guest_sessions_locale_check';
-
-const psql = (sql: string) =>
-  execFileSync(
-    'docker',
-    [
-      'exec',
-      DB_CONTAINER,
-      'psql',
-      '-U',
-      'postgres',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-c',
-      sql,
-    ],
-    { stdio: 'pipe' },
-  );
 
 // Stores a locale the application does not support. The check of the column
 // is replaced by an unvalidated copy in one transaction, so no row can slip

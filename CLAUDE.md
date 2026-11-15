@@ -49,8 +49,11 @@ npm run typecheck    # domain, web, scripts
 npm run lint         # ESLint + Prettier check of .ts/.tsx (npm run format fixes it)
 npm test             # Vitest: packages/domain, apps/web/src
 npm run build
-npm run db:start     # local Supabase in Docker; needed for E2E
-npm run test:e2e     # Playwright apps/web/tests against local Supabase + next start
+npm run db:start     # development Supabase (project b1-kompass); never an E2E target
+npm run e2e:up       # once: persistent isolated E2E Supabase (project b1-kompass-e2e, ports 54420-54422)
+npm run e2e:test     # full Playwright run on that stack: lock, target proof, migration check, cleanup before and after (needs npm run build, or add -- --build)
+npm run e2e:status   # stack identity, migrations, lock; e2e:clean = guarded cleanup; e2e:stop = explicit stop
+npm run test:e2e     # raw Playwright, used by CI on its fresh stack; locally it refuses outside e2e:test
 ```
 
 CI (`.github/workflows/ci.yml`, workflow `CI`, job `Quality`) runs all of them on Node 24. `Quality` is the required check of the verifier; do not rename the workflow or the job.
@@ -72,6 +75,7 @@ CI (`.github/workflows/ci.yml`, workflow `CI`, job `Quality`) runs all of them o
 - Tests of changed logic go into the same change. Verify through the real function and a re-read of the test database; never mock a ready success or a finished score.
 - New migrations go to `supabase/migrations/` with a new timestamp; never edit an applied migration.
 - Secrets never enter Git, logs or client bundles. `.env*` and `private/` are ignored; the publisher's answer keys live in `private/`.
+- Local E2E runs only on the isolated stack `b1-kompass-e2e` through `scripts/e2e` (#96). Cleanup of test data is owned by `scripts/e2e`, needs the run lock and four target proofs, and never touches the development or Production database; no `db reset` for E2E.
 - Do not claim deployment, cloud checks or a factory run that did not happen; mark them as not verified.
 
 ## Factory hooks

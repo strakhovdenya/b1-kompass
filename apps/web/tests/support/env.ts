@@ -1,5 +1,6 @@
-import { execSync } from 'node:child_process';
-import path from 'node:path';
+import { attestTarget } from '../../../../scripts/e2e/target';
+import type { AttestedTarget } from '../../../../scripts/e2e/target';
+import { realAttestDeps } from '../../../../scripts/e2e/real';
 
 export interface TestSupabaseEnv {
   url: string;
@@ -12,42 +13,26 @@ export interface TestSupabaseEnv {
 // limit spec fills the window up to it.
 export const TEST_GUEST_SESSIONS_PER_MINUTE = 500;
 
-const REPO_ROOT = path.join(import.meta.dirname, '..', '..', '..', '..');
+// Kept on globalThis: the config, the global setup and the specs may load this
+// module more than once in one process, and the CI freshness proof must run
+// before the fixtures, once.
+const ATTESTED = Symbol.for('b1k.e2e.attestedTarget');
+type Holder = { [ATTESTED]?: AttestedTarget };
 
-const readStatus = (): Record<string, string> => {
-  const output = execSync('npx supabase status -o env', {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+// The database every test entry point talks to. It is attested on first use,
+// which happens when playwright.config.ts is loaded: before the global setup,
+// the application servers and any fixture. A developer stack, a foreign
+// container or a remote URL stops the run here (#96). Nothing is read from
+// TEST_SUPABASE_* or any other variable: the target is fixed by the code.
+export const attestedTarget = (): AttestedTarget => {
+  const holder = globalThis as Holder;
+  holder[ATTESTED] ??= attestTarget(realAttestDeps(), {
+    requireRunLock: true,
   });
-  const values: Record<string, string> = {};
-  for (const line of output.split(/\r?\n/)) {
-    const match = /^([A-Z_]+)="?(.*?)"?$/.exec(line.trim());
-    if (match?.[1] && match[2] !== undefined) values[match[1]] = match[2];
-  }
-  return values;
+  return holder[ATTESTED];
 };
 
-// Tests run only against the local, isolated Supabase started by
-// `supabase start`; production values are never read here.
 export const readTestSupabaseEnv = (): TestSupabaseEnv => {
-  const fromEnv = {
-    url: process.env.TEST_SUPABASE_URL,
-    publishableKey: process.env.TEST_SUPABASE_PUBLISHABLE_KEY,
-    secretKey: process.env.TEST_SUPABASE_SECRET_KEY,
-  };
-  if (fromEnv.url && fromEnv.publishableKey && fromEnv.secretKey) {
-    return fromEnv as TestSupabaseEnv;
-  }
-  const status = readStatus();
-  const url = status.API_URL;
-  const publishableKey = status.PUBLISHABLE_KEY ?? status.ANON_KEY;
-  const secretKey = status.SECRET_KEY ?? status.SERVICE_ROLE_KEY;
-  if (!url || !publishableKey || !secretKey) {
-    throw new Error('Local Supabase is not running: run `npm run db:start`');
-  }
-  process.env.TEST_SUPABASE_URL = url;
-  process.env.TEST_SUPABASE_PUBLISHABLE_KEY = publishableKey;
-  process.env.TEST_SUPABASE_SECRET_KEY = secretKey;
+  const { url, publishableKey, secretKey } = attestedTarget();
   return { url, publishableKey, secretKey };
 };
