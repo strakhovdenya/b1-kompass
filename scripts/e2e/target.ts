@@ -14,11 +14,26 @@ import type { StackProfile } from './constants';
 // of us is the intended one. A missing or mismatching proof fails closed.
 // Nothing here reads a URL, container name or key from the environment.
 
+export interface PortBinding {
+  ip: string;
+  port: string;
+}
+
 export interface ContainerInfo {
   running: boolean;
   labels: Readonly<Record<string, string>>;
-  // Container port ("5432/tcp") to the published host ports.
-  ports: Readonly<Record<string, readonly string[]>>;
+  // Container port ("5432/tcp") to its published host address and port.
+  bindings: Readonly<Record<string, readonly PortBinding[]>>;
+  // ISO time of the creation of the container.
+  createdAt: string;
+}
+
+// Facts about the machine the process runs on. Unlike environment variables,
+// a caller cannot simply set them.
+export interface HostFacts {
+  platform: string;
+  username: string;
+  home: string;
 }
 
 export interface AttestDeps {
@@ -32,6 +47,8 @@ export interface AttestDeps {
   // The token of the run lock held by the orchestrator, or null.
   readRunLock: () => { token: string } | null;
   env: Readonly<Record<string, string | undefined>>;
+  host: HostFacts;
+  now: () => number;
   repoRoot: string;
   // Playwright worker processes load the config again after the fixtures.
   isWorker: boolean;
@@ -74,6 +91,19 @@ export const isCiContext = (
   Boolean(env.GITHUB_WORKSPACE) &&
   Boolean(env.RUNNER_OS) &&
   env.RUNNER_ENVIRONMENT === 'github-hosted';
+
+// Docker reports the wildcard address for a port published on every
+// interface; both it and the loopback address answer on 127.0.0.1.
+const LOOPBACK_BINDINGS: readonly string[] = ['127.0.0.1', '0.0.0.0', '::'];
+
+// A GitHub Actions job lives at most six hours, so a database container older
+// than that was not started by this job.
+const CI_CONTAINER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+const isHostedRunnerHost = (host: HostFacts): boolean =>
+  host.platform === 'linux' &&
+  host.username === 'runner' &&
+  host.home.startsWith('/home/runner');
 
 const normalizePath = (value: string): string =>
   value.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
@@ -121,10 +151,17 @@ const checkContainer = (
       `container ${name} belongs to another Supabase project`,
     );
   }
-  const published = info.ports[inner.portKey] ?? [];
-  if (!published.includes(String(inner.hostPort))) {
+  const published = (info.bindings[inner.portKey] ?? []).filter(
+    (binding) => binding.port === String(inner.hostPort),
+  );
+  if (published.length === 0) {
     throw new TargetRefused(
       `container ${name} does not publish the port ${inner.hostPort}`,
+    );
+  }
+  if (!published.some((binding) => LOOPBACK_BINDINGS.includes(binding.ip))) {
+    throw new TargetRefused(
+      `container ${name} publishes the port ${inner.hostPort} only on a non-loopback address`,
     );
   }
   const workdir = info.labels['com.supabase.cli.workdir'] ?? '';
@@ -185,8 +222,9 @@ export const attestTarget = (
   }
 
   // Proof 3: the container behind it.
+  const dbInfo = deps.inspect(profile.dbContainer);
   checkContainer(
-    deps.inspect(profile.dbContainer),
+    dbInfo,
     profile.dbContainer,
     { portKey: '5432/tcp', hostPort: profile.dbPort },
     profile,
@@ -217,17 +255,31 @@ export const attestTarget = (
       }
     }
     if (options.requireRunLock) checkRunLock(deps);
-  } else if (!deps.isWorker) {
-    // CI: the stack must be the fresh one of this job, not a developer
-    // database that happens to have the same project id.
-    const counts = CLEANUP_TABLES.map(
-      (table) => `(select count(*) from ${table})`,
-    ).join(' + ');
-    const used = deps.psql(profile.dbContainer, `select ${counts}`);
-    if (used.trim() !== '0') {
+  } else {
+    // CI: the stack must be the one this job started, not a developer
+    // database that happens to have the same project id. The variables are
+    // only a claim: the machine and the container must agree with it.
+    if (!isHostedRunnerHost(deps.host)) {
       throw new TargetRefused(
-        'CI context, but the database is not fresh: it holds test or user rows',
+        'CI variables are set, but this is not a GitHub-hosted Linux runner',
       );
+    }
+    const ageMs = deps.now() - Date.parse(dbInfo?.createdAt ?? '');
+    if (!(ageMs >= 0 && ageMs <= CI_CONTAINER_MAX_AGE_MS)) {
+      throw new TargetRefused(
+        'CI context, but the database container was not created during this job',
+      );
+    }
+    if (!deps.isWorker) {
+      const counts = CLEANUP_TABLES.map(
+        (table) => `(select count(*) from ${table})`,
+      ).join(' + ');
+      const used = deps.psql(profile.dbContainer, `select ${counts}`);
+      if (used.trim() !== '0') {
+        throw new TargetRefused(
+          'CI context, but the database is not fresh: it holds test or user rows',
+        );
+      }
     }
   }
 

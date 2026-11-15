@@ -105,9 +105,14 @@ interface AttestScript {
   marker?: string;
   usedRows?: string;
   env?: Record<string, string | undefined>;
+  host?: typeof RUNNER_HOST;
   runLock?: { token: string } | null;
   isWorker?: boolean;
 }
+
+const NOW = Date.parse('2026-11-15T12:00:00Z');
+const HOUR_MS = 60 * 60 * 1000;
+const createdAgo = (ms: number): string => new Date(NOW - ms).toISOString();
 
 const e2eContainer = (): ContainerInfo => ({
   running: true,
@@ -115,10 +120,11 @@ const e2eContainer = (): ContainerInfo => ({
     'com.supabase.cli.project': E2E_STACK.projectId,
     'com.supabase.cli.workdir': `${REPO}/supabase/e2e`,
   },
-  ports: {
-    '5432/tcp': [String(E2E_STACK.dbPort)],
-    '8000/tcp': [String(E2E_STACK.apiPort)],
+  bindings: {
+    '5432/tcp': [{ ip: '0.0.0.0', port: String(E2E_STACK.dbPort) }],
+    '8000/tcp': [{ ip: '0.0.0.0', port: String(E2E_STACK.apiPort) }],
   },
+  createdAt: createdAgo(HOUR_MS),
 });
 
 const devContainer = (): ContainerInfo => ({
@@ -127,11 +133,18 @@ const devContainer = (): ContainerInfo => ({
     'com.supabase.cli.project': DEV_STACK.projectId,
     'com.supabase.cli.workdir': REPO,
   },
-  ports: {
-    '5432/tcp': [String(DEV_STACK.dbPort)],
-    '8000/tcp': [String(DEV_STACK.apiPort)],
+  bindings: {
+    '5432/tcp': [{ ip: '127.0.0.1', port: String(DEV_STACK.dbPort) }],
+    '8000/tcp': [{ ip: '127.0.0.1', port: String(DEV_STACK.apiPort) }],
   },
+  createdAt: createdAgo(5 * 60 * 1000),
 });
+
+const RUNNER_HOST = {
+  platform: 'linux',
+  username: 'runner',
+  home: '/home/runner',
+};
 
 class Calls {
   inspect = 0;
@@ -167,6 +180,8 @@ const attestDeps = (
   },
   readRunLock: () => script.runLock ?? null,
   env: script.env ?? {},
+  host: script.host ?? RUNNER_HOST,
+  now: () => NOW,
   repoRoot: REPO,
   isWorker: script.isWorker ?? false,
 });
@@ -352,7 +367,24 @@ describe('isolated E2E runs', () => {
         },
       },
       // A container that does not publish the E2E database port.
-      { container: { ...e2eContainer(), ports: { '5432/tcp': ['54322'] } } },
+      {
+        container: {
+          ...e2eContainer(),
+          bindings: { '5432/tcp': [{ ip: '0.0.0.0', port: '54322' }] },
+        },
+      },
+      // The port is published, but not on the loopback address, so another
+      // process may answer on 127.0.0.1 in its place.
+      {
+        container: {
+          ...e2eContainer(),
+          bindings: {
+            '5432/tcp': [
+              { ip: '192.168.1.20', port: String(E2E_STACK.dbPort) },
+            ],
+          },
+        },
+      },
       // The API gateway of another project answers on the API port.
       {
         gateway: {
@@ -698,6 +730,29 @@ describe('isolated E2E runs', () => {
         requireRunLock: true,
       }).mode,
     ).toBe('ci');
+    // The CI variables on a machine that is not a hosted Linux runner, such
+    // as a developer's own computer with an empty development database.
+    for (const host of [
+      { platform: 'win32', username: 'Denys', home: 'C:\\Users\\Denys' },
+      { platform: 'linux', username: 'dev', home: '/home/dev' },
+    ]) {
+      expect(() =>
+        attestTarget(attestDeps({ ...dev, usedRows: '0', host }), {
+          requireRunLock: true,
+        }),
+      ).toThrow(/not a GitHub-hosted Linux runner/);
+    }
+    // A database container that is older than any job of the runner.
+    expect(() =>
+      attestTarget(
+        attestDeps({
+          ...dev,
+          usedRows: '0',
+          container: { ...devContainer(), createdAt: createdAgo(72 * HOUR_MS) },
+        }),
+        { requireRunLock: true },
+      ),
+    ).toThrow(/not created during this job/);
     // CI variables without the matching workspace of the container.
     expect(() =>
       attestTarget(

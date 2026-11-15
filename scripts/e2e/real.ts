@@ -8,6 +8,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import net from 'node:net';
+import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import {
@@ -27,7 +28,12 @@ import type {
   StackDb,
   StackStorage,
 } from './stack';
-import type { AttestDeps, AttestedTarget, ContainerInfo } from './target';
+import type {
+  AttestDeps,
+  AttestedTarget,
+  ContainerInfo,
+  PortBinding,
+} from './target';
 
 // The real ports of the E2E tooling: Docker, the Supabase CLI, psql inside
 // the container, Storage. The only module of scripts/e2e that spawns
@@ -144,23 +150,28 @@ const inspectContainer = (name: string): ContainerInfo | null => {
     return null;
   }
   const [entry] = JSON.parse(raw) as {
+    Created?: string;
     State?: { Running?: boolean };
     Config?: { Labels?: Record<string, string> };
     NetworkSettings?: {
-      Ports?: Record<string, { HostPort: string }[] | null>;
+      Ports?: Record<string, { HostIp?: string; HostPort: string }[] | null>;
     };
   }[];
   if (!entry) return null;
-  const ports: Record<string, string[]> = {};
-  for (const [port, bindings] of Object.entries(
+  const bindings: Record<string, PortBinding[]> = {};
+  for (const [port, published] of Object.entries(
     entry.NetworkSettings?.Ports ?? {},
   )) {
-    ports[port] = (bindings ?? []).map((binding) => binding.HostPort);
+    bindings[port] = (published ?? []).map((binding) => ({
+      ip: binding.HostIp ?? '',
+      port: binding.HostPort,
+    }));
   }
   return {
     running: entry.State?.Running === true,
     labels: entry.Config?.Labels ?? {},
-    ports,
+    bindings,
+    createdAt: entry.Created ?? '',
   };
 };
 
@@ -196,6 +207,12 @@ export const realAttestDeps = (): AttestDeps => ({
     return info ? { token: info.token } : null;
   },
   env: process.env,
+  host: {
+    platform: process.platform,
+    username: userInfo().username,
+    home: homedir(),
+  },
+  now: Date.now,
   repoRoot: REPO_ROOT,
   isWorker: process.env.TEST_WORKER_INDEX !== undefined,
 });
@@ -437,7 +454,7 @@ export const isProcessAlive = (pid: number): boolean => {
 const isSamePath = (a: string, b: string): boolean =>
   IS_WINDOWS ? a.toLowerCase() === b.toLowerCase() : a === b;
 
-// supabase/e2e/supabase/migrations is a link to the canonical migrations,
+// supabase/e2e/supabase/migrations is a link to the canonical supabase/migrations,
 // never a copy. A real directory or a link elsewhere stops the tooling.
 export const ensureMigrationLink = (): void => {
   const link = path.join(workdirOf(E2E_STACK), 'supabase', 'migrations');
