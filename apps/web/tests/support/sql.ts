@@ -99,6 +99,32 @@ export const psqlJson = <T>(sql: string): T => {
 export const quote = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
+export interface GuestWrites {
+  attempts: number;
+  runs: number;
+  commands: number;
+  starts: number;
+  results: number;
+}
+
+// Everything a start, a command or a completion would have written for one
+// guest session. Equal before and after means none of them happened.
+export const guestWrites = (sessionId: string): GuestWrites =>
+  psqlJson<GuestWrites>(`select json_build_object(
+    'attempts', (select count(*) from public.attempts
+      where guest_session_id = ${quote(sessionId)}),
+    'runs', (select count(*) from public.attempt_runs r
+      join public.attempts a on a.id = r.attempt_id
+      where a.guest_session_id = ${quote(sessionId)}),
+    'commands', (select count(*) from public.attempt_commands
+      where guest_session_id = ${quote(sessionId)}),
+    'starts', (select count(*) from public.guest_events e
+      join public.attempts a on a.id = e.attempt_id
+      where a.guest_session_id = ${quote(sessionId)} and e.kind = 'start'),
+    'results', (select count(*) from public.attempt_results x
+      join public.attempts a on a.id = x.attempt_id
+      where a.guest_session_id = ${quote(sessionId)}))`);
+
 const FIXTURES = path.join(import.meta.dirname, 'm2-fixtures.sql');
 
 // Installs the test-only wrappers of tests/support/m2-fixtures.sql into the

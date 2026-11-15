@@ -120,3 +120,70 @@ export const shortOf = (
   );
   return { content: { ...pilot.content, questions }, keys };
 };
+
+export type FullMaterial = Pick<typeof FULL_PILOT, 'content' | 'keys'>;
+
+export interface MaterialChange {
+  // Appended to the prompt of every task: text only this material has.
+  marker: string;
+  // One task leaves and another, with an id of its own, takes its place:
+  // the set keeps its 20 Hören and 25 Lesen tasks.
+  replace: { from: string; to: string };
+  // The task whose key becomes its first other option (fullWrongOf).
+  rekey?: string;
+}
+
+// A changed copy of a full set: another exam, or a later version of the same
+// one. Counts, parts, groups and texts stay, so the copy is a full DTZ too.
+export const variantOf = (
+  pilot: FullMaterial,
+  { marker, replace, rekey }: MaterialChange,
+): FullMaterial => {
+  const rename = (id: string): string =>
+    id === replace.from ? replace.to : id;
+  const questions = pilot.content.questions.map((question) => ({
+    ...question,
+    id: rename(question.id),
+    prompt: `${question.prompt} ${marker}`,
+  }));
+  const groups = pilot.content.groups?.map((group) => ({
+    ...group,
+    questionIds: group.questionIds.map(rename),
+  }));
+  const keys = Object.fromEntries(
+    Object.entries(pilot.keys).map(([id, key]) => [rename(id), key]),
+  );
+  if (rekey !== undefined) {
+    const other = questions
+      .find((question) => question.id === rekey)
+      ?.options.find((option) => option.id !== keys[rekey]);
+    if (!other) throw new Error(`no other option for ${rekey}`);
+    keys[rekey] = other.id;
+  }
+  return {
+    content: { ...pilot.content, questions, ...(groups ? { groups } : {}) },
+    keys,
+  };
+};
+
+// The next version of an exam that publishUniqueFullExam published: the
+// owner path with the intent of a new version. Returns the id of the version,
+// which must be a new one.
+export const publishNextFullVersion = async (
+  db: SupabaseClient,
+  audio: Omit<AudioFileInput, 'trackId'>,
+  exam: PublishedFullExam,
+  pilot: FullMaterial,
+): Promise<string> => {
+  const outcome = await publishExamVersion(db, {
+    slug: exam.slug,
+    title: exam.title,
+    format: 'DTZ',
+    intent: 'new-version',
+    content: pilot.content,
+    keys: pilot.keys,
+    audio: [{ trackId: FULL_TRACK_ID, ...audio }],
+  });
+  if (!outcome.isNew) throw new Error(`${exam.slug} got no new version`);
+  return outcome.versionId;
+};

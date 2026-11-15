@@ -4,6 +4,7 @@ import type { Browser } from '@playwright/test';
 import {
   getAttemptReview,
   readAttemptStatus,
+  saveAnswer,
 } from '../src/server/attempts/attempts';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import type { CreatedGuest } from '../src/server/guest-session/session';
@@ -17,6 +18,7 @@ import {
   readProgress,
   readResults,
   readRunRows,
+  serviceDb,
   startFor,
 } from './support/db';
 import {
@@ -24,7 +26,9 @@ import {
   FULL_PILOT,
   fullKeyOf,
   fullWrongOf,
+  publishUniqueFullExam,
 } from './support/full-exam';
+import { createTestRecording } from './support/global-setup';
 import {
   attemptLesenUrl,
   attemptUrl,
@@ -42,7 +46,7 @@ import {
   snapshotSql,
 } from './support/legacy-attempt';
 import type { HistoricalActive } from './support/legacy-attempt';
-import { psql, psqlJson, quote } from './support/sql';
+import { guestWrites, psql, psqlJson, quote } from './support/sql';
 
 // Attempts of M1 carried over to M2: the rows the transfer leaves behind (an
 // exam, a free training run over the whole version, the answers with their
@@ -438,4 +442,91 @@ test('legacy continuation backfill is scoped to its own fixture', async () => {
     { question_id: 'hoeren-1', option_id: fullKeyOf('hoeren-1'), revision: 4 },
     { question_id: 'lesen-1', option_id: fullKeyOf('lesen-1'), revision: 4 },
   ]);
+});
+
+test('legacy urls keep own pinned attempt beside another exam', async ({
+  browser,
+}) => {
+  const created = await newGuest(depsNow());
+  const { sessionId } = created.guest;
+  // The carried-over attempt of the default exam, left in Lesen.
+  const legacy = await activeOf(created, {
+    answers: keyAnswers(['hoeren-1', 'lesen-1'], 2),
+    progress: {
+      block: 'lesen',
+      hoeren: { itemId: 'hoeren-1' },
+      lesen: { itemId: 'lesen-1' },
+    },
+  });
+  commit(historicalActiveSql(legacy));
+
+  // A newer active attempt of the same guest at another exam.
+  const other = await publishUniqueFullExam(
+    serviceDb,
+    createTestRecording(),
+    `Legacy ${randomUUID().slice(0, 8)} Nachbar`,
+  );
+  const started = await startFor(depsNow(), created.token, other.slug);
+  if (!started.ok || started.result.outcome !== 'accepted') {
+    throw new Error(`start: ${JSON.stringify(started)}`);
+  }
+  const otherId = started.result.attemptId;
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId: otherId,
+    questionId: 'hoeren-1',
+    optionId: fullWrongOf('hoeren-1'),
+    revision: 1,
+  });
+  expect(saved.ok).toBe(true);
+  const otherVersion = await version(other.slug);
+  expect(otherVersion.versionId).not.toBe(legacy.versionId);
+
+  const before = snapshotOf_(legacy.id, otherId);
+  const writes = guestWrites(sessionId);
+  expect(writes).toMatchObject({ attempts: 2, starts: 2, results: 0 });
+
+  const { context, page } = await browserOf(browser, created.token);
+  const shell = page.getByTestId('training-shell');
+
+  // The old Hören address opens the legacy attempt, not the newer one.
+  await page.goto('/practice');
+  await page.waitForURL(`**${attemptUrl(SLUG, legacy.id)}`);
+  await expect(shell).toHaveAttribute('data-attempt-id', legacy.id);
+  await expect(
+    optionIn(card(page, 'hoeren-1'), fullKeyOf('hoeren-1')),
+  ).toBeChecked();
+
+  // The old Lesen address opens the Lesen of the same attempt.
+  await page.goto('/practice/lesen');
+  await page.waitForURL(`**${attemptLesenUrl(SLUG, legacy.id)}`);
+  await expect(shell).toHaveAttribute('data-attempt-id', legacy.id);
+  await expect(page.getByTestId('reading-text')).toBeVisible();
+  await expect(
+    optionIn(card(page, 'lesen-1'), fullKeyOf('lesen-1')),
+  ).toBeChecked();
+  await context.close();
+
+  // No start, no new attempt; the legacy attempt keeps its version, run and
+  // answers, and the attempt of the other exam is exactly as stored.
+  expect(guestWrites(sessionId)).toEqual(writes);
+  expect(
+    (await readAttempts(sessionId)).map((attempt) => attempt.status),
+  ).toEqual(['active', 'active']);
+  const after = snapshotOf_(legacy.id, otherId);
+  expect(after[otherId]).toEqual(before[otherId]);
+  const kept = before[legacy.id];
+  const now = after[legacy.id];
+  expect(now?.attempt).toMatchObject({
+    exam_id: legacy.examId,
+    exam_version_id: legacy.versionId,
+    status: 'active',
+    scope: 'full-exam',
+  });
+  expect(now?.run).toEqual(kept?.run);
+  expect(now?.answers).toEqual(kept?.answers);
+  expect(now?.events).toEqual(['start']);
+  expect(after[otherId]?.attempt).toMatchObject({
+    exam_version_id: otherVersion.versionId,
+    status: 'active',
+  });
 });

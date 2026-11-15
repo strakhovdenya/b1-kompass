@@ -22,6 +22,7 @@ import {
   newGuest,
   readAnswerRows,
   readAttempts,
+  readEventKinds,
   readResults,
   readRunRows,
   repeatFor,
@@ -36,16 +37,19 @@ import {
   ensureConfirmedTestProfile,
   fullKeyOf,
   fullWrongOf,
+  publishNextFullVersion,
+  variantOf,
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
+  attemptIdOf,
   attemptLesenUrl,
   attemptUrl,
   card,
   expectStatus,
   optionIn,
 } from './support/guest-browser';
-import { historicalCompletionSql } from './support/legacy-attempt';
+import { historicalCompletionSql, snapshotSql } from './support/legacy-attempt';
 import { goToStep } from './support/release';
 import { psql, psqlJson, quote, sqlRunnerAs } from './support/sql';
 
@@ -1244,4 +1248,141 @@ test('repeat SQL source version and normal timed full starts coexist', async () 
     ok: true,
     result: { outcome: 'conflict', attemptId: examId },
   });
+});
+
+// Two exams of one guest (#84). The later version of B marks every prompt,
+// replaces the task the source skipped by one of its own and moves the key of
+// the task the source got wrong to the option the guest chose there: by the
+// key of v2 that task would be no error at all.
+const PINNED_PLAN: Plan = {
+  'hoeren-10': 'wrong',
+  'hoeren-18': 'skip',
+  'lesen-12': 'wrong',
+  'lesen-25': 'skip',
+};
+const PINNED_REPEAT = ['hoeren-10', 'hoeren-18', 'lesen-12', 'lesen-25'];
+const PINNED_CONTEXT = ['hoeren-11', 'hoeren-19', 'hoeren-20'];
+const NEXT_MARKER = '(B Version 2)';
+const NEXT_ONLY = 'lesen-25-neu';
+const NEXT_MATERIAL = variantOf(FULL_PILOT, {
+  marker: NEXT_MARKER,
+  replace: { from: 'lesen-25', to: NEXT_ONLY },
+  rekey: 'hoeren-10',
+});
+
+test('repeat of B stays pinned to source version after new publication', async ({
+  browser,
+}) => {
+  const examA = await newExam();
+  const examB = await newExam();
+  const guest = await newGuest(depsNow());
+  // An active attempt of A with answers to tasks of the same ids.
+  const idA = await started(guest, examA.slug);
+  await answer(guest, idA, ['hoeren-10', 'lesen-12'], { 'lesen-12': 'wrong' });
+  const sourceId = await completedSource(guest, examB, PINNED_PLAN);
+  const v2 = await publishNextFullVersion(
+    serviceDb,
+    createTestRecording(),
+    { slug: examB.slug, title: 'Repeat test' },
+    NEXT_MATERIAL,
+  );
+  expect(v2).not.toBe(examB.versionId);
+  expect((await latestVersionOf(examB.slug))?.versionId).toBe(v2);
+  expect(NEXT_MATERIAL.keys['hoeren-10']).toBe(fullWrongOf('hoeren-10'));
+  const storedOf = () => psqlJson<unknown>(snapshotSql([idA, sourceId]));
+  const before = storedOf();
+  const counts = countsOf(guest);
+
+  // The review of B/v1 starts the repeat.
+  const { context, page } = await browserOf(browser, guest);
+  await page.goto(attemptUrl(examB.slug, sourceId));
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await page.getByTestId('repeat-errors').click();
+  await page.waitForURL(
+    (url) =>
+      url.pathname.includes('/attempts/') && !url.pathname.includes(sourceId),
+  );
+  const repeatId = attemptIdOf(page);
+  expect(page.url()).toContain(`/practice/${examB.slug}/attempts/`);
+  expect([idA, sourceId]).not.toContain(repeatId);
+
+  // It is pinned to B and to the version of its source, and holds exactly the
+  // errors and skips of that source.
+  const [run] = await readRunRows(repeatId);
+  expect(run).toMatchObject({
+    mode: 'training',
+    purpose: 'error-repeat',
+    selection: 'all',
+    source_attempt_id: sourceId,
+    assignment: { versionId: examB.versionId, questionIds: PINNED_REPEAT },
+  });
+  expect(versionOfAttempt(repeatId)).toBe(examB.versionId);
+  expect(
+    psqlJson<unknown>(`select json_build_object('exam', exam_id,
+      'scope', scope, 'status', status)
+      from public.attempts where id = ${quote(repeatId)}`),
+  ).toEqual({ exam: examB.examId, scope: 'short-set', status: 'active' });
+  expect(await readEventKinds(repeatId)).toEqual(['start']);
+  expect(countsOf(guest)).toMatchObject({
+    attempts: counts.attempts + 1,
+    runs: counts.runs + 1,
+    commands: counts.commands + 1,
+    results: counts.results,
+  });
+
+  // The screen and the projection show v1 only; the neighbours of the groups
+  // are context without controls.
+  await expect(card(page, 'hoeren-10')).toBeVisible();
+  const neighbour = page.getByTestId('context-card-hoeren-11');
+  await expect(neighbour).toBeVisible();
+  await expect(neighbour.locator('input')).toHaveCount(0);
+  await expect(neighbour.getByTestId('save-status')).toHaveCount(0);
+  expect(await page.content()).not.toContain(NEXT_MARKER);
+  await page.goto(attemptLesenUrl(examB.slug, repeatId));
+  await expect(card(page, 'lesen-12')).toBeVisible();
+  const lesenHtml = await page.content();
+  expect(lesenHtml).not.toContain(NEXT_MARKER);
+  expect(lesenHtml).not.toContain(NEXT_ONLY);
+  await context.close();
+  const practice = await pageOf(guest, examB, repeatId);
+  expect(practice.versionId).toBe(examB.versionId);
+  expect(practice.questions.map((item) => item.id)).toEqual(PINNED_REPEAT);
+  expect(practice.context.map((item) => item.questionId)).toEqual(
+    PINNED_CONTEXT,
+  );
+  const shown = JSON.stringify(practice);
+  expect(shown).not.toContain(NEXT_MARKER);
+  expect(shown).not.toContain(NEXT_ONLY);
+
+  // A neighbour and the task only v2 has take no answer.
+  for (const questionId of ['hoeren-11', NEXT_ONLY]) {
+    const saved = await saveAnswer(depsNow(), guest.token, {
+      attemptId: repeatId,
+      questionId,
+      optionId: 'a',
+      revision: 1,
+    });
+    expect(saved).toEqual({ ok: false, error: 'option-not-allowed' });
+  }
+  expect(await readAnswerRows(repeatId)).toEqual([]);
+
+  // Graded by the key of v1: the key of v2 would call hoeren-10 wrong.
+  await answer(guest, repeatId, PINNED_REPEAT);
+  const review = await complete(guest, repeatId);
+  expect(review).toMatchObject({
+    scope: 'short-set',
+    showsLevel: false,
+    score: 4,
+    maxScore: 4,
+    level: null,
+  });
+  expect(review.items.map((item) => item.questionId)).toEqual(PINNED_REPEAT);
+  const stored = (await readResults(repeatId)) as { score: number }[];
+  expect(stored).toHaveLength(1);
+  expect(stored[0]).toMatchObject({ score: 4, max_score: 4 });
+
+  // The source and the attempt of A are as they were.
+  expect(storedOf()).toEqual(before);
+  expect(versionOfAttempt(idA)).toBe(examA.versionId);
+  expect((await activeOf(guest)).map((item) => item.id)).toEqual([idA]);
 });
