@@ -184,6 +184,26 @@ export const readAttemptScope = async (attemptId: string): Promise<string> => {
   return data.scope;
 };
 
+export interface AttemptPin {
+  exam_id: string;
+  exam_version_id: string;
+  status: string;
+  scope: string;
+  progress: Record<string, unknown> | null;
+}
+
+// What an attempt is pinned to, as stored: its exam, its version, its scope
+// and the place the guest left.
+export const readAttemptPin = async (attemptId: string): Promise<AttemptPin> => {
+  const { data, error } = await serviceDb
+    .from('attempts')
+    .select('exam_id, exam_version_id, status, scope, progress')
+    .eq('id', attemptId)
+    .single<AttemptPin>();
+  if (error) throw error;
+  return data;
+};
+
 export interface RawVersionInput {
   slug: string;
   content: unknown;
