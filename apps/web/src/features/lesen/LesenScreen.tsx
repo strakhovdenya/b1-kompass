@@ -134,7 +134,8 @@ export const LesenScreen = ({
   const tPractice = useTranslations('practice');
   const lesen = selectLesenQuestions(questions);
   const training = useTraining();
-  const { pending, choose, retry, readProgress, reportProgress } = training;
+  const { pending, choose, retry, isClosed, readProgress, reportProgress } =
+    training;
   const [stored] = useState(() => readProgress()?.lesen ?? null);
   const [index, setIndex] = useState(() =>
     Math.max(
@@ -367,6 +368,7 @@ export const LesenScreen = ({
                   choice?.optionId ?? selections[question.id] ?? null
                 }
                 status={choice?.status}
+                isClosed={isClosed}
                 onChoose={(optionId) => choose(question.id, optionId)}
                 onRetry={() => retry(question.id)}
               />

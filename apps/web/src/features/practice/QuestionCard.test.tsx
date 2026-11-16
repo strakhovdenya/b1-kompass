@@ -22,13 +22,18 @@ const question: ExamQuestion = {
   ],
 };
 
-const render = (initialOptionId: string | null, isDictionaryOn = false) =>
+const render = (
+  initialOptionId: string | null,
+  isDictionaryOn = false,
+  isClosed?: boolean,
+) =>
   renderToStaticMarkup(
     <NextIntlClientProvider locale="en" messages={messages}>
       <DictionaryActiveContext.Provider value={isDictionaryOn}>
         <QuestionCard
           question={question}
           selectedOptionId={initialOptionId}
+          isClosed={isClosed}
           onChoose={() => undefined}
         />
       </DictionaryActiveContext.Provider>
@@ -46,7 +51,28 @@ const labelTexts = (html: string): string[] =>
     )
     .filter((text) => text.trim() !== '');
 
+const radios = (html: string): string[] =>
+  html.match(/<input[^>]*type="radio"[^>]*>/g) ?? [];
+
 describe('QuestionCard', () => {
+  it('closed card disables options and keeps choice', () => {
+    const inputs = radios(render('b', false, true));
+    expect(inputs).toHaveLength(2);
+    for (const input of inputs) expect(input).toContain('disabled=""');
+    const checked = inputs.filter((input) => input.includes('checked=""'));
+    expect(checked).toHaveLength(1);
+    expect(checked[0]).toContain('value="b"');
+  });
+
+  it('open card keeps options enabled', () => {
+    const inputs = radios(render('b'));
+    expect(inputs).toHaveLength(2);
+    for (const input of inputs) expect(input).not.toContain('disabled=""');
+    expect(inputs.filter((input) => input.includes('checked=""'))).toHaveLength(
+      1,
+    );
+  });
+
   it('renders untrusted material as text, never as markup', () => {
     const html = render(null);
     expect(html).not.toContain('<img');

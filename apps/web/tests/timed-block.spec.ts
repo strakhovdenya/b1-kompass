@@ -4,6 +4,7 @@ import type {
   APIRequestContext,
   Browser,
   BrowserContext,
+  Locator,
   Page,
 } from '@playwright/test';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
@@ -1055,6 +1056,42 @@ test('expired timed block distinguishes unconfirmed local answers', async ({
   expect(results[0]).toMatchObject({ score: 1, max_score: 20 });
   await page.getByTestId('result-check').click();
   await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await context.close();
+});
+
+// Every radio of the cards on screen, of one task or of all of them.
+const radiosOf = (scope: Locator) => scope.locator('input[type="radio"]');
+
+const expectAllDisabled = async (scope: Locator) => {
+  const inputs = radiosOf(scope);
+  expect(await inputs.count()).toBeGreaterThan(0);
+  for (const input of await inputs.all()) await expect(input).toBeDisabled();
+};
+
+test('expired timed block disables question cards', async ({ browser }) => {
+  const { started, context, page, first } = await openTimedPage(browser);
+  await expect(radiosOf(first).first()).toBeEnabled();
+  await waitPast(started.deadlineMs);
+  await expect(page.getByTestId('timed-expired')).toBeVisible({
+    timeout: 15_000,
+  });
+  await expectAllDisabled(page.locator('[data-testid^="question-card-"]'));
+  await expect(optionIn(first, fullKeyOf('hoeren-1'))).toBeChecked();
+  await context.close();
+});
+
+test('expired timed block disables unconfirmed card', async ({ browser }) => {
+  const { started, context, page, first } = await openTimedPage(browser);
+  await context.setOffline(true);
+  await optionIn(first, fullWrongOf('hoeren-1')).check();
+  await expectStatus(first, 'error');
+  await waitPast(started.deadlineMs);
+  await context.setOffline(false);
+  await expect(page.getByTestId('timed-expired')).toBeVisible({
+    timeout: 15_000,
+  });
+  await expectStatus(first, 'refused');
+  await expectAllDisabled(first);
   await context.close();
 });
 

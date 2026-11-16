@@ -372,11 +372,13 @@ export const TrainingShell = ({
     [initialSelections, selections],
   );
 
+  const isClosed = CLOSED_PHASES.includes(submission.phase);
   const state: TrainingState = useMemo(
     () => ({
       selections: shownSelections,
       pending,
       review,
+      isClosed,
       choose,
       retry,
       readProgress,
@@ -386,6 +388,7 @@ export const TrainingShell = ({
       shownSelections,
       pending,
       review,
+      isClosed,
       choose,
       retry,
       readProgress,
@@ -457,7 +460,7 @@ export const TrainingShell = ({
   });
   const total = trusted.summary?.totalAssigned ?? questions.length;
   const answered = total - left.skipped;
-  const isOpen = !CLOSED_PHASES.includes(submission.phase);
+  const isOpen = !isClosed;
   const activeClock = trusted.timer;
   const isTransition =
     isExam && isOpen && trusted.phase === 'transition' && activeClock !== null;

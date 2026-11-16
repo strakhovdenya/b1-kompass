@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import type {
   APIRequestContext,
   Browser,
+  Locator,
   Page,
   Request,
 } from '@playwright/test';
@@ -442,6 +443,127 @@ test('submission hook drives real accepted pending and completed browser flow', 
   expect(await readEventKinds(attemptId)).toEqual(['start', 'finish']);
   await context.close();
 });
+
+// An accepted submission whose result cannot be computed yet (the version
+// misses one key), opened again at its address. Two tasks are answered: one
+// confirmed, one lost with its failed save, and both are frozen.
+const openPendingAttempt = async (browser: Browser) => {
+  const slug = `test-submit-pending-${randomUUID().slice(0, 8)}`;
+  const { 'lesen-7': missing, ...partialKeys } = FULL_PILOT.keys;
+  if (!missing) throw new Error('lesen-7 has no key');
+  await insertRawVersion({
+    slug,
+    content: FULL_PILOT.content,
+    keys: partialKeys,
+  });
+  const created = await newGuest(depsNow());
+  const context = await browser.newContext();
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: created.token, url: FULL_ORIGIN },
+  ]);
+  const page = await context.newPage();
+  await page.goto(`/practice/${slug}`);
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  const { attemptId } = await activeAttemptOf(context);
+  const first = card(page, 'hoeren-1');
+  await optionIn(first, fullKeyOf('hoeren-1')).check();
+  await expectStatus(first, 'saved');
+  await finishInBrowser(page);
+  await expect(page.getByTestId('submission-accepted')).toHaveAttribute(
+    'data-phase',
+    'accepted',
+  );
+  await page.goto(attemptUrl(slug, attemptId));
+  await expect(page.getByTestId('submission-accepted')).toHaveAttribute(
+    'data-phase',
+    'accepted',
+  );
+  return { context, page, attemptId, first };
+};
+
+test('pending result page shows read-only question cards', async ({
+  browser,
+}) => {
+  const { context, page, attemptId, first } = await openPendingAttempt(browser);
+  const frozen = (await readSubmission(attemptId)).frozen_answers;
+  expect(frozen).toEqual({
+    'hoeren-1': { optionId: fullKeyOf('hoeren-1'), revision: 1 },
+  });
+  const inputs = page.locator('[data-testid^="question-card-"] input');
+  expect(await inputs.count()).toBeGreaterThan(0);
+  for (const input of await inputs.all()) await expect(input).toBeDisabled();
+  await expect(first.locator('input:checked')).toHaveCount(1);
+  await expect(optionIn(first, fullKeyOf('hoeren-1'))).toBeChecked();
+  await context.close();
+});
+
+test('pending result page ignores option clicks', async ({ browser }) => {
+  const { context, page, attemptId, first } = await openPendingAttempt(browser);
+  const before = await readAnswerRows(attemptId);
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/answer')) requests.push(request.url());
+  });
+  const other = optionIn(first, fullWrongOf('hoeren-1'));
+  await expect(other).not.toBeChecked();
+  // A real mouse click on the option row (Playwright refuses to act on a
+  // disabled control, and force is not used): it must do nothing.
+  const row = await first
+    .locator('label')
+    .filter({ has: page.locator(`input[value="${fullWrongOf('hoeren-1')}"]`) })
+    .boundingBox();
+  if (!row) throw new Error('option row has no box');
+  await page.mouse.click(row.x + row.width / 2, row.y + row.height / 2);
+  await expect(other).not.toBeChecked();
+  await expect(optionIn(first, fullKeyOf('hoeren-1'))).toBeChecked();
+  expect(requests).toEqual([]);
+  expect(await readAnswerRows(attemptId)).toEqual(before);
+  await context.close();
+});
+
+test('open attempt keeps question cards answerable', async ({ browser }) => {
+  const slug = `test-open-answerable-${randomUUID().slice(0, 8)}`;
+  await insertRawVersion({
+    slug,
+    content: FULL_PILOT.content,
+    keys: FULL_PILOT.keys,
+  });
+  const created = await newGuest(depsNow());
+  const context = await browser.newContext();
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: created.token, url: FULL_ORIGIN },
+  ]);
+  const page = await context.newPage();
+  await page.goto(`/practice/${slug}`);
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  const { attemptId } = await activeAttemptOf(context);
+
+  const first = card(page, 'hoeren-1');
+  for (const input of await radiosIn(first).all()) {
+    await expect(input).toBeEnabled();
+  }
+  await optionIn(first, fullKeyOf('hoeren-1')).check();
+  await expectStatus(first, 'saved');
+  // Away and back: the answer is still open to change.
+  await page.getByTestId('go-to-question-2').click();
+  await expect(card(page, 'hoeren-2')).toBeVisible();
+  await page.getByTestId('go-to-question-1').click();
+  const again = card(page, 'hoeren-1');
+  await expect(optionIn(again, fullKeyOf('hoeren-1'))).toBeChecked();
+  for (const input of await radiosIn(again).all()) {
+    await expect(input).toBeEnabled();
+  }
+  await optionIn(again, fullWrongOf('hoeren-1')).check();
+  await expectStatus(again, 'saved');
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': fullWrongOf('hoeren-1'),
+  });
+  await context.close();
+});
+
+const radiosIn = (scope: Locator) => scope.locator('input[type="radio"]');
 
 test('submission controls cannot reopen accepted state or reuse stale confirmation', async ({
   browser,

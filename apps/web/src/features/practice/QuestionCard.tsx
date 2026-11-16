@@ -28,6 +28,9 @@ interface QuestionCardProps {
   selectedOptionId: string | null;
   // Without a status the selected answer is a confirmed one.
   status?: SaveStatus;
+  // The attempt is closed: the options stay visible, the choice stays
+  // marked, and nothing can be chosen.
+  isClosed?: boolean;
   onChoose: (optionId: string) => void;
   onRetry?: () => void;
 }
@@ -38,6 +41,7 @@ export const QuestionCard = ({
   question,
   selectedOptionId,
   status,
+  isClosed = false,
   onChoose,
   onRetry,
 }: QuestionCardProps) => {
@@ -77,13 +81,16 @@ export const QuestionCard = ({
             aria-labelledby={labelId}
             name={labelId}
             value={selectedOptionId ?? ''}
-            onChange={(event) => onChoose(event.target.value)}
+            onChange={(event) => {
+              if (!isClosed) onChoose(event.target.value);
+            }}
             sx={{ gap: 1, flexWrap: 'nowrap' }}
           >
             {question.options.map((option) => (
               <FormControlLabel
                 key={option.id}
                 value={option.id}
+                disabled={isClosed}
                 control={<Radio sx={{ p: '12px' }} />}
                 slotProps={{
                   typography: {
@@ -92,7 +99,7 @@ export const QuestionCard = ({
                     sx: { flex: 1, minWidth: 0, py: 0.5, pr: 1 },
                   },
                 }}
-                sx={optionSx(option.id === selectedOptionId)}
+                sx={optionSx(option.id === selectedOptionId, isClosed)}
                 label={
                   <span lang="de">
                     <strong>{option.id}</strong>{' '}
@@ -168,7 +175,7 @@ export const ContextCard = ({ item }: ContextCardProps) => {
 // One answer row: a 48 px radio with the letter and the text beside it. The
 // chosen row has a soft fill and a stronger frame besides the checked radio,
 // so the choice does not rest on colour alone.
-const optionSx = (isSelected: boolean): SxProps<Theme> => ({
+const optionSx = (isSelected: boolean, isClosed: boolean): SxProps<Theme> => ({
   m: 0,
   width: '100%',
   minHeight: 56,
@@ -179,6 +186,11 @@ const optionSx = (isSelected: boolean): SxProps<Theme> => ({
   borderColor: isSelected ? 'primary.main' : 'grey.300',
   bgcolor: (theme) =>
     isSelected ? alpha(theme.palette.primary.main, 0.1) : 'transparent',
+  // A disabled label keeps the full-contrast text and the frame of the
+  // chosen row; the radio itself shows it is disabled.
+  '& .MuiFormControlLabel-label.Mui-disabled': {
+    color: isClosed ? 'text.primary' : undefined,
+  },
   '&:has(.Mui-focusVisible)': { borderColor: 'primary.dark' },
 });
 
