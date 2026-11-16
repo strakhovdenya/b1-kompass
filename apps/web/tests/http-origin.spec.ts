@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { expect, request, test } from '@playwright/test';
 import type { APIRequestContext, APIResponse } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
@@ -10,8 +11,16 @@ import {
   serviceDb,
   startBody,
 } from './support/db';
-import { FULL_EXAM } from './support/full-exam';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  fullKeyOf,
+  publishExamPair,
+} from './support/full-exam';
+import { createTestRecording } from './support/global-setup';
+import { confirmationOf, postCommand } from './support/guest-browser';
 import { PAIR_EXAM } from './support/pair-exam';
+import { examAttemptOwners, guestRows, sqlRunnerAs } from './support/sql';
 
 // The start Route Handler on each of the three e2e servers. Every server
 // trusts exactly its own APP_ORIGIN: a missing Origin, another site and the
@@ -266,5 +275,154 @@ test('invalid method content type oversized body and extra fields are refused', 
     });
   } finally {
     await client.dispose();
+  }
+});
+
+// The second exam (#85) ------------------------------------------------------
+//
+// CSRF on its own: the guest, the cookie, the attempt and the body are all
+// valid, only the Origin is not. The victim holds an attempt of exam B and a
+// free slot of exam A, so an accepted start would write. Every refused body
+// is sent again with the trusted Origin afterwards and is accepted: nothing
+// but the Origin refused it.
+
+const otherOptionOf = (questionId: string): string => {
+  const question = FULL_PILOT.content.questions.find(
+    (item) => item.id === questionId,
+  );
+  const first = fullKeyOf(questionId);
+  const other = question?.options.find((option) => option.id !== first);
+  if (!other) throw new Error(`no other option for ${questionId}`);
+  return other.id;
+};
+
+test('wrong origin is refused for second exam commands', async ({
+  request,
+}) => {
+  const { examA, examB } = await publishExamPair({
+    db: serviceDb,
+    owner: sqlRunnerAs('owner'),
+    audioA: createTestRecording(587),
+    audioB: createTestRecording(593),
+  });
+  const examIds = [examA.examId, examB.examId];
+
+  for (const server of SERVERS) {
+    const where = server.origin;
+    const victim = await createGuest();
+    const trusted = { token: victim.token, server: server.origin };
+    const send = (pathname: string, body: unknown) =>
+      postCommand(request, pathname, body, trusted);
+
+    // The victim really works on this server: an attempt of B with an answer.
+    const started = await send(
+      START_PATH,
+      await startBody(examB.slug, { expectedVersionId: examB.versionId }),
+    );
+    expect(started.status, where).toBe(200);
+    const attemptId = (started.body.result as { attemptId: string }).attemptId;
+    const answerPath = `/api/attempts/${attemptId}/answer`;
+    const submitPath = `/api/attempts/${attemptId}/submit`;
+    const first = await send(answerPath, {
+      questionId: 'hoeren-1',
+      optionId: fullKeyOf('hoeren-1'),
+      revision: 1,
+    });
+    expect(first.status, where).toBe(200);
+    const confirmation = await confirmationOf(request, attemptId, trusted);
+
+    // The three commands of the attacker. The answer rewrites a stored
+    // answer, so the confirmation of the submission stays the valid one.
+    const startOfA = await startBody(examA.slug, {
+      expectedVersionId: examA.versionId,
+    });
+    const answer = {
+      questionId: 'hoeren-1',
+      optionId: otherOptionOf('hoeren-1'),
+      revision: 2,
+    };
+    const submit = {
+      commandId: randomUUID(),
+      answers: [],
+      confirmation,
+    };
+    const commands: [string, string, unknown][] = [
+      ['start', START_PATH, startOfA],
+      ['answer', answerPath, answer],
+      ['submit', submitPath, submit],
+    ];
+
+    const before = guestRows(victim.sessionId);
+    const owners = examAttemptOwners(examIds);
+    expect(before.attempts).toHaveLength(1);
+    expect(before.attempts[0]?.answers).toHaveLength(1);
+    expect(before.attempts[0]?.result).toBeNull();
+
+    const siblings = SERVERS.filter((other) => other !== server).map(
+      (other) => other.origin,
+    );
+    const port = new URL(server.origin).port;
+    const origins: (string | null)[] = [
+      null,
+      'null',
+      'https://evil.example',
+      ...siblings,
+      // The same machine under another name, scheme or spelling: the rule is
+      // the exact configured string, not the host of the request.
+      `http://127.0.0.1:${port}`,
+      `https://localhost:${port}`,
+      `${server.origin}/`,
+      `${server.origin}.evil.example`,
+      server.origin.toUpperCase(),
+    ];
+    for (const origin of origins) {
+      for (const [name, pathname, body] of commands) {
+        const reply = await postCommand(request, pathname, body, {
+          token: victim.token,
+          server: server.origin,
+          origin,
+          // A trusted Referer does not stand in for the Origin.
+          headers: { referer: `${server.origin}/exams` },
+        });
+        const label = `${where} ${name} origin ${String(origin)}`;
+        expect(reply.status, label).toBe(403);
+        expect(reply.body, label).toEqual({
+          ok: false,
+          failure: 'origin-refused',
+        });
+        expect(reply.cacheControl, label).toBe('private, no-store');
+      }
+    }
+    expect(guestRows(victim.sessionId), where).toEqual(before);
+    expect(examAttemptOwners(examIds), where).toEqual(owners);
+
+    // The control: the very same bodies with the Origin this server trusts.
+    const answered = await send(answerPath, answer);
+    expect(answered.status, where).toBe(200);
+    expect(answered.body, where).toMatchObject({ ok: true });
+    const startedA = await send(START_PATH, startOfA);
+    expect(startedA.status, where).toBe(200);
+    expect(startedA.body, where).toMatchObject({
+      ok: true,
+      result: { outcome: 'accepted' },
+    });
+    const submitted = await send(submitPath, submit);
+    expect(submitted.status, where).toBe(200);
+    expect(submitted.body, where).toMatchObject({ ok: true });
+
+    const after = guestRows(victim.sessionId);
+    expect(after.attempts, where).toHaveLength(2);
+    const ofB = after.attempts.find((item) => item.attempt.id === attemptId);
+    expect(ofB?.attempt.status, where).toBe('completed');
+    expect(ofB?.result, where).not.toBeNull();
+    expect(ofB?.answers, where).toMatchObject([
+      { question_id: 'hoeren-1', option_id: answer.optionId, revision: 2 },
+    ]);
+    const ofA = after.attempts.find((item) => item.attempt.id !== attemptId);
+    expect(ofA?.attempt, where).toMatchObject({
+      exam_id: examA.examId,
+      exam_version_id: examA.versionId,
+      status: 'active',
+    });
   }
 });

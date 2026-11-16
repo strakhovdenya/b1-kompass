@@ -9,6 +9,7 @@ import type {
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import type { TimingSettings } from '../../../scripts/manage-timing-profile';
 import {
+  getAttemptReview,
   readAttemptPage,
   readAttemptStatus,
   saveAnswer,
@@ -26,19 +27,26 @@ import { beginLesen, readAttemptRun } from '../src/server/attempts/read';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import {
+  audioObjectPathOf,
+  completedOn,
   createPublicClient,
   depsNow,
   latestVersionOf,
   newGuest,
   readAnswerRows,
   serviceDb,
+  startedOn,
 } from './support/db';
+import { readTestSupabaseEnv } from './support/env';
 import {
   FULL_PILOT,
   FULL_TIMING,
   FULL_TRACK_ID,
+  PAIR_A_MARKER,
   ensureConfirmedTestProfile,
   fullKeyOf,
+  fullWrongOf,
+  publishExamPair,
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
@@ -47,11 +55,18 @@ import {
   attemptLesenUrl,
   attemptUrl,
   card,
+  SIGNED_AUDIO,
+  answerMarksOf,
+  expectNone,
   expectStatus,
   optionIn,
+  postCommand,
+  readPage,
 } from './support/guest-browser';
+import type { PageReply } from './support/guest-browser';
 import {
   examRunTimes,
+  guestRows,
   installM2Fixtures,
   psql,
   quote,
@@ -618,4 +633,244 @@ test('closed full audio cannot restart or reveal future material', async ({
   expect(refused.status()).toBe(409);
   expectNoLesen(await page.content(), 'closed hoeren page');
   await context.close();
+});
+
+// The library and the review across guests (#85) ------------------------------
+//
+// Two guests with states of their own at both exams read the same addresses
+// in turn. What one of them gets never holds the attempts of the other, no
+// answer goes into a shared cache, the key shows only in the review of the
+// owner's completed attempt, and the address of a recording comes only from
+// the audio command of the owner.
+
+const KEY_MARKS = [
+  'correctOptionId',
+  'correct_option_id',
+  'answer_keys',
+  'review-solution',
+];
+
+const hasAny = (text: string, marks: readonly string[]): boolean =>
+  marks.some((mark) => text.includes(mark));
+
+test('catalog and review exclude cross guest keys audio and cache leaks', async ({
+  request,
+}) => {
+  // Some fifty real page and command requests of two guests in turn.
+  test.setTimeout(120_000);
+  const { examA, examB } = await publishExamPair({
+    db: serviceDb,
+    owner,
+    audioA: createTestRecording(613),
+    audioB: createTestRecording(617),
+  });
+  const x = await newGuest(depsNow());
+  const y = await newGuest(depsNow());
+  const asX = { token: x.token };
+  const asY = { token: y.token };
+  const saved = async (
+    token: string,
+    attemptId: string,
+    questionId: string,
+    optionId: string,
+  ) => {
+    const reply = await postCommand(
+      request,
+      `/api/attempts/${attemptId}/answer`,
+      { questionId, optionId, revision: 1 },
+      { token },
+    );
+    expect(reply.status, `${questionId} of ${attemptId}`).toBe(200);
+  };
+
+  // X: active at A, a result at B. Y: active at B, a result at A.
+  const xDone = await startedOn(x.token, examB.slug);
+  await saved(x.token, xDone, 'hoeren-2', fullWrongOf('hoeren-2'));
+  await completedOn(x.token, xDone);
+  const xActive = await startedOn(x.token, examA.slug);
+  await saved(x.token, xActive, 'hoeren-1', fullKeyOf('hoeren-1'));
+  const yDone = await startedOn(y.token, examA.slug);
+  await completedOn(y.token, yDone);
+  const yActive = await startedOn(y.token, examB.slug);
+  await saved(y.token, yActive, 'hoeren-1', fullWrongOf('hoeren-1'));
+  const xIds = [xActive, xDone];
+  const yIds = [yActive, yDone];
+  const xAnswerMarks = [
+    ...answerMarksOf({ 'hoeren-1': fullKeyOf('hoeren-1') }),
+    ...answerMarksOf({ 'hoeren-2': fullWrongOf('hoeren-2') }),
+  ];
+
+  // The recording: each owner gets the signed address of the object of its
+  // own exam from the audio command; the other guest gets none.
+  const pathA = await audioObjectPathOf(examA.versionId);
+  const pathB = await audioObjectPathOf(examB.versionId);
+  expect(pathA).not.toBe(pathB);
+  const audioOf = (attemptId: string, token: string) =>
+    postCommand(
+      request,
+      `/api/attempts/${attemptId}/audio`,
+      { trackId: FULL_TRACK_ID },
+      { token },
+    );
+  const xAudio = JSON.stringify((await audioOf(xActive, x.token)).body);
+  const yAudio = JSON.stringify((await audioOf(yActive, y.token)).body);
+  // Compared as booleans: a failure never prints a signed address.
+  const signedFor = (reply: string, objectPath: string): boolean =>
+    reply.includes(`${SIGNED_AUDIO}/exam-sources/${objectPath}`);
+  expect(signedFor(xAudio, pathA), 'X gets the recording of A').toBe(true);
+  expect(xAudio.includes(pathB), 'X gets nothing of B').toBe(false);
+  expect(signedFor(yAudio, pathB), 'Y gets the recording of B').toBe(true);
+  expect(yAudio.includes(pathA), 'Y gets nothing of A').toBe(false);
+  const foreignAudio = await audioOf(xActive, y.token);
+  expect(foreignAudio.status).toBe(404);
+  expectNone(
+    JSON.stringify(foreignAudio.body),
+    [SIGNED_AUDIO, pathA, '"url"'],
+    'foreign audio',
+  );
+
+  const stored = () => ({
+    x: guestRows(x.guest.sessionId),
+    y: guestRows(y.guest.sessionId),
+  });
+  const before = stored();
+  expect(before.x.attempts).toHaveLength(2);
+  expect(before.y.attempts).toHaveLength(2);
+
+  const { secretKey } = readTestSupabaseEnv();
+  const firstPrompt = FULL_PILOT.content.questions[0]?.prompt ?? '';
+  expect(firstPrompt).not.toBe('');
+  const neverInCatalog = [
+    ...KEY_MARKS,
+    SIGNED_AUDIO,
+    'token=',
+    pathA,
+    pathB,
+    'exam_version_audio',
+    'SUPABASE_SECRET_KEY',
+    PAIR_A_MARKER,
+    firstPrompt,
+  ];
+  const expectPrivate = (reply: PageReply, where: string) => {
+    expect(reply.cacheControl, where).toContain('private');
+    expect(reply.cacheControl, where).toContain('no-store');
+    expect(reply.cacheControl, where).not.toMatch(/public|s-maxage/);
+    expect(reply.cacheMarks, where).toEqual([]);
+  };
+
+  // The library, read by X, then Y, then X again, as the page, as the RSC
+  // payload of a navigation and as its prefetch.
+  const transports: {
+    name: string;
+    rsc: boolean;
+    headers: Record<string, string>;
+    isFull: boolean;
+  }[] = [
+    { name: 'html', rsc: false, headers: {}, isFull: true },
+    { name: 'rsc', rsc: true, headers: {}, isFull: true },
+    {
+      name: 'prefetch',
+      rsc: true,
+      headers: { 'Next-Router-Prefetch': '1' },
+      isFull: false,
+    },
+  ];
+  for (const { name, rsc, headers, isFull } of transports) {
+    const read = (token: string) =>
+      readPage(request, '/exams', { token, rsc, headers });
+    const turns: [string, PageReply, string[], string[]][] = [
+      ['X', await read(x.token), xIds, yIds],
+      ['Y', await read(y.token), yIds, xIds],
+      ['X again', await read(x.token), xIds, yIds],
+    ];
+    for (const [who, reply, own, foreign] of turns) {
+      const where = `library ${name} of ${who}`;
+      expect(reply.status, where).toBe(200);
+      expectPrivate(reply, where);
+      if (rsc) expect(reply.contentType, where).toContain('text/x-component');
+      expectNone(reply.body, neverInCatalog, where);
+      // Its own check, so that a failure does not print the value.
+      expect(reply.body.includes(secretKey), `${where}: secret key`).toBe(
+        false,
+      );
+      expectNone(reply.body, foreign, where);
+      expectNone(reply.body, xAnswerMarks, where);
+      // A full answer is the guest's own library: both exams and both of
+      // its own states. So the absence above is not the absence of a page.
+      if (!isFull) continue;
+      expect(reply.body.length, where).toBeGreaterThan(100);
+      for (const mark of [examA.slug, examB.slug, ...own]) {
+        expect(reply.body, where).toContain(mark);
+      }
+    }
+  }
+
+  // The review: the key is on the page of the owner's completed attempt and
+  // nowhere else.
+  const ownReview = await readPage(request, attemptUrl(examB.slug, xDone), asX);
+  expect(ownReview.status).toBe(200);
+  expectPrivate(ownReview, 'own review');
+  expect(hasAny(ownReview.body, KEY_MARKS)).toBe(true);
+  expectNone(ownReview.body, [SIGNED_AUDIO, ...yIds], 'own review');
+  for (const rsc of [false, true]) {
+    const where = `own active ${rsc ? 'rsc' : 'html'}`;
+    const reply = await readPage(request, attemptUrl(examA.slug, xActive), {
+      ...asX,
+      rsc,
+    });
+    expect(reply.status, where).toBe(200);
+    expectPrivate(reply, where);
+    // The cards are rendered by the browser: the HTML has them, the RSC
+    // payload has their material and the answers as props.
+    if (!rsc) expect(reply.body, where).toContain('question-card-');
+    if (rsc) expect(reply.contentType, where).toContain('text/x-component');
+    expect(reply.body, where).toContain(`${firstPrompt} ${PAIR_A_MARKER}`);
+    expect(hasAny(reply.body, xAnswerMarks), where).toBe(true);
+    expectNone(reply.body, [...KEY_MARKS, SIGNED_AUDIO, ...yIds], where);
+  }
+  expect(
+    await getAttemptReview(depsNow(), x.token, { attemptId: xActive }),
+  ).toEqual({ ok: false, error: 'not-completed' });
+
+  // Y at the addresses of X, right after X read them.
+  const addressesOfX = [
+    attemptUrl(examB.slug, xDone),
+    attemptLesenUrl(examB.slug, xDone),
+    attemptUrl(examA.slug, xActive),
+    attemptLesenUrl(examA.slug, xActive),
+  ];
+  for (const pathname of addressesOfX) {
+    for (const rsc of [false, true]) {
+      const where = `${pathname} ${rsc ? 'rsc' : 'html'} for Y`;
+      await readPage(request, pathname, { ...asX, rsc });
+      const reply = await readPage(request, pathname, { ...asY, rsc });
+      if (!rsc) expect(reply.status, where).toBe(404);
+      expectPrivate(reply, where);
+      expectNone(
+        reply.body,
+        [
+          ...KEY_MARKS,
+          ...xAnswerMarks,
+          'question-card-',
+          SIGNED_AUDIO,
+          PAIR_A_MARKER,
+          firstPrompt,
+        ],
+        where,
+      );
+    }
+  }
+  expect(
+    await getAttemptReview(depsNow(), y.token, { attemptId: xDone }),
+  ).toEqual({ ok: false, error: 'attempt-not-found' });
+
+  // Y's own review of A shows its key and material, and nothing of X.
+  const reviewOfY = await readPage(request, attemptUrl(examA.slug, yDone), asY);
+  expect(reviewOfY.status).toBe(200);
+  expect(hasAny(reviewOfY.body, KEY_MARKS)).toBe(true);
+  expect(reviewOfY.body).toContain(PAIR_A_MARKER);
+  expectNone(reviewOfY.body, [...xIds, SIGNED_AUDIO], 'review of Y');
+
+  // Reading wrote nothing for either guest.
+  expect(stored()).toEqual(before);
 });

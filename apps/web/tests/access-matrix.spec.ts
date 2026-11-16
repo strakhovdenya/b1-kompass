@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   APIResponse,
   Browser,
@@ -7,8 +8,14 @@ import type {
   Page,
   Request,
 } from '@playwright/test';
+import { getAttemptReview } from '../src/server/attempts/attempts';
+import { preflightTimedStart } from '../src/server/attempts/start';
+import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import type { CreatedGuest } from '../src/server/guest-session/session';
-import { hashGuestToken } from '../src/server/guest-session/session';
+import {
+  hashGuestToken,
+  replaceGuestSession,
+} from '../src/server/guest-session/session';
 import {
   createPublicClient,
   depsNow,
@@ -17,6 +24,7 @@ import {
   readAnswerRows,
   readAnswers,
   readAttempts,
+  readAudioObject,
   readCommandRows,
   readEventKinds,
   readProgress,
@@ -24,35 +32,55 @@ import {
   readRunRows,
   readSession,
   readSessionByToken,
+  authenticatedJwt,
+  completedOn,
   countVersionKeys,
+  createAuthenticatedClient,
   readExamState,
   serviceDb,
+  shortGuest,
   startBody,
   startFor,
+  startedOn,
 } from './support/db';
+import {
+  TEST_GUEST_SESSIONS_PER_MINUTE,
+  readTestSupabaseEnv,
+} from './support/env';
 import {
   FULL_EXAM,
   FULL_PILOT,
   FULL_TRACK_ID,
+  PAIR_A_MARKER,
+  PAIR_REPLACED,
   fullKeyOf,
   fullWrongOf,
+  publishExamPair,
 } from './support/full-exam';
 import {
   CHOICE_URL,
+  FULL_ORIGIN,
   attemptLesenUrl,
   attemptUrl,
   card,
   expectStatus,
   goToHoeren,
+  SIGNED_AUDIO,
+  expectNone,
   goToLesen,
+  guestContextOf,
   optionIn,
   postCommand,
+  readPage,
   startBrowserGuest,
+  untilGuestExpired,
   tokenOf,
   continueThroughLibrary,
 } from './support/guest-browser';
 import { createTestRecording } from './support/global-setup';
 import {
+  examAttemptOwners,
+  guestRows,
   installM2Fixtures,
   psql,
   psqlJson,
@@ -1348,4 +1376,801 @@ test('public roles cannot publish or mutate owner material', async () => {
   }
 
   expect(await snapshot()).toEqual(before);
+});
+
+// Two exams and the library (#85) --------------------------------------------
+//
+// Guests of two independent full exams A and B, published by every test
+// under slugs of its own. Ownership is judged with the trusted Origin, so a
+// refusal is never the refusal of the Origin (that one is http-origin.spec).
+// Each refused request is paired with an accepted control of the same shape,
+// and every claim about the database is a re-read of whole rows.
+
+const REVIEW_MARKS = [...KEY_FIELDS, 'review-solution'];
+// The first task of both exams: its card in HTML and its prompt, which is
+// also in the RSC payload (the prompt of A only adds its marker).
+const FIRST_PROMPT = FULL_PILOT.content.questions[0]?.prompt ?? 'missing';
+const MATERIAL_MARKS = ['question-card-', PAIR_A_MARKER, FIRST_PROMPT];
+
+const publishPair = () =>
+  publishExamPair({
+    db: serviceDb,
+    owner: sqlRunnerAs('owner'),
+    audioA: createTestRecording(601),
+    audioB: createTestRecording(607),
+  });
+
+const expectPrivate = (cacheControl: string, where: string) => {
+  expect(cacheControl, where).toContain('no-store');
+  expect(cacheControl, where).not.toMatch(/public|s-maxage/);
+};
+
+// The three tests below send dozens of real requests and re-read whole rows
+// through psql after each group; the second one also waits for a guest term
+// to end by the database clock.
+const MATRIX_TIMEOUT_MS = 180_000;
+// Long enough for the guest to build its states on a slow runner before the
+// term ends; a guest that expires earlier fails its own controls.
+const EXPIRING_TERM_SECONDS = 45;
+
+test('foreign attempt slug and version are denied without mutation', async ({
+  request,
+}) => {
+  test.setTimeout(MATRIX_TIMEOUT_MS);
+  const { examA, examB } = await publishPair();
+  const examIds = [examA.examId, examB.examId];
+  const x = await newGuest(depsNow());
+  const y = await newGuest(depsNow());
+  const asX = { token: x.token };
+  const asY = { token: y.token };
+  const answerOf = (attemptId: string) => `/api/attempts/${attemptId}/answer`;
+  const saved = async (
+    token: string,
+    attemptId: string,
+    questionId: string,
+    optionId: string,
+  ) => {
+    const reply = await postCommand(
+      request,
+      answerOf(attemptId),
+      { questionId, optionId, revision: 1 },
+      { token },
+    );
+    expect(reply.status, `${questionId} of ${attemptId}`).toBe(200);
+  };
+
+  // X: a completed and an active attempt of A, nothing of B. Y: a completed
+  // attempt of A and an active one of B.
+  const xDone = await startedOn(x.token, examA.slug);
+  await saved(x.token, xDone, 'hoeren-1', fullWrongOf('hoeren-1'));
+  await completedOn(x.token, xDone);
+  const xActive = await startedOn(x.token, examA.slug);
+  await saved(x.token, xActive, 'hoeren-1', fullKeyOf('hoeren-1'));
+  const yDone = await startedOn(y.token, examA.slug);
+  await saved(y.token, yDone, 'hoeren-3', fullWrongOf('hoeren-3'));
+  await completedOn(y.token, yDone);
+  const yActive = await startedOn(y.token, examB.slug);
+  const yAnswers = {
+    'hoeren-1': fullWrongOf('hoeren-1'),
+    [PAIR_REPLACED]: fullKeyOf(PAIR_REPLACED),
+  };
+  for (const [questionId, optionId] of Object.entries(yAnswers)) {
+    await saved(y.token, yActive, questionId, optionId);
+  }
+  expect(new Set([xDone, xActive, yDone, yActive]).size).toBe(4);
+  const yMarks = [
+    ...answerMarkersOf(yAnswers),
+    ...answerMarkersOf({ 'hoeren-3': fullWrongOf('hoeren-3') }),
+  ];
+
+  // The fixtures are not empty: the owner's own pages carry what the
+  // foreign requests below must not get.
+  const ownActive = await readPage(
+    request,
+    attemptUrl(examB.slug, yActive),
+    asY,
+  );
+  expect(ownActive.status).toBe(200);
+  expect(ownActive.body).toContain('question-card-');
+  expect(ownActive.body).toContain(FIRST_PROMPT);
+  const ownActiveRsc = await readPage(
+    request,
+    attemptUrl(examB.slug, yActive),
+    { ...asY, rsc: true },
+  );
+  expect(ownActiveRsc.contentType).toContain('text/x-component');
+  expect(ownActiveRsc.body).toContain(FIRST_PROMPT);
+  expect(includesAny(ownActiveRsc.body, answerMarkersOf(yAnswers))).toBe(true);
+  expect(includesAny(ownActive.body, answerMarkersOf(yAnswers))).toBe(true);
+  expectNone(ownActive.body, REVIEW_MARKS, 'own active page');
+  const ownReview = await readPage(request, attemptUrl(examA.slug, yDone), asY);
+  expect(ownReview.status).toBe(200);
+  expect(includesAny(ownReview.body, REVIEW_MARKS)).toBe(true);
+  expect(ownReview.body).toContain(PAIR_A_MARKER);
+  const xOwn = await readPage(request, attemptUrl(examA.slug, xActive), asX);
+  expect(xOwn.status).toBe(200);
+  expect(xOwn.body).toContain(PAIR_A_MARKER);
+
+  const snapshot = () => ({
+    x: guestRows(x.guest.sessionId),
+    y: guestRows(y.guest.sessionId),
+    owners: examAttemptOwners(examIds),
+  });
+  const before = snapshot();
+  expect(before.x.attempts).toHaveLength(2);
+  expect(before.y.attempts).toHaveLength(2);
+  expect(before.owners).toHaveLength(3);
+
+  // 1. The pages of Y's attempts for X, under their own slug and under the
+  // slug of the other exam, as HTML and as the RSC payload.
+  const foreignPages = [yActive, yDone].flatMap((attemptId) =>
+    [examA.slug, examB.slug].flatMap((slug) => [
+      attemptUrl(slug, attemptId),
+      attemptLesenUrl(slug, attemptId),
+    ]),
+  );
+  // X's own attempts of A under the slug of B.
+  const crossedPages = [xActive, xDone].flatMap((attemptId) => [
+    attemptUrl(examB.slug, attemptId),
+    attemptLesenUrl(examB.slug, attemptId),
+  ]);
+  for (const pathname of [...foreignPages, ...crossedPages]) {
+    for (const rsc of [false, true]) {
+      const where = `${pathname} ${rsc ? 'rsc' : 'html'}`;
+      const reply = await readPage(request, pathname, { ...asX, rsc });
+      if (!rsc) expect(reply.status, where).toBe(404);
+      expectPrivate(reply.cacheControl, where);
+      expectNone(
+        reply.body,
+        [...yMarks, ...REVIEW_MARKS, ...MATERIAL_MARKS, SIGNED_AUDIO],
+        where,
+      );
+    }
+  }
+
+  // 2. Every command of an attempt, sent by X for the attempts of Y.
+  const answer = {
+    questionId: 'hoeren-2',
+    optionId: fullKeyOf('hoeren-2'),
+    revision: 1,
+  };
+  for (const attemptId of [yActive, yDone]) {
+    const commands: [string, unknown][] = [
+      ...ATTEMPT_COMMANDS,
+      ['answer', answer],
+    ];
+    for (const [name, body] of commands) {
+      const where = `${name} of ${attemptId}`;
+      const reply = await postCommand(
+        request,
+        `/api/attempts/${attemptId}/${name}`,
+        body,
+        asX,
+      );
+      expect(reply.status, where).toBe(404);
+      expectPrivate(reply.cacheControl, where);
+      const text = JSON.stringify(reply.body);
+      expectNone(
+        text,
+        [...REVIEW_MARKS, SIGNED_AUDIO, y.guest.sessionId, '"url"'],
+        where,
+      );
+    }
+  }
+  expect(
+    await getAttemptReview(depsNow(), x.token, { attemptId: yDone }),
+  ).toEqual({ ok: false, error: 'attempt-not-found' });
+
+  // 3. X's own attempt of A named for the exam B inside a command.
+  const underSlug = await postCommand(
+    request,
+    answerOf(xActive),
+    { ...answer, examSlug: examB.slug },
+    asX,
+  );
+  expect(underSlug.status).toBe(400);
+  expect(underSlug.body).toEqual({ ok: false, error: 'invalid-input' });
+
+  // 4. A start of B with the version of A, and of A with the version of B.
+  // X has no attempt of B: an accepted start would write.
+  const startOfB = await startBody(examB.slug, {
+    expectedVersionId: examB.versionId,
+  });
+  const swapped = { ...startOfB, expectedVersionId: examA.versionId };
+  const start = (body: unknown) =>
+    postCommand(request, '/api/attempts/start', body, asX);
+  const refusedStart = await start(swapped);
+  expect(refusedStart.status).toBe(404);
+  expect(refusedStart.body).toEqual({ ok: false, failure: 'not-found' });
+  // Another exam's version answers exactly like a version that never existed.
+  const unknownVersion = await start({
+    ...startOfB,
+    commandId: randomUUID(),
+    expectedVersionId: randomUUID(),
+  });
+  expect(unknownVersion.status).toBe(404);
+  expect(unknownVersion.body).toEqual(refusedStart.body);
+  // The timed modes, each by a guest with nothing at B: the same refusal,
+  // and no row. The same bodies with the version of B are accepted below.
+  const timedShapes = [
+    { mode: 'exam', selection: 'all' },
+    { mode: 'timed-block', selection: 'hoeren' },
+  ];
+  const timedGuests = await Promise.all(
+    timedShapes.map(() => newGuest(depsNow())),
+  );
+  const timedStarts = timedShapes.map((shape, index) => {
+    const guest = timedGuests[index];
+    if (!guest) throw new Error('timed guest is missing');
+    return {
+      where: `start of B, ${shape.mode}`,
+      guest,
+      body: { ...startOfB, ...shape, commandId: randomUUID() },
+    };
+  });
+  for (const { where, guest, body } of timedStarts) {
+    const untouched = guestRows(guest.guest.sessionId);
+    const reply = await postCommand(
+      request,
+      '/api/attempts/start',
+      { ...body, expectedVersionId: examA.versionId },
+      { token: guest.token },
+    );
+    expect(reply.status, where).toBe(404);
+    // The whole answer: no version, attempt or material in it.
+    expect(reply.body, where).toEqual({ ok: false, failure: 'not-found' });
+    expectPrivate(reply.cacheControl, where);
+    // Whole rows of the guest: no attempt, run, answer, result, command or
+    // start event, and the session row as it was.
+    const rows = guestRows(guest.guest.sessionId);
+    expect(rows, where).toEqual(untouched);
+    expect(rows.attempts, where).toEqual([]);
+    expect(rows.commands, where).toEqual([]);
+    expect(rows.events, where).toEqual(untouched.events);
+  }
+  const startOfA = await startBody(examA.slug, {
+    expectedVersionId: examB.versionId,
+  });
+  const reversed = await start(startOfA);
+  expect(reversed.status).toBe(404);
+  expect(reversed.body).toEqual({ ok: false, failure: 'not-found' });
+  // A timed start of the occupied slot of A answers with X's own attempt of
+  // that slot before the version is read: nothing of B, nothing written.
+  const occupied = await start({
+    ...startOfA,
+    commandId: randomUUID(),
+    mode: 'timed-block',
+    selection: 'hoeren',
+  });
+  expect(occupied.status).toBe(200);
+  expect(occupied.body).toMatchObject({
+    ok: true,
+    result: { outcome: 'conflict', attemptId: xActive },
+  });
+  expectNone(JSON.stringify(occupied.body), [examB.versionId], 'occupied');
+
+  // 5. A repeat of errors from a foreign source, and from X's own source of
+  // the other exam.
+  const repeat = (slug: string, versionId: string, sourceAttemptId: string) =>
+    start({
+      commandId: randomUUID(),
+      examSlug: slug,
+      mode: 'training',
+      purpose: 'error-repeat',
+      selection: 'all',
+      sourceAttemptId,
+      expectedVersionId: versionId,
+    });
+  const repeats = [
+    await repeat(examA.slug, examA.versionId, yDone),
+    await repeat(examB.slug, examB.versionId, xDone),
+    await repeat(examB.slug, examA.versionId, xDone),
+    await repeat(examB.slug, examB.versionId, randomUUID()),
+  ];
+  for (const [index, reply] of repeats.entries()) {
+    const where = `repeat ${index}`;
+    expect(reply.status, where).toBe(404);
+    expect(reply.body, where).toEqual({ ok: false, failure: 'not-found' });
+  }
+
+  // Nothing was written for X or Y, and nobody else holds an attempt of the
+  // two exams.
+  expect(snapshot()).toEqual(before);
+
+  // The controls: the same shapes are accepted for the owner. The refused
+  // start with the right version (and the same commandId) starts B for X;
+  // the answer X sent into Y's attempt is saved when Y sends it.
+  const acceptedStart = await start(startOfB);
+  expect(acceptedStart.status).toBe(200);
+  expect(acceptedStart.body).toMatchObject({
+    ok: true,
+    result: { outcome: 'accepted' },
+  });
+  const ownAnswer = await postCommand(request, answerOf(yActive), answer, asY);
+  expect(ownAnswer.status).toBe(200);
+  for (const { where, guest, body } of timedStarts) {
+    const reply = await postCommand(request, '/api/attempts/start', body, {
+      token: guest.token,
+    });
+    expect(reply.status, where).toBe(200);
+    expect(reply.body, where).toMatchObject({
+      ok: true,
+      result: { outcome: 'accepted' },
+    });
+    const [attempt] = guestRows(guest.guest.sessionId).attempts;
+    expect(attempt?.attempt, where).toMatchObject({
+      exam_id: examB.examId,
+      exam_version_id: examB.versionId,
+    });
+  }
+  const after = snapshot();
+  expect(after.x.attempts).toHaveLength(3);
+  expect(after.owners).toHaveLength(6);
+  const yActiveAfter = after.y.attempts.find(
+    (item) => item.attempt.id === yActive,
+  );
+  expect(yActiveAfter?.answers).toHaveLength(3);
+  expect(after.y.attempts.find((item) => item.attempt.id === yDone)).toEqual(
+    before.y.attempts.find((item) => item.attempt.id === yDone),
+  );
+});
+
+// Contexts of the tests below, closed after each of them on every path.
+const openedContexts: BrowserContext[] = [];
+
+test.afterEach(async () => {
+  await Promise.all(openedContexts.splice(0).map((context) => context.close()));
+});
+
+const cardOf = (page: Page, slug: string) =>
+  page.getByTestId(`exam-card-${slug}`);
+
+test('expired and replaced guests see no catalog state or audio', async ({
+  browser,
+  request,
+}) => {
+  test.setTimeout(MATRIX_TIMEOUT_MS);
+  installM2Fixtures();
+  const { examA, examB } = await publishPair();
+  const examIds = [examA.examId, examB.examId];
+  // An active attempt of A with an answer and a completed attempt of B.
+  const withStates = async (token: string) => {
+    const active = await startedOn(token, examA.slug);
+    const saved = await postCommand(
+      request,
+      `/api/attempts/${active}/answer`,
+      { questionId: 'hoeren-1', optionId: fullKeyOf('hoeren-1'), revision: 1 },
+      { token },
+    );
+    expect(saved.status).toBe(200);
+    const done = await startedOn(token, examB.slug);
+    await completedOn(token, done);
+    return { active, done };
+  };
+  const catalogOf = async (token: string) => [
+    await readPage(request, '/exams', { token }),
+    await readPage(request, '/exams', { token, rsc: true }),
+  ];
+  const answerMarks = answerMarkersOf({ 'hoeren-1': fullKeyOf('hoeren-1') });
+
+  // The expired guest ------------------------------------------------------
+  const expiring = shortGuest(EXPIRING_TERM_SECONDS);
+  const states = await withStates(expiring.token);
+  const ownIds = [states.active, states.done];
+  // While the term lasts the library shows both states and the recording is
+  // issued: the fixture is a guest with something to lose.
+  for (const reply of await catalogOf(expiring.token)) {
+    expect(reply.status).toBe(200);
+    for (const id of ownIds) expect(reply.body).toContain(id);
+  }
+  const audioPath = `/api/attempts/${states.active}/audio`;
+  const issued = await postCommand(
+    request,
+    audioPath,
+    { trackId: FULL_TRACK_ID },
+    { token: expiring.token },
+  );
+  expect(issued.status).toBe(200);
+  // As a boolean: a failure never prints the signed address.
+  expect(JSON.stringify(issued.body).includes(SIGNED_AUDIO)).toBe(true);
+  const expiringRows = guestRows(expiring.sessionId);
+  const owners = examAttemptOwners(examIds);
+  expect(expiringRows.attempts).toHaveLength(2);
+
+  await untilGuestExpired(expiring.sessionId, MATRIX_TIMEOUT_MS / 2);
+  const [html, rsc] = await catalogOf(expiring.token);
+  if (!html || !rsc) throw new Error('two catalog replies expected');
+  expect(html.status).toBe(307);
+  expect(new URL(html.location ?? '', FULL_ORIGIN).pathname).toBe('/');
+  for (const reply of [html, rsc]) {
+    expect(reply.setCookie).toBeNull();
+    expectPrivate(reply.cacheControl, 'expired catalog');
+    expectNone(
+      reply.body,
+      [...ownIds, 'exam-card-continue', 'exam-card-result', examA.slug],
+      'expired catalog',
+    );
+  }
+  const expiredPages = [
+    `/practice/${examA.slug}`,
+    attemptUrl(examA.slug, states.active),
+    attemptLesenUrl(examA.slug, states.active),
+    attemptUrl(examB.slug, states.done),
+  ];
+  for (const pathname of expiredPages) {
+    for (const asRsc of [false, true]) {
+      const where = `expired ${pathname} ${asRsc ? 'rsc' : 'html'}`;
+      const reply = await readPage(request, pathname, {
+        token: expiring.token,
+        rsc: asRsc,
+      });
+      if (!asRsc) expect(reply.status, where).not.toBe(200);
+      expect(reply.setCookie, where).toBeNull();
+      expectNone(
+        reply.body,
+        [...answerMarks, ...REVIEW_MARKS, ...MATERIAL_MARKS, SIGNED_AUDIO],
+        where,
+      );
+    }
+  }
+  const expiredCommands: [string, unknown][] = [
+    [audioPath, { trackId: FULL_TRACK_ID }],
+    [
+      '/api/attempts/prepare-audio',
+      { examSlug: examB.slug, expectedVersionId: examB.versionId },
+    ],
+    [
+      '/api/attempts/start',
+      await startBody(examB.slug, { expectedVersionId: examB.versionId }),
+    ],
+    [
+      `/api/attempts/${states.active}/answer`,
+      { questionId: 'hoeren-2', optionId: fullKeyOf('hoeren-2'), revision: 1 },
+    ],
+    [`/api/attempts/${states.active}/status`, {}],
+    [`/api/attempts/${states.done}/status`, {}],
+  ];
+  for (const [pathname, body] of expiredCommands) {
+    const where = `expired ${pathname}`;
+    const reply = await postCommand(request, pathname, body, {
+      token: expiring.token,
+    });
+    expect(reply.status, where).toBe(401);
+    const text = JSON.stringify(reply.body);
+    expect(text, where).toContain('session-invalid');
+    expectNone(text, [...REVIEW_MARKS, SIGNED_AUDIO, '"url"'], where);
+  }
+  expect(guestRows(expiring.sessionId)).toEqual(expiringRows);
+  expect(examAttemptOwners(examIds)).toEqual(owners);
+
+  // The replaced guest -----------------------------------------------------
+  // Too short for a timed block: the replacement of #44 gives the browser a
+  // new guest. The old rows stay; the new cookie reaches none of them. (The
+  // old token itself stays valid until its fixed term, as documented.)
+  const old = shortGuest(600);
+  const oldStates = await withStates(old.token);
+  const oldIds = [oldStates.active, oldStates.done];
+  const context = await guestContextOf(browser, old.token);
+  openedContexts.push(context);
+  const page = await context.newPage();
+  await page.goto('/exams');
+  await expect(
+    cardOf(page, examA.slug).getByTestId('exam-card-continue'),
+  ).toBeVisible();
+  await expect(
+    cardOf(page, examB.slug).getByTestId('exam-card-result'),
+  ).toBeVisible();
+  const oldRows = guestRows(old.sessionId);
+  const ownersBefore = examAttemptOwners(examIds);
+
+  const timedStart = await startBody(examB.slug, {
+    mode: 'timed-block',
+    selection: 'hoeren',
+    expectedVersionId: examB.versionId,
+  });
+  const replaced = await replaceGuestSession(
+    depsNow(),
+    TEST_GUEST_SESSIONS_PER_MINUTE,
+    () => preflightTimedStart(depsNow(), old.token, timedStart),
+  );
+  if (replaced.status !== 'created') throw new Error(replaced.status);
+  const fresh = replaced.created;
+  expect(fresh.guest.sessionId).not.toBe(old.sessionId);
+  // What the Server Action does next: the browser gets the new cookie.
+  await context.clearCookies();
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: fresh.token, url: FULL_ORIGIN },
+  ]);
+  await page.reload();
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+  for (const slug of [examA.slug, examB.slug]) {
+    const examCard = cardOf(page, slug);
+    await expect(examCard.getByTestId('exam-card-open')).toBeVisible();
+    await expect(examCard.getByTestId('exam-card-continue')).toHaveCount(0);
+    await expect(examCard.getByTestId('exam-card-result')).toHaveCount(0);
+  }
+  expectNone(await page.content(), oldIds, 'library of the new guest');
+
+  for (const reply of await catalogOf(fresh.token)) {
+    expect(reply.status).toBe(200);
+    // The library of the new guest is not an empty page.
+    expect(reply.body).toContain(examA.slug);
+    expect(reply.body).toContain(examB.slug);
+    expectNone(reply.body, [...oldIds, SIGNED_AUDIO], 'new guest catalog');
+    expectPrivate(reply.cacheControl, 'new guest catalog');
+  }
+  const oldPages = [
+    attemptUrl(examA.slug, oldStates.active),
+    attemptLesenUrl(examA.slug, oldStates.active),
+    attemptUrl(examB.slug, oldStates.done),
+  ];
+  for (const pathname of oldPages) {
+    const where = `replaced ${pathname}`;
+    const reply = await readPage(request, pathname, { token: fresh.token });
+    expect(reply.status, where).toBe(404);
+    expectNone(
+      reply.body,
+      [...answerMarks, ...REVIEW_MARKS, ...MATERIAL_MARKS, SIGNED_AUDIO],
+      where,
+    );
+  }
+  const oldCommands: [string, unknown][] = [
+    [`/api/attempts/${oldStates.active}/audio`, { trackId: FULL_TRACK_ID }],
+    [
+      `/api/attempts/${oldStates.active}/answer`,
+      { questionId: 'hoeren-2', optionId: fullKeyOf('hoeren-2'), revision: 1 },
+    ],
+    [`/api/attempts/${oldStates.active}/status`, {}],
+    [`/api/attempts/${oldStates.done}/status`, {}],
+  ];
+  for (const [pathname, body] of oldCommands) {
+    const where = `replaced ${pathname}`;
+    const reply = await postCommand(request, pathname, body, {
+      token: fresh.token,
+    });
+    expect(reply.status, where).toBe(404);
+    expectNone(
+      JSON.stringify(reply.body),
+      [...REVIEW_MARKS, SIGNED_AUDIO, '"url"'],
+      where,
+    );
+  }
+  expect(
+    await getAttemptReview(depsNow(), fresh.token, {
+      attemptId: oldStates.done,
+    }),
+  ).toEqual({ ok: false, error: 'attempt-not-found' });
+
+  expect(guestRows(old.sessionId)).toEqual(oldRows);
+  expect(examAttemptOwners(examIds)).toEqual(ownersBefore);
+  const freshRows = guestRows(fresh.guest.sessionId);
+  expect(freshRows.attempts).toEqual([]);
+  expect(freshRows.commands).toEqual([]);
+  expect(freshRows.session).toMatchObject({ locale: 'en' });
+});
+
+const sha256Of = (bytes: Uint8Array): string =>
+  createHash('sha256').update(bytes).digest('hex');
+
+const READ_TABLES = [
+  'exams',
+  'exam_versions',
+  'answer_keys',
+  'attempts',
+  'attempt_results',
+] as const;
+
+test('public roles cannot read material keys attempts or audio', async ({
+  request,
+}) => {
+  test.setTimeout(MATRIX_TIMEOUT_MS);
+  const { examA, examB } = await publishPair();
+  const guest = await newGuest(depsNow());
+  const active = await startedOn(guest.token, examA.slug);
+  const done = await startedOn(guest.token, examB.slug);
+  await completedOn(guest.token, done);
+  const objectPaths = await Promise.all(
+    [examA.versionId, examB.versionId].map(async (versionId) => {
+      const [track] = (await tracksOf(versionId)) as { object_path: string }[];
+      if (!track) throw new Error('track is missing');
+      return track.object_path;
+    }),
+  );
+  const [objectPath] = objectPaths;
+  if (!objectPath) throw new Error('object path is missing');
+  expect(new Set(objectPaths).size).toBe(2);
+  const recordingSha = sha256Of(await readAudioObject(objectPath));
+  expect(recordingSha).toBe(sha256Of(createTestRecording(601).bytes));
+
+  // What the trusted side holds: the rows and objects the public roles are
+  // about to ask for exist.
+  const versions = [examA.versionId, examB.versionId].map(quote).join(', ');
+  const exams = [examA.examId, examB.examId].map(quote).join(', ');
+  const session = quote(guest.guest.sessionId);
+  const stored = () =>
+    psqlJson<Record<string, number>>(`select json_build_object(
+      'exams', (select count(*) from public.exams where id in (${exams})),
+      'versions', (select count(*) from public.exam_versions
+        where id in (${versions})),
+      'keys', (select count(*) from public.answer_keys
+        where exam_version_id in (${versions})),
+      'attempts', (select count(*) from public.attempts
+        where guest_session_id = ${session}),
+      'results', (select count(*) from public.attempt_results r
+        join public.attempts a on a.id = r.attempt_id
+        where a.guest_session_id = ${session}),
+      'objects', (select count(*) from storage.objects
+        where bucket_id = 'exam-sources'
+          and name in (${objectPaths.map(quote).join(', ')})))`);
+  const before = stored();
+  expect(before).toEqual({
+    exams: 2,
+    versions: 2,
+    keys: 90,
+    attempts: 2,
+    results: 1,
+    objects: 2,
+  });
+  const rowsBefore = guestRows(guest.guest.sessionId);
+
+  // The row of each table a visitor would name by a known id.
+  const known: Record<(typeof READ_TABLES)[number], [string, string]> = {
+    exams: ['id', examA.examId],
+    exam_versions: ['id', examA.versionId],
+    answer_keys: ['exam_version_id', examA.versionId],
+    attempts: ['id', active],
+    attempt_results: ['attempt_id', done],
+  };
+
+  // The Data API and Storage over HTTP, as each public role: anon with the
+  // publishable key alone, authenticated with a signed token of that role.
+  // Both through the SDK and as the plain request anybody can send.
+  const env = readTestSupabaseEnv();
+  const jwt = authenticatedJwt();
+  const keyHeaders: Record<string, string> = {
+    apikey: env.publishableKey,
+    authorization: `Bearer ${env.publishableKey}`,
+  };
+  const publicRoles: {
+    role: 'anon' | 'authenticated';
+    client: SupabaseClient;
+    // PostgREST answers a known role without the privilege with this status:
+    // it tells a recognised `authenticated` token from a rejected one.
+    refusal: number;
+    headerSets: Record<string, string>[];
+  }[] = [
+    {
+      role: 'anon',
+      client: createPublicClient(),
+      refusal: 401,
+      headerSets: [keyHeaders, { apikey: env.publishableKey }, {}],
+    },
+    {
+      role: 'authenticated',
+      client: createAuthenticatedClient(jwt),
+      refusal: 403,
+      headerSets: [
+        { apikey: env.publishableKey, authorization: `Bearer ${jwt}` },
+      ],
+    },
+  ];
+  const fileName = objectPath.slice(objectPath.lastIndexOf('/') + 1);
+  const objectFolder = objectPath.slice(0, objectPath.lastIndexOf('/'));
+  expect(objectFolder).not.toBe('');
+  const storageBase = `${env.url}/storage/v1/object`;
+
+  for (const { role, client, refusal, headerSets } of publicRoles) {
+    for (const table of READ_TABLES) {
+      const [column, value] = known[table];
+      const all = await client.from(table).select('*');
+      expect(all.error?.code, `${role}: ${table} select`).toBe('42501');
+      expect(all.data, `${role}: ${table} select`).toBeNull();
+      const one = await client.from(table).select('*').eq(column, value);
+      expect(one.error?.code, `${role}: ${table} by id`).toBe('42501');
+      expect(one.data, `${role}: ${table} by id`).toBeNull();
+      const counted = await client
+        .from(table)
+        .select('*', { count: 'exact', head: true });
+      expect(counted.count, `${role}: ${table} count`).toBeNull();
+
+      const address = `${env.url}/rest/v1/${table}?select=*&${column}=eq.${value}`;
+      for (const [index, headers] of headerSets.entries()) {
+        const where = `${role}: ${table} http ${Object.keys(headers).join('+')}`;
+        const reply = await request.get(address, { headers });
+        const text = await reply.text();
+        expect(reply.status(), where).toBeGreaterThanOrEqual(400);
+        // With its full credentials the role itself is refused the table.
+        if (index === 0) {
+          expect(reply.status(), where).toBe(refusal);
+          expect(text.includes('"42501"'), where).toBe(true);
+        }
+        expectNone(
+          text,
+          ['correct_option_id', 'guest_session_id', '"content"', '"slug"'],
+          where,
+        );
+      }
+    }
+
+    // The private bucket through Storage.
+    const bucket = client.storage.from('exam-sources');
+    const downloaded = await bucket.download(objectPath);
+    expect(downloaded.error, `${role}: download`).not.toBeNull();
+    expect(downloaded.data, `${role}: download`).toBeNull();
+    const signed = await bucket.createSignedUrl(objectPath, 60);
+    expect(signed.error, `${role}: sign`).not.toBeNull();
+    expect(signed.data, `${role}: sign`).toBeNull();
+    for (const folder of ['', objectFolder]) {
+      const listed = await bucket.list(folder, { search: fileName });
+      expect(
+        listed.error !== null || listed.data.length === 0,
+        `${role}: list ${folder}`,
+      ).toBe(true);
+    }
+    const objectAddresses = [
+      bucket.getPublicUrl(objectPath).data.publicUrl,
+      `${storageBase}/exam-sources/${objectPath}`,
+      `${storageBase}/authenticated/exam-sources/${objectPath}`,
+      `${storageBase}/info/exam-sources/${objectPath}`,
+    ];
+    for (const address of objectAddresses) {
+      for (const headers of headerSets) {
+        const where = `${role}: ${new URL(address).pathname} ${Object.keys(headers).length}`;
+        const reply = await request.get(address, { headers });
+        expect(reply.status(), where).toBeGreaterThanOrEqual(400);
+        expect(sha256Of(await reply.body()), where).not.toBe(recordingSha);
+      }
+    }
+  }
+
+  // The same two roles in SQL: no privilege on the tables, RLS enabled,
+  // and the objects of the bucket are invisible.
+  const open = psqlJson<string[]>(`select coalesce(json_agg(r.role || ':'
+      || t.name), '[]'::json)
+    from (values ('anon'), ('authenticated')) r (role),
+      (values ${READ_TABLES.map((table) => `(${quote(table)})`).join(', ')})
+        t (name)
+    where has_table_privilege(r.role, 'public.' || t.name,
+      'select, insert, update, delete')`);
+  expect(open).toEqual([]);
+  const unguarded = psqlJson<string[]>(`select coalesce(json_agg(c.relname),
+      '[]'::json) from pg_class c
+    where c.relnamespace = 'public'::regnamespace
+      and c.relname in (${READ_TABLES.map(quote).join(', ')})
+      and not c.relrowsecurity`);
+  expect(unguarded).toEqual([]);
+  for (const role of ['anon', 'authenticated'] as const) {
+    const run = sqlRunnerAs(role);
+    for (const table of READ_TABLES) {
+      const [column, value] = known[table];
+      expect(
+        () =>
+          run(
+            `select * from public.${table} where ${column} = ${quote(value)}`,
+            {},
+          ),
+        `${role}: ${table}`,
+      ).toThrow(/permission denied/);
+    }
+    let seen: string | null = null;
+    try {
+      seen = run(
+        `select count(*) from storage.objects
+          where bucket_id = 'exam-sources'`,
+        {},
+      );
+    } catch (error) {
+      expect(String(error), `${role}: storage.objects`).toMatch(
+        /permission denied/,
+      );
+    }
+    expect(seen === null || seen === '0', `${role}: storage.objects`).toBe(
+      true,
+    );
+  }
+
+  // Nothing moved: the same rows, the same bytes.
+  expect(stored()).toEqual(before);
+  expect(guestRows(guest.guest.sessionId)).toEqual(rowsBefore);
+  expect(sha256Of(await readAudioObject(objectPath))).toBe(recordingSha);
 });

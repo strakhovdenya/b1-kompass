@@ -1,13 +1,23 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
-import type { Browser, BrowserContext, Page, Route } from '@playwright/test';
+import type {
+  Browser,
+  BrowserContext,
+  Locator,
+  Page,
+  Route,
+} from '@playwright/test';
 import { examContentSchema, selectScoringPolicy } from '@b1k/domain';
 import { publishExamVersion } from '../../../scripts/lib/publish-exam-version';
 import type { AudioFileInput } from '../../../scripts/lib/publish-exam-version';
 import { publishFullPilot } from '../../../scripts/publish-pilot';
 import { saveAnswer } from '../src/server/attempts/attempts';
+import { preflightTimedStart } from '../src/server/attempts/start';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
-import { setGuestLocale } from '../src/server/guest-session/session';
+import {
+  replaceGuestSession,
+  setGuestLocale,
+} from '../src/server/guest-session/session';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import { getPublishedVersion } from '../src/server/material/published';
 import {
@@ -15,30 +25,43 @@ import {
   FULL_PILOT,
   FULL_TIMING,
   FULL_TRACK_ID,
+  PAIR_A_ONLY,
+  PAIR_REPLACED,
   fullKeyOf,
   fullWrongOf,
+  publishExamPair,
 } from './support/full-exam';
+import type { PairedExam } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
 import {
   depsNow,
   latestVersionOf,
   newGuest,
+  audioObjectPathOf,
   readAnswers,
+  readAttemptPin,
   readAttempts,
   readEventKinds,
   readResults,
   readRunRows,
   readSession,
   serviceDb,
+  shortGuest,
+  startBody,
   startFor,
   submitStored,
 } from './support/db';
+import { TEST_GUEST_SESSIONS_PER_MINUTE } from './support/env';
 import {
+  examAttemptOwners,
   examRunTimes,
+  guestRows,
   installM2Fixtures,
   psql,
   quote,
   secondsAgoSql,
+  settledGuestRowsOf,
+  sqlRunnerAs,
 } from './support/sql';
 import { goToStep } from './support/release';
 import {
@@ -49,7 +72,11 @@ import {
   LESEN_URL,
   attemptIdOf,
   attemptUrl,
+  audioOf,
   card,
+  SIGNED_AUDIO,
+  confirmationOf,
+  expectNone,
   expectStatus,
   finishFromShell,
   goToHoeren,
@@ -63,6 +90,7 @@ import {
   snapshotOf,
   sourcePathOf,
   startBrowserGuest,
+  untilGuestExpired,
   waitForPlayer,
 } from './support/guest-browser';
 import type {
@@ -1332,6 +1360,572 @@ test('guest lifecycle mutations cannot affect other live sessions', async ({
   await answer(pausedPage, 'hoeren', 3, fullKeyOf('hoeren-3'));
   expect(await readAnswers(pausedAttempt)).toEqual({
     'hoeren-2': fullKeyOf('hoeren-2'),
+    'hoeren-3': fullKeyOf('hoeren-3'),
+  });
+});
+
+// Four guests on two exams (#85) ----------------------------------------------
+//
+// Exam A and exam B are published by each test under slugs of its own, with
+// different recordings. Two guests work on each exam, all four in different
+// modes and at the same time. Every claim about a guest is a re-read of the
+// whole rows of its session; the three others are compared with what they
+// held before the step.
+
+type PairMode = 'training' | 'exam' | 'timed-block';
+
+const publishPairWith = (toneA: number, toneB: number) =>
+  publishExamPair({
+    db: serviceDb,
+    owner: sqlRunnerAs('owner'),
+    audioA: createTestRecording(toneA),
+    audioB: createTestRecording(toneB),
+  });
+
+// The explicit start of one mode from the choice screen of an exam.
+const startModeAt = async (
+  page: Page,
+  exam: PairedExam,
+  mode: PairMode,
+): Promise<string> => {
+  await page.goto(`/practice/${exam.slug}`);
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  if (mode !== 'training') {
+    await page.getByTestId(`mode-option-${mode}`).click();
+  }
+  if (mode === 'exam') {
+    await expect(page.getByTestId('exam-audio-status')).toHaveAttribute(
+      'data-status',
+      'ready',
+      { timeout: 20_000 },
+    );
+  }
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  return attemptIdOf(page);
+};
+
+const storedPositionOf = async (attemptId: string): Promise<number> =>
+  Number((await readAttemptPin(attemptId)).progress?.positionSeconds ?? -1);
+
+// A paused player moved to a second: the move of a paused player is reported
+// at once, so the server holds that place.
+const restAt = async (page: Page, attemptId: string, seconds: number) => {
+  await seekTo(page, seconds);
+  await expect
+    .poll(async () => Math.abs((await storedPositionOf(attemptId)) - seconds))
+    .toBeLessThanOrEqual(1);
+};
+
+const ownersOf = (examIds: readonly string[]): Set<string> =>
+  new Set(
+    examAttemptOwners(examIds).map(
+      (owner) => `${owner.examId} ${owner.sessionId} ${owner.attempts}`,
+    ),
+  );
+
+interface ClockedMedia extends ExamMedia {
+  ended: boolean;
+  duration: number;
+}
+
+const clockedMediaOf = (audio: Locator): Promise<ClockedMedia> =>
+  audio.evaluate((element: HTMLAudioElement) => ({
+    currentTime: element.currentTime,
+    nowSeconds: performance.now() / 1000,
+    paused: element.paused,
+    marker: element.dataset.marker ?? null,
+    ended: element.ended,
+    duration: element.duration,
+  }));
+
+// A playing recording runs by the clock of its browser from where it was,
+// until its end (the test recording lasts 60 seconds, and the steps of the
+// other guests take time). Around
+// the end either state is right; before it the recording plays at the place
+// the clock gives, after it the recording has ended at its full length.
+const END_MARGIN_SECONDS = 2;
+
+const expectRecordingOnClock = (
+  now: ClockedMedia,
+  before: ExamMedia,
+  step: string,
+) => {
+  expect(now.marker, step).toBe(before.marker);
+  const expected = before.currentTime + now.nowSeconds - before.nowSeconds;
+  if (expected < now.duration - END_MARGIN_SECONDS) {
+    expect(now.paused, step).toBe(false);
+    expect(Math.abs(now.currentTime - expected), step).toBeLessThanOrEqual(1);
+    return;
+  }
+  expect(now.currentTime, step).toBeGreaterThan(
+    now.duration - 2 * END_MARGIN_SECONDS,
+  );
+  if (expected > now.duration + END_MARGIN_SECONDS) {
+    expect(now.ended, step).toBe(true);
+  }
+};
+
+test('four guests keep two exams and media fully isolated', async ({
+  browser,
+}) => {
+  const { examA, examB } = await publishPairWith(631, 641);
+  const examIds = [examA.examId, examB.examId];
+  const pathA = await audioObjectPathOf(examA.versionId);
+  const pathB = await audioObjectPathOf(examB.versionId);
+  expect(pathA).not.toBe(pathB);
+
+  const created = await Promise.all(
+    Array.from({ length: GUESTS }, () => newGuest(depsNow())),
+  );
+  const sessions = created.map((guest) => guest.guest.sessionId);
+  expect(new Set(created.map((guest) => guest.token)).size).toBe(GUESTS);
+  expect(new Set(sessions).size).toBe(GUESTS);
+  const contexts = await Promise.all(
+    created.map((guest) => contextWith(browser, guest.token)),
+  );
+  extraContexts.push(...contexts);
+  const pages = await Promise.all(contexts.map((context) => context.newPage()));
+  const [p1, p2, p3, p4] = pages;
+  if (!p1 || !p2 || !p3 || !p4) throw new Error('four pages expected');
+
+  // Two guests per exam, four modes, started at the same time.
+  const plan: [Page, PairedExam, PairMode][] = [
+    [p1, examA, 'training'],
+    [p2, examA, 'exam'],
+    [p3, examB, 'timed-block'],
+    [p4, examB, 'training'],
+  ];
+  const attempts = await Promise.all(
+    plan.map(([page, exam, mode]) => startModeAt(page, exam, mode)),
+  );
+  const [a1, a2, a3, a4] = attempts;
+  if (!a1 || !a2 || !a3 || !a4) throw new Error('four attempts expected');
+  expect(new Set(attempts).size).toBe(GUESTS);
+
+  // Each answers a task of its own while the others do the same.
+  const answers: Record<string, string>[] = [
+    { 'hoeren-1': fullKeyOf('hoeren-1') },
+    { 'hoeren-2': fullWrongOf('hoeren-2') },
+    { 'hoeren-3': fullKeyOf('hoeren-3') },
+    { 'hoeren-1': fullWrongOf('hoeren-1') },
+  ];
+  await Promise.all([
+    answer(p1, 'hoeren', 1, fullKeyOf('hoeren-1')),
+    answer(p2, 'hoeren', 2, fullWrongOf('hoeren-2')),
+    answer(p3, 'hoeren', 3, fullKeyOf('hoeren-3')),
+    answer(p4, 'hoeren', 1, fullWrongOf('hoeren-1')),
+  ]);
+
+  // The recordings: A plays for its two guests, B for the other two, each
+  // from the object of its own exam and at its own place.
+  await Promise.all([waitForPlayer(p1), waitForPlayer(p3), waitForPlayer(p4)]);
+  await expect.poll(async () => (await examMediaOf(p2)).paused).toBe(false);
+  await examAudioOf(p2).evaluate((element: HTMLAudioElement) => {
+    element.dataset.marker = 'guest-2';
+  });
+  const examSource = await examAudioOf(p2).evaluate(
+    (element: HTMLAudioElement) => new URL(element.currentSrc).pathname,
+  );
+  expect(await sourcePathOf(p1)).toContain(`/${AUDIO_BUCKET}/${pathA}`);
+  expect(examSource).toContain(`/${AUDIO_BUCKET}/${pathA}`);
+  expect(await sourcePathOf(p3)).toContain(`/${AUDIO_BUCKET}/${pathB}`);
+  expect(await sourcePathOf(p4)).toContain(`/${AUDIO_BUCKET}/${pathB}`);
+  await playFrom(p1, 3, 'guest-1');
+  await playFrom(p3, 12, 'guest-3');
+  await pausePlayer(p3);
+  await playFrom(p4, 25, 'guest-4');
+  await pausePlayer(p4);
+  await restAt(p4, a4, 31);
+  const playing1 = await snapshotOf(p1);
+  const playing2 = await examMediaOf(p2);
+  const paused3 = await snapshotOf(p3);
+  expect(playing1).toMatchObject({ paused: false, marker: 'guest-1' });
+  expect(playing2).toMatchObject({ paused: false, marker: 'guest-2' });
+  expect(paused3).toMatchObject({ paused: true, marker: 'guest-3' });
+
+  // The database: one attempt each, of its own exam and pinned version, in
+  // its own mode, with its own answer and its own start event.
+  const modes = plan.map(([, , mode]) => mode);
+  const exams = plan.map(([, exam]) => exam);
+  for (const [index, attemptId] of attempts.entries()) {
+    const exam = exams[index];
+    const session = sessions[index];
+    if (!exam || !session) throw new Error('plan is incomplete');
+    const where = `guest ${index + 1}`;
+    expect(await readAttempts(session), where).toEqual([
+      { id: attemptId, status: 'active' },
+    ]);
+    expect(await readAttemptPin(attemptId), where).toMatchObject({
+      exam_id: exam.examId,
+      exam_version_id: exam.versionId,
+      status: 'active',
+    });
+    const [run] = await readRunRows(attemptId);
+    expect(run?.mode, where).toBe(modes[index]);
+    expect(run?.assignment.versionId, where).toBe(exam.versionId);
+    for (const questionId of run?.assignment.questionIds ?? []) {
+      expect(exam.questionIds, where).toContain(questionId);
+    }
+    expect(await readAnswers(attemptId), where).toEqual(answers[index]);
+    expect(await readEventKinds(attemptId), where).toEqual(['start']);
+    expect(await readResults(attemptId), where).toEqual([]);
+  }
+  const owners = new Set(
+    sessions.map(
+      (session, index) => `${exams[index]?.examId ?? ''} ${session} 1`,
+    ),
+  );
+  expect(ownersOf(examIds)).toEqual(owners);
+
+  // After each step of one guest the three others hold what they held.
+  let held = settledGuestRowsOf(sessions);
+  const expectOthersKept = (actor: number, step: string) => {
+    const now = settledGuestRowsOf(sessions);
+    for (const [index, rows] of now.entries()) {
+      if (index !== actor)
+        expect(rows, `${step}: guest ${index + 1}`).toEqual(held[index]);
+    }
+    expect(now[actor], `${step}: the actor changed`).not.toEqual(held[actor]);
+    held = now;
+  };
+  const deadline2 = await deadlineOf(p2);
+  const deadline3 = await deadlineOf(p3);
+  expect(deadline2).toBe(
+    Date.parse(examRunTimes(a2).acceptedAt) + H * SECOND_MS,
+  );
+  expect(deadline3).toBe(
+    Date.parse(examRunTimes(a3).acceptedAt) + H * SECOND_MS,
+  );
+
+  // Guest 4: the Lesen task only B has, then the end of its attempt.
+  await goToLesen(p4);
+  await p4.getByTestId('go-to-question-25').click();
+  await optionIn(card(p4, PAIR_REPLACED), fullKeyOf(PAIR_REPLACED)).check();
+  await expectStatus(card(p4, PAIR_REPLACED), 'saved');
+  expectOthersKept(3, 'guest 4 answered Lesen');
+  await finishFromShell(p4);
+  expectOthersKept(3, 'guest 4 finished');
+  const results4 = (await readResults(a4)) as ResultRow[];
+  expect(results4).toHaveLength(1);
+  expect(results4[0]).toMatchObject({ score: 1, max_score: 45 });
+
+  // Guest 3 answers on; guest 2 answers in its exam.
+  await answer(p3, 'hoeren', 4, fullKeyOf('hoeren-4'));
+  expectOthersKept(2, 'guest 3 answered');
+  await answer(p2, 'hoeren', 5, fullKeyOf('hoeren-5'));
+  expectOthersKept(1, 'guest 2 answered');
+
+  // The media of the three open guests: A's free player and the exam play on
+  // by the clock of their browsers, B's paused player has not moved, and no
+  // deadline did.
+  expectRecordingOnClock(
+    await clockedMediaOf(audioOf(p1)),
+    playing1,
+    'guest 1 plays on',
+  );
+  expectRecordingOnClock(
+    await clockedMediaOf(examAudioOf(p2)),
+    playing2,
+    'guest 2 plays on',
+  );
+  const later3 = await snapshotOf(p3);
+  expect(later3).toMatchObject({ paused: true, marker: 'guest-3' });
+  expect(
+    Math.abs(later3.currentTime - paused3.currentTime),
+  ).toBeLessThanOrEqual(PAUSED_TOLERANCE_SECONDS);
+  expect(await deadlineOf(p2)).toBe(deadline2);
+  expect(await deadlineOf(p3)).toBe(deadline3);
+
+  // Guest 1: its own place in the recording of A, the Lesen task only A
+  // has, then the end of its attempt.
+  await pausePlayer(p1);
+  await restAt(p1, a1, 8);
+  await goToLesen(p1);
+  await p1.getByTestId('go-to-question-25').click();
+  await optionIn(card(p1, PAIR_A_ONLY), fullKeyOf(PAIR_REPLACED)).check();
+  await expectStatus(card(p1, PAIR_A_ONLY), 'saved');
+  expectOthersKept(0, 'guest 1 answered Lesen');
+  await finishFromShell(p1);
+  expectOthersKept(0, 'guest 1 finished');
+  const results1 = (await readResults(a1)) as ResultRow[];
+  expect(results1).toHaveLength(1);
+  expect(results1[0]).toMatchObject({ score: 2, max_score: 45 });
+
+  // The end: answers, results and events are each guest's own.
+  expect(await readAnswers(a1)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+    [PAIR_A_ONLY]: fullKeyOf(PAIR_REPLACED),
+  });
+  expect(await readAnswers(a2)).toEqual({
+    'hoeren-2': fullWrongOf('hoeren-2'),
+    'hoeren-5': fullKeyOf('hoeren-5'),
+  });
+  expect(await readAnswers(a3)).toEqual({
+    'hoeren-3': fullKeyOf('hoeren-3'),
+    'hoeren-4': fullKeyOf('hoeren-4'),
+  });
+  expect(await readAnswers(a4)).toEqual({
+    'hoeren-1': fullWrongOf('hoeren-1'),
+    [PAIR_REPLACED]: fullKeyOf(PAIR_REPLACED),
+  });
+  const finalEvents: [string, string[], string][] = [
+    [a1, ['start', 'finish'], 'completed'],
+    [a2, ['start'], 'active'],
+    [a3, ['start'], 'active'],
+    [a4, ['start', 'finish'], 'completed'],
+  ];
+  for (const [index, [attemptId, kinds, status]] of finalEvents.entries()) {
+    const session = sessions[index];
+    if (!session) throw new Error('session is missing');
+    expect(await readEventKinds(attemptId), attemptId).toEqual(kinds);
+    expect(await readAttempts(session), attemptId).toEqual([
+      { id: attemptId, status },
+    ]);
+  }
+  expect(await readResults(a2)).toEqual([]);
+  expect(await readResults(a3)).toEqual([]);
+  expect(ownersOf(examIds)).toEqual(owners);
+});
+
+// The term of the fourth guest: long enough for its start, cancel,
+// completion and replacement on a slow runner, each followed by a re-read of
+// the three observers. A guest that expires earlier fails its own steps.
+const ACTOR_TERM_SECONDS = 90;
+const LIFECYCLE_TIMEOUT_MS = 300_000;
+
+test('one guest lifecycle change never affects others across exams', async ({
+  browser,
+  request,
+}) => {
+  // The test waits for the term of the fourth guest to end.
+  test.setTimeout(LIFECYCLE_TIMEOUT_MS);
+  installM2Fixtures();
+  const { examA, examB } = await publishPairWith(643, 647);
+  const examIds = [examA.examId, examB.examId];
+
+  // Three observers: a full exam of A with its recording playing, a timed
+  // block of B paused, a free training of A paused at a stored place.
+  const observers = await Promise.all(
+    Array.from({ length: 3 }, () => newGuest(depsNow())),
+  );
+  const sessions = observers.map((guest) => guest.guest.sessionId);
+  const contexts = await Promise.all(
+    observers.map((guest) => contextWith(browser, guest.token)),
+  );
+  extraContexts.push(...contexts);
+  const pages = await Promise.all(contexts.map((context) => context.newPage()));
+  const [livePage, pausedPage, restingPage] = pages;
+  if (!livePage || !pausedPage || !restingPage) {
+    throw new Error('three pages expected');
+  }
+  const [liveAttempt, pausedAttempt, restingAttempt] = await Promise.all([
+    startModeAt(livePage, examA, 'exam'),
+    startModeAt(pausedPage, examB, 'timed-block'),
+    startModeAt(restingPage, examA, 'training'),
+  ]);
+  await expect
+    .poll(async () => (await examMediaOf(livePage)).paused)
+    .toBe(false);
+  await examAudioOf(livePage).evaluate((element: HTMLAudioElement) => {
+    element.dataset.marker = 'live-exam';
+  });
+  await answer(livePage, 'hoeren', 1, fullKeyOf('hoeren-1'));
+  await waitForPlayer(pausedPage);
+  await playFrom(pausedPage, 12, 'paused-block');
+  await pausePlayer(pausedPage);
+  await answer(pausedPage, 'hoeren', 2, fullKeyOf('hoeren-2'));
+  await waitForPlayer(restingPage);
+  await playFrom(restingPage, 5, 'resting-training');
+  await pausePlayer(restingPage);
+  await restAt(restingPage, restingAttempt, 20);
+  await answer(restingPage, 'hoeren', 3, fullKeyOf('hoeren-3'));
+
+  const liveDeadline = await deadlineOf(livePage);
+  const pausedDeadline = await deadlineOf(pausedPage);
+  expect(liveDeadline).toBe(
+    Date.parse(examRunTimes(liveAttempt).acceptedAt) + H * SECOND_MS,
+  );
+  expect(pausedDeadline).toBe(
+    Date.parse(examRunTimes(pausedAttempt).acceptedAt) + H * SECOND_MS,
+  );
+  const liveBefore = await examMediaOf(livePage);
+  const pausedBefore = await snapshotOf(pausedPage);
+  const restingBefore = await snapshotOf(restingPage);
+  expect(pausedBefore).toMatchObject({ paused: true, marker: 'paused-block' });
+  expect(restingBefore).toMatchObject({
+    paused: true,
+    marker: 'resting-training',
+  });
+  const held = settledGuestRowsOf(sessions);
+  const restingPlace = await storedPositionOf(restingAttempt);
+  for (const rows of held) {
+    expect(rows.attempts).toHaveLength(1);
+    expect(rows.attempts[0]?.answers).toHaveLength(1);
+    expect(rows.attempts[0]?.attempt.status).toBe('active');
+  }
+  const observerOwners = [
+    `${examA.examId} ${sessions[0] ?? ''} 1`,
+    `${examB.examId} ${sessions[1] ?? ''} 1`,
+    `${examA.examId} ${sessions[2] ?? ''} 1`,
+  ];
+
+  const expectObserversUntouched = async (step: string) => {
+    for (const [index, rows] of settledGuestRowsOf(sessions).entries()) {
+      expect(rows, `${step}: observer ${index}`).toEqual(held[index]);
+    }
+    const owners = ownersOf(examIds);
+    for (const owner of observerOwners) {
+      expect(owners.has(owner), `${step}: ${owner}`).toBe(true);
+    }
+    expect(await storedPositionOf(restingAttempt), step).toBe(restingPlace);
+    expect(await deadlineOf(livePage), step).toBe(liveDeadline);
+    expect(await deadlineOf(pausedPage), step).toBe(pausedDeadline);
+    expectRecordingOnClock(
+      await clockedMediaOf(examAudioOf(livePage)),
+      liveBefore,
+      step,
+    );
+    for (const [page, before] of [
+      [pausedPage, pausedBefore],
+      [restingPage, restingBefore],
+    ] as const) {
+      const now = await snapshotOf(page);
+      expect(now.paused, step).toBe(true);
+      expect(now.marker, step).toBe(before.marker);
+      expect(
+        Math.abs(now.currentTime - before.currentTime),
+        step,
+      ).toBeLessThanOrEqual(PAUSED_TOLERANCE_SECONDS);
+    }
+  };
+  await expectObserversUntouched('before');
+
+  // The fourth guest: its term ends soon, by the database clock. It
+  // works on both exams over real HTTP with the trusted Origin.
+  const { token: actorToken, sessionId: actorSession } =
+    shortGuest(ACTOR_TERM_SECONDS);
+  const send = (pathname: string, body: unknown, token = actorToken) =>
+    postCommand(request, pathname, body, { token });
+  const startedBy = async (token: string, exam: PairedExam) => {
+    const reply = await send(
+      '/api/attempts/start',
+      await startBody(exam.slug, { expectedVersionId: exam.versionId }),
+      token,
+    );
+    expect(reply.status).toBe(200);
+    expect(reply.body).toMatchObject({ result: { outcome: 'accepted' } });
+    return (reply.body.result as { attemptId: string }).attemptId;
+  };
+  const confirmed = (attemptId: string) =>
+    confirmationOf(request, attemptId, { token: actorToken });
+
+  // It starts A and answers, as the observers of A do.
+  const cancelledId = await startedBy(actorToken, examA);
+  const saved = await send(`/api/attempts/${cancelledId}/answer`, {
+    questionId: 'hoeren-1',
+    optionId: fullWrongOf('hoeren-1'),
+    revision: 1,
+  });
+  expect(saved.status).toBe(200);
+  await expectObserversUntouched('actor started A');
+
+  // Cancel.
+  const cancelled = await send(`/api/attempts/${cancelledId}/cancel`, {
+    commandId: randomUUID(),
+    confirmation: await confirmed(cancelledId),
+  });
+  expect(cancelled.status).toBe(200);
+  expect(await readAttempts(actorSession)).toEqual([
+    { id: cancelledId, status: 'cancelled' },
+  ]);
+  expect(await readResults(cancelledId)).toEqual([]);
+  await expectObserversUntouched('actor cancelled A');
+
+  // A completed attempt of B.
+  const completedId = await startedBy(actorToken, examB);
+  const submitted = await send(`/api/attempts/${completedId}/submit`, {
+    commandId: randomUUID(),
+    answers: [],
+    confirmation: await confirmed(completedId),
+  });
+  expect(submitted.status).toBe(200);
+  expect(await readResults(completedId)).toHaveLength(1);
+  await expectObserversUntouched('actor completed B');
+
+  // Replace: too short for a timed block of A, the guest is replaced (#44)
+  // and the new guest starts both exams.
+  const actorRows = guestRows(actorSession);
+  const timedStart = await startBody(examA.slug, {
+    mode: 'timed-block',
+    selection: 'hoeren',
+    expectedVersionId: examA.versionId,
+  });
+  const replaced = await replaceGuestSession(
+    depsNow(),
+    TEST_GUEST_SESSIONS_PER_MINUTE,
+    () => preflightTimedStart(depsNow(), actorToken, timedStart),
+  );
+  if (replaced.status !== 'created') throw new Error(replaced.status);
+  const fresh = replaced.created;
+  const freshA = await startedBy(fresh.token, examA);
+  const freshB = await startedBy(fresh.token, examB);
+  expect(
+    (await readAttempts(fresh.guest.sessionId)).map((row) => row.id).toSorted(),
+  ).toEqual([freshA, freshB].toSorted());
+  expect(guestRows(actorSession)).toEqual(actorRows);
+  await expectObserversUntouched('actor replaced');
+
+  // Expire: the old guest is refused, and nothing of the others moved.
+  await untilGuestExpired(actorSession, 2 * ACTOR_TERM_SECONDS * SECOND_MS);
+  const refused = [
+    await send(
+      '/api/attempts/start',
+      await startBody(examA.slug, { expectedVersionId: examA.versionId }),
+    ),
+    await send(`/api/attempts/${completedId}/status`, {}),
+    await send(`/api/attempts/${liveAttempt}/answer`, {
+      questionId: 'hoeren-4',
+      optionId: fullKeyOf('hoeren-4'),
+      revision: 1,
+    }),
+  ];
+  for (const reply of refused) {
+    expect(reply.status).toBe(401);
+    const text = JSON.stringify(reply.body);
+    expect(text).toContain('session-invalid');
+    expect(reply.cacheControl).toContain('no-store');
+    // Neither a key, a recording address nor the id of any attempt.
+    expectNone(
+      text,
+      [
+        'correctOptionId',
+        'correct_option_id',
+        'answer_keys',
+        SIGNED_AUDIO,
+        '"url"',
+        liveAttempt,
+        completedId,
+        cancelledId,
+      ],
+      'expired actor',
+    );
+  }
+  expect(guestRows(actorSession)).toEqual(actorRows);
+  await expectObserversUntouched('actor expired');
+
+  // The observers are still live: each can go on by itself.
+  await answer(pausedPage, 'hoeren', 3, fullKeyOf('hoeren-3'));
+  expect(await readAnswers(pausedAttempt)).toEqual({
+    'hoeren-2': fullKeyOf('hoeren-2'),
+    'hoeren-3': fullKeyOf('hoeren-3'),
+  });
+  await answer(livePage, 'hoeren', 2, fullKeyOf('hoeren-2'));
+  expect(await readAnswers(liveAttempt)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+    'hoeren-2': fullKeyOf('hoeren-2'),
+  });
+  expect(await readAnswers(restingAttempt)).toEqual({
     'hoeren-3': fullKeyOf('hoeren-3'),
   });
 });
