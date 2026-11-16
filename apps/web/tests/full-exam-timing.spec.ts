@@ -1626,4 +1626,5 @@ test('page read before exam end keeps lesen open', async ({ browser }) => {
     { id: attemptId, status: 'active' },
   ]);
   expect(await readResults(attemptId)).toEqual([]);
+  expect((await readSubmission(attemptId)).frozen_answers).toBeNull();
 });

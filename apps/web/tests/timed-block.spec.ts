@@ -1201,6 +1201,7 @@ test('page read before deadline keeps run open', async ({ browser }) => {
   }
   expect(statusOf(started.attemptId)).toBe('active');
   expect(await readResults(started.attemptId)).toEqual([]);
+  expect((await readSubmission(started.attemptId)).frozen_answers).toBeNull();
 });
 
 test('first page read after deadline with failed result shows pending', async ({
