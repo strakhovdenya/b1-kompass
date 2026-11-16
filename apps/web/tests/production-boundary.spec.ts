@@ -436,8 +436,7 @@ test('m3 production excludes owner cli and privileged credentials', () => {
   const whole = [...client, ...server, ...top];
 
   // The reader sees the real build: the browser chunks hold the library of
-  // M3, the server chunks hold the start function and the name of the key
-  // the server reads at run time.
+  // M3, the server chunks hold the start function and the guest cookie.
   expect(
     client.filter((file) => file.name.endsWith('.js')).length,
   ).toBeGreaterThan(5);
@@ -446,7 +445,7 @@ test('m3 production excludes owner cli and privileged credentials', () => {
   ).toBeGreaterThan(5);
   expect(holdersOf(client, 'exam-card-continue')).not.toEqual([]);
   expect(holdersOf(server, 'm2_start_attempt')).not.toEqual([]);
-  expect(holdersOf(server, 'SUPABASE_SECRET_KEY')).not.toEqual([]);
+  expect(holdersOf(server, 'b1k_guest')).not.toEqual([]);
 
   // The owner CLI, its manifest reader and the publisher.
   for (const [source, marker] of OWNER_MARKERS) {
@@ -470,8 +469,10 @@ test('m3 production excludes owner cli and privileged credentials', () => {
     expect(holdersOf(whole, wrapper), wrapper).toEqual([]);
   }
 
-  // The keys: neither value anywhere in the build, and the browser chunks
-  // know neither the name of the secret nor the privileged role.
+  // The keys. The value of the secret is nowhere in the build: the server
+  // reads it from its environment at run time, by a name that only server
+  // code holds. Nothing the browser gets knows that name, the privileged
+  // role or the value of either key.
   const { secretKey, publishableKey } = readTestSupabaseEnv();
   expect(secretKey.length).toBeGreaterThan(20);
   expect(holdersOf(whole, secretKey), 'secret key value').toEqual([]);
