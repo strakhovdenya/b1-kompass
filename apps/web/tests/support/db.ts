@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AttemptReview } from '@b1k/domain';
@@ -27,7 +27,7 @@ import type {
 } from '../../src/server/guest-session/session';
 import { PILOT_EXAM_SLUG } from '../../src/server/material/published';
 import { TEST_GUEST_SESSIONS_PER_MINUTE, readTestSupabaseEnv } from './env';
-import { insertGuestEndingIn } from './sql';
+import { insertGuestEndingIn, readTestJwtSecret } from './sql';
 
 const env = readTestSupabaseEnv();
 
@@ -88,6 +88,36 @@ export const countVersionKeys = async (versionId: string): Promise<number> => {
 export const createPublicClient = (): SupabaseClient =>
   createClient(env.url, env.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+const base64Url = (value: unknown): string =>
+  Buffer.from(JSON.stringify(value)).toString('base64url');
+
+// A short-lived token of the `authenticated` role, signed with the JWT
+// secret of the isolated test database. Sign-up is disabled, so no user ever
+// gets such a token from the application; this is what a visitor who had one
+// could send to the Data API and Storage.
+export const authenticatedJwt = (): string => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const header = base64Url({ alg: 'HS256', typ: 'JWT' });
+  const claims = base64Url({
+    role: 'authenticated',
+    aud: 'authenticated',
+    sub: randomUUID(),
+    iat: nowSeconds,
+    exp: nowSeconds + 300,
+  });
+  const signature = createHmac('sha256', readTestJwtSecret())
+    .update(`${header}.${claims}`)
+    .digest('base64url');
+  return `${header}.${claims}.${signature}`;
+};
+
+// A browser-side client that sends such a token with the publishable key.
+export const createAuthenticatedClient = (jwt: string): SupabaseClient =>
+  createClient(env.url, env.publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
   });
 
 export const fixedClock = (at: Date): Clock => ({ now: () => new Date(at) });

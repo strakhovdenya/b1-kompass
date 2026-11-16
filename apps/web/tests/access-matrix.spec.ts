@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   APIResponse,
   Browser,
@@ -31,8 +32,10 @@ import {
   readRunRows,
   readSession,
   readSessionByToken,
+  authenticatedJwt,
   completedOn,
   countVersionKeys,
+  createAuthenticatedClient,
   readExamState,
   serviceDb,
   shortGuest,
@@ -1606,6 +1609,7 @@ test('foreign attempt slug and version are denied without mutation', async ({
     };
   });
   for (const { where, guest, body } of timedStarts) {
+    const untouched = guestRows(guest.guest.sessionId);
     const reply = await postCommand(
       request,
       '/api/attempts/start',
@@ -1613,10 +1617,16 @@ test('foreign attempt slug and version are denied without mutation', async ({
       { token: guest.token },
     );
     expect(reply.status, where).toBe(404);
+    // The whole answer: no version, attempt or material in it.
     expect(reply.body, where).toEqual({ ok: false, failure: 'not-found' });
+    expectPrivate(reply.cacheControl, where);
+    // Whole rows of the guest: no attempt, run, answer, result, command or
+    // start event, and the session row as it was.
     const rows = guestRows(guest.guest.sessionId);
+    expect(rows, where).toEqual(untouched);
     expect(rows.attempts, where).toEqual([]);
     expect(rows.commands, where).toEqual([]);
+    expect(rows.events, where).toEqual(untouched.events);
   }
   const startOfA = await startBody(examA.slug, {
     expectedVersionId: examB.versionId,
@@ -2012,82 +2022,108 @@ test('public roles cannot read material keys attempts or audio', async ({
     attempt_results: ['attempt_id', done],
   };
 
-  // anon: the Data API with the publishable key, through the SDK and as the
-  // plain HTTP request anybody can send.
-  const anon = createPublicClient();
+  // The Data API and Storage over HTTP, as each public role: anon with the
+  // publishable key alone, authenticated with a signed token of that role.
+  // Both through the SDK and as the plain request anybody can send.
   const env = readTestSupabaseEnv();
+  const jwt = authenticatedJwt();
   const keyHeaders: Record<string, string> = {
     apikey: env.publishableKey,
     authorization: `Bearer ${env.publishableKey}`,
   };
-  const dataHeaders: Record<string, string>[] = [
-    keyHeaders,
-    { apikey: env.publishableKey },
-    {},
+  const publicRoles: {
+    role: 'anon' | 'authenticated';
+    client: SupabaseClient;
+    // PostgREST answers a known role without the privilege with this status:
+    // it tells a recognised `authenticated` token from a rejected one.
+    refusal: number;
+    headerSets: Record<string, string>[];
+  }[] = [
+    {
+      role: 'anon',
+      client: createPublicClient(),
+      refusal: 401,
+      headerSets: [keyHeaders, { apikey: env.publishableKey }, {}],
+    },
+    {
+      role: 'authenticated',
+      client: createAuthenticatedClient(jwt),
+      refusal: 403,
+      headerSets: [
+        { apikey: env.publishableKey, authorization: `Bearer ${jwt}` },
+      ],
+    },
   ];
-  const objectHeaders: Record<string, string>[] = [keyHeaders, {}];
-  for (const table of READ_TABLES) {
-    const [column, value] = known[table];
-    const all = await anon.from(table).select('*');
-    expect(all.error, `${table} select`).not.toBeNull();
-    expect(all.data, `${table} select`).toBeNull();
-    const one = await anon.from(table).select('*').eq(column, value);
-    expect(one.error, `${table} by id`).not.toBeNull();
-    expect(one.data, `${table} by id`).toBeNull();
-    const counted = await anon
-      .from(table)
-      .select('*', { count: 'exact', head: true });
-    expect(counted.count, `${table} count`).toBeNull();
-
-    const address = `${env.url}/rest/v1/${table}?select=*&${column}=eq.${value}`;
-    for (const headers of dataHeaders) {
-      const where = `${table} http ${Object.keys(headers).join('+')}`;
-      const reply = await request.get(address, { headers });
-      expect(reply.status(), where).toBeGreaterThanOrEqual(400);
-      const text = await reply.text();
-      expectNone(
-        text,
-        ['correct_option_id', 'guest_session_id', '"content"', '"slug"'],
-        where,
-      );
-    }
-  }
-
-  // anon: the private bucket through Storage.
-  const bucket = anon.storage.from('exam-sources');
   const fileName = objectPath.slice(objectPath.lastIndexOf('/') + 1);
-  const downloaded = await bucket.download(objectPath);
-  expect(downloaded.error).not.toBeNull();
-  expect(downloaded.data).toBeNull();
-  const signed = await bucket.createSignedUrl(objectPath, 60);
-  expect(signed.error).not.toBeNull();
-  expect(signed.data).toBeNull();
   const objectFolder = objectPath.slice(0, objectPath.lastIndexOf('/'));
   expect(objectFolder).not.toBe('');
-  for (const folder of ['', objectFolder]) {
-    const listed = await bucket.list(folder, { search: fileName });
-    expect(
-      listed.error !== null || listed.data.length === 0,
-      `list ${folder}`,
-    ).toBe(true);
-  }
   const storageBase = `${env.url}/storage/v1/object`;
-  const objectAddresses = [
-    bucket.getPublicUrl(objectPath).data.publicUrl,
-    `${storageBase}/exam-sources/${objectPath}`,
-    `${storageBase}/authenticated/exam-sources/${objectPath}`,
-    `${storageBase}/info/exam-sources/${objectPath}`,
-  ];
-  for (const address of objectAddresses) {
-    for (const headers of objectHeaders) {
-      const where = `${new URL(address).pathname} ${Object.keys(headers).length}`;
-      const reply = await request.get(address, { headers });
-      expect(reply.status(), where).toBeGreaterThanOrEqual(400);
-      expect(sha256Of(await reply.body()), where).not.toBe(recordingSha);
+
+  for (const { role, client, refusal, headerSets } of publicRoles) {
+    for (const table of READ_TABLES) {
+      const [column, value] = known[table];
+      const all = await client.from(table).select('*');
+      expect(all.error?.code, `${role}: ${table} select`).toBe('42501');
+      expect(all.data, `${role}: ${table} select`).toBeNull();
+      const one = await client.from(table).select('*').eq(column, value);
+      expect(one.error?.code, `${role}: ${table} by id`).toBe('42501');
+      expect(one.data, `${role}: ${table} by id`).toBeNull();
+      const counted = await client
+        .from(table)
+        .select('*', { count: 'exact', head: true });
+      expect(counted.count, `${role}: ${table} count`).toBeNull();
+
+      const address = `${env.url}/rest/v1/${table}?select=*&${column}=eq.${value}`;
+      for (const [index, headers] of headerSets.entries()) {
+        const where = `${role}: ${table} http ${Object.keys(headers).join('+')}`;
+        const reply = await request.get(address, { headers });
+        const text = await reply.text();
+        expect(reply.status(), where).toBeGreaterThanOrEqual(400);
+        // With its full credentials the role itself is refused the table.
+        if (index === 0) {
+          expect(reply.status(), where).toBe(refusal);
+          expect(text.includes('"42501"'), where).toBe(true);
+        }
+        expectNone(
+          text,
+          ['correct_option_id', 'guest_session_id', '"content"', '"slug"'],
+          where,
+        );
+      }
+    }
+
+    // The private bucket through Storage.
+    const bucket = client.storage.from('exam-sources');
+    const downloaded = await bucket.download(objectPath);
+    expect(downloaded.error, `${role}: download`).not.toBeNull();
+    expect(downloaded.data, `${role}: download`).toBeNull();
+    const signed = await bucket.createSignedUrl(objectPath, 60);
+    expect(signed.error, `${role}: sign`).not.toBeNull();
+    expect(signed.data, `${role}: sign`).toBeNull();
+    for (const folder of ['', objectFolder]) {
+      const listed = await bucket.list(folder, { search: fileName });
+      expect(
+        listed.error !== null || listed.data.length === 0,
+        `${role}: list ${folder}`,
+      ).toBe(true);
+    }
+    const objectAddresses = [
+      bucket.getPublicUrl(objectPath).data.publicUrl,
+      `${storageBase}/exam-sources/${objectPath}`,
+      `${storageBase}/authenticated/exam-sources/${objectPath}`,
+      `${storageBase}/info/exam-sources/${objectPath}`,
+    ];
+    for (const address of objectAddresses) {
+      for (const headers of headerSets) {
+        const where = `${role}: ${new URL(address).pathname} ${Object.keys(headers).length}`;
+        const reply = await request.get(address, { headers });
+        expect(reply.status(), where).toBeGreaterThanOrEqual(400);
+        expect(sha256Of(await reply.body()), where).not.toBe(recordingSha);
+      }
     }
   }
 
-  // anon and authenticated in SQL: no privilege on the tables, RLS enabled,
+  // The same two roles in SQL: no privilege on the tables, RLS enabled,
   // and the objects of the bucket are invisible.
   const open = psqlJson<string[]>(`select coalesce(json_agg(r.role || ':'
       || t.name), '[]'::json)

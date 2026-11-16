@@ -74,7 +74,9 @@ import {
   attemptUrl,
   audioOf,
   card,
+  SIGNED_AUDIO,
   confirmationOf,
+  expectNone,
   expectStatus,
   finishFromShell,
   goToHoeren,
@@ -1890,7 +1892,24 @@ test('one guest lifecycle change never affects others across exams', async ({
   ];
   for (const reply of refused) {
     expect(reply.status).toBe(401);
-    expect(JSON.stringify(reply.body)).toContain('session-invalid');
+    const text = JSON.stringify(reply.body);
+    expect(text).toContain('session-invalid');
+    expect(reply.cacheControl).toContain('no-store');
+    // Neither a key, a recording address nor the id of any attempt.
+    expectNone(
+      text,
+      [
+        'correctOptionId',
+        'correct_option_id',
+        'answer_keys',
+        SIGNED_AUDIO,
+        '"url"',
+        liveAttempt,
+        completedId,
+        cancelledId,
+      ],
+      'expired actor',
+    );
   }
   expect(guestRows(actorSession)).toEqual(actorRows);
   await expectObserversUntouched('actor expired');

@@ -452,3 +452,11 @@ export const insertGuestEndingIn = (
 export const isGuestExpired = (sessionId: string): boolean =>
   psql(`select clock_timestamp() >= expires_at
     from public.guest_sessions where id = ${quote(sessionId)}`) === 't';
+
+// The JWT secret of the isolated test database, as its own settings hold it.
+// It signs test tokens of an API role only; it is never printed.
+export const readTestJwtSecret = (): string => {
+  const secret = psql("select current_setting('app.settings.jwt_secret')");
+  if (secret.length < 32) throw new Error('the test JWT secret is missing');
+  return secret;
+};
