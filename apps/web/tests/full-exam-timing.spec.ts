@@ -40,6 +40,7 @@ import {
   FULL_PILOT,
   FULL_TIMING,
   FULL_TRACK_ID,
+  SHORT_TIMING,
   ensureConfirmedTestProfile,
   fullKeyOf,
   fullWrongOf,
@@ -49,6 +50,7 @@ import {
   HOEREN_URL,
   LESEN_URL,
   attemptIdOf,
+  attemptLesenUrl,
   attemptUrl,
   card,
   expectStatus,
@@ -1486,4 +1488,142 @@ test('full exam functions and routes deny public roles and foreign guests', asyn
   // Nothing of the owner's exam changed.
   expect(examRunTimes(attemptId)).toEqual(before);
   expect(await readAttempts(sessionOf(intruder))).toEqual([]);
+});
+
+// The first answer of the page after the end of the exam (#107). Scripts
+// are off, so nothing of the page (no status, no refresh) runs before the
+// check: what is asserted is the document the server rendered for the
+// first GET. Its only request to the app is that document.
+const firstRead = async (browser: Browser, token: string, path: string) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: token, url: FULL_ORIGIN },
+  ]);
+  const page = await context.newPage();
+  const documents: string[] = [];
+  const commands: string[] = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (request.resourceType() === 'document') documents.push(pathname);
+    if (pathname.startsWith('/api/')) commands.push(pathname);
+  });
+  const response = await page.goto(`${FULL_ORIGIN}${path}`);
+  expect(response?.status()).toBe(200);
+  expect(documents).toEqual([path]);
+  expect(commands).toEqual([]);
+  return { context, page };
+};
+
+const countOf = (page: Page, testId: string): Promise<number> =>
+  page.getByTestId(testId).count();
+
+const sleep = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+
+// The database and the test run on the same host; a small margin covers
+// the rest.
+const waitPast = (moment: number, marginMs = 400) =>
+  sleep(moment - Date.now() + marginMs);
+
+// A full exam started through the real start, on its own short profile.
+const startedExam = async (created: CreatedGuest, exam: Exam) => {
+  const started = await startFor(depsNow(), created.token, exam.slug, {
+    mode: 'exam',
+    selection: 'all',
+  });
+  if (!started.ok || started.result.outcome !== 'accepted') {
+    throw new Error(`full start failed: ${JSON.stringify(started)}`);
+  }
+  const { attemptId, state } = started.result;
+  return { attemptId, startedAtMs: state.startedAtMs };
+};
+
+test('first page read after exam end shows closed result', async ({
+  browser,
+}) => {
+  const exam = await publishExam(SHORT_TIMING);
+  const created = await newGuest(depsNow());
+  const { attemptId, startedAtMs } = await startedExam(created, exam);
+  const key = fullKeyOf('hoeren-1');
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId,
+    ...answer('hoeren-1', key),
+  });
+  expect(saved.ok).toBe(true);
+  const { hoerenSeconds, transitionSeconds, lesenSeconds } = SHORT_TIMING;
+  const endMs =
+    startedAtMs +
+    (hoerenSeconds + transitionSeconds + lesenSeconds) * SECOND_MS;
+  expect(Date.now()).toBeLessThan(startedAtMs + hoerenSeconds * SECOND_MS);
+
+  // Every phase ends without a single request: Lesen starts by itself at
+  // the end of the transition and ends with nobody reading.
+  await waitPast(endMs);
+  expect(await readAttempts(sessionOf(created))).toEqual([
+    { id: attemptId, status: 'active' },
+  ]);
+  expect(examRunTimes(attemptId).lesenStartedAt).toBeNull();
+
+  const path = attemptUrl(exam.slug, attemptId);
+  const { context, page } = await firstRead(browser, created.token, path);
+  try {
+    expect(await countOf(page, 'attempt-review')).toBe(1);
+    expect(await countOf(page, 'finish-attempt')).toBe(0);
+    expect(await countOf(page, 'cancel-attempt')).toBe(0);
+    expect(await countOf(page, 'attempt-timer')).toBe(0);
+  } finally {
+    await context.close();
+  }
+  expect(await readAttempts(sessionOf(created))).toEqual([
+    { id: attemptId, status: 'completed' },
+  ]);
+  const results = (await readResults(attemptId)) as {
+    score: number;
+    max_score: number;
+  }[];
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({ score: 1, max_score: 45 });
+  expect((await readSubmission(attemptId)).frozen_answers).toEqual({
+    'hoeren-1': { optionId: key, revision: 1 },
+  });
+});
+
+// Lesen long enough to open its page well before its end.
+const LONG_LESEN_TIMING: TimingSettings = { ...SHORT_TIMING, lesenSeconds: 60 };
+
+test('page read before exam end keeps lesen open', async ({ browser }) => {
+  const exam = await publishExam(LONG_LESEN_TIMING);
+  const created = await newGuest(depsNow());
+  const { attemptId, startedAtMs } = await startedExam(created, exam);
+
+  // Hören ends; inside the transition the guest starts Lesen early.
+  await waitPast(startedAtMs + LONG_LESEN_TIMING.hoerenSeconds * SECOND_MS);
+  const begun = await beginLesen(depsNow(), created.token, { attemptId });
+  if (!begun.ok || begun.result.outcome !== 'accepted') {
+    throw new Error(`begin failed: ${JSON.stringify(begun)}`);
+  }
+  const { deadlineMs } = begun.result.state;
+  const lesenStartedAt = examRunTimes(attemptId).lesenStartedAt;
+  if (!lesenStartedAt || deadlineMs === null) throw new Error('no Lesen');
+  expect(deadlineMs).toBe(
+    Date.parse(lesenStartedAt) + LONG_LESEN_TIMING.lesenSeconds * SECOND_MS,
+  );
+
+  const path = attemptLesenUrl(exam.slug, attemptId);
+  const { context, page } = await firstRead(browser, created.token, path);
+  try {
+    expect(Date.now()).toBeLessThan(deadlineMs);
+    await expect(page.getByTestId('attempt-timer')).toHaveAttribute(
+      'data-deadline-ms',
+      String(deadlineMs),
+    );
+    expect(await countOf(page, 'finish-attempt')).toBe(1);
+    expect(await countOf(page, 'attempt-review')).toBe(0);
+  } finally {
+    await context.close();
+  }
+  expect(await readAttempts(sessionOf(created))).toEqual([
+    { id: attemptId, status: 'active' },
+  ]);
+  expect(await readResults(attemptId)).toEqual([]);
 });
