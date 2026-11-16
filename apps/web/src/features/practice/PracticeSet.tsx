@@ -56,7 +56,7 @@ export const PracticeSet = ({
     ),
   );
   const training = useTraining();
-  const { pending, choose, retry } = training;
+  const { pending, choose, retry, isClosed } = training;
   // The shell knows every answer confirmed since the page was loaded; the
   // page's own answers count outside a shell (component tests).
   const selections = { ...initialSelections, ...training.selections };
@@ -119,6 +119,7 @@ export const PracticeSet = ({
         question={question}
         selectedOptionId={choice?.optionId ?? selections[question.id] ?? null}
         status={choice?.status}
+        isClosed={isClosed}
         onChoose={(optionId) => choose(question.id, optionId)}
         onRetry={() => retry(question.id)}
       />

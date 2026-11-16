@@ -14,6 +14,9 @@ export interface TrainingState {
   selections: Selections;
   pending: PendingAnswers;
   review: AttemptReview | null;
+  // The attempt is closed for this page (submission accepted, completed or
+  // expired): the answers are shown, not changed.
+  isClosed: boolean;
   choose: (questionId: string, optionId: string) => void;
   retry: (questionId: string) => void;
   readProgress: () => AttemptProgress | null;
@@ -28,6 +31,7 @@ export const TrainingContext = createContext<TrainingState>({
   selections: NO_SELECTIONS,
   pending: NO_PENDING,
   review: null,
+  isClosed: false,
   choose: () => undefined,
   retry: () => undefined,
   readProgress: () => null,
