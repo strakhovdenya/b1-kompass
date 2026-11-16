@@ -31,6 +31,7 @@ import type {
 } from '../src/server/guest-session/session';
 import {
   depsNow,
+  insertRawVersion,
   latestVersionOf,
   newGuest,
   readAnswerRows,
@@ -57,6 +58,7 @@ import {
 import { createTestRecording } from './support/global-setup';
 import {
   ANSWER_URL,
+  attemptLesenUrl,
   attemptUrl,
   card,
   expectStatus,
@@ -1103,4 +1105,201 @@ test('timed status reconciles without waiting for held answer save', async ({
     'hoeren-1': { optionId: fullKeyOf('hoeren-1'), revision: 1 },
   });
   await context.close();
+});
+
+// The first answer of the page after the deadline (#107). Scripts are off,
+// so nothing of the page (no status, no refresh) runs before the check:
+// what is asserted is the document the server rendered for the first GET.
+// Its only request to the app is that document; no command is sent.
+const firstRead = async (browser: Browser, token: string, path: string) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: token, url: FULL_ORIGIN },
+  ]);
+  const page = await context.newPage();
+  const documents: string[] = [];
+  const commands: string[] = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (request.resourceType() === 'document') documents.push(pathname);
+    if (pathname.startsWith('/api/')) commands.push(pathname);
+  });
+  const response = await page.goto(`${FULL_ORIGIN}${path}`);
+  expect(response?.status()).toBe(200);
+  expect(documents).toEqual([path]);
+  expect(commands).toEqual([]);
+  return { context, page };
+};
+
+const countOf = (page: Page, testId: string): Promise<number> =>
+  page.getByTestId(testId).count();
+
+const expectClosedWithResult = async (page: Page) => {
+  expect(await countOf(page, 'attempt-review')).toBe(1);
+  expect(await countOf(page, 'finish-attempt')).toBe(0);
+  expect(await countOf(page, 'cancel-attempt')).toBe(0);
+  expect(await countOf(page, 'attempt-timer')).toBe(0);
+};
+
+// A block of four seconds with one answer accepted before its deadline.
+// After the deadline nothing reaches the app or the database functions:
+// the run stays active in the database until something reads it.
+const answeredBeforeDeadline = async () => {
+  const exam = await publishTimedExam(SHORT_TIMING);
+  const created = await newGuest(depsNow());
+  const started = await startedTimed(created.token, exam.slug);
+  const key = fullKeyOf('hoeren-1');
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId: started.attemptId,
+    ...answer('hoeren-1', key),
+  });
+  expect(saved.ok).toBe(true);
+  expect(Date.now()).toBeLessThan(started.deadlineMs);
+  expect(statusOf(started.attemptId)).toBe('active');
+  expect(await readResults(started.attemptId)).toEqual([]);
+  await waitPast(started.deadlineMs);
+  expect(statusOf(started.attemptId)).toBe('active');
+  const path = attemptUrl(exam.slug, started.attemptId);
+  return { created, started, key, path };
+};
+
+test('first page read after deadline shows closed result', async ({
+  browser,
+}) => {
+  const { created, started, key, path } = await answeredBeforeDeadline();
+  const { context, page } = await firstRead(browser, created.token, path);
+  try {
+    await expectClosedWithResult(page);
+  } finally {
+    await context.close();
+  }
+  expect(statusOf(started.attemptId)).toBe('completed');
+  const results = (await readResults(started.attemptId)) as ResultRow[];
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({ score: 1, max_score: 20 });
+  expect((await readSubmission(started.attemptId)).frozen_answers).toEqual({
+    'hoeren-1': { optionId: key, revision: 1 },
+  });
+});
+
+test('page read before deadline keeps run open', async ({ browser }) => {
+  const exam = await publishTimedExam(BROWSER_TIMING);
+  const created = await newGuest(depsNow());
+  const started = await startedTimed(created.token, exam.slug);
+  const path = attemptUrl(exam.slug, started.attemptId);
+  const { context, page } = await firstRead(browser, created.token, path);
+  try {
+    expect(Date.now()).toBeLessThan(started.deadlineMs);
+    await expect(timerOf(page)).toHaveAttribute(
+      'data-deadline-ms',
+      String(started.deadlineMs),
+    );
+    expect(await countOf(page, 'finish-attempt')).toBe(1);
+    expect(await countOf(page, 'attempt-review')).toBe(0);
+  } finally {
+    await context.close();
+  }
+  expect(statusOf(started.attemptId)).toBe('active');
+  expect(await readResults(started.attemptId)).toEqual([]);
+  expect((await readSubmission(started.attemptId)).frozen_answers).toBeNull();
+});
+
+test('first page read after deadline with failed result shows pending', async ({
+  browser,
+}) => {
+  // A version whose key misses one Lesen task: the deadline freezes the
+  // answers, their result cannot be computed. Publication refuses such a
+  // version, so it is written directly, with the one recording of a
+  // published exam that its profile needs.
+  const slug = `test-timed-pending-${randomUUID().slice(0, 8)}`;
+  const { 'lesen-7': missing, ...partialKeys } = FULL_PILOT.keys;
+  if (!missing) throw new Error('lesen-7 has no key');
+  const versionId = await insertRawVersion({
+    slug,
+    content: FULL_PILOT.content,
+    keys: partialKeys,
+  });
+  const published = await publishTimedExam(null);
+  psql(`insert into public.exam_version_audio (exam_version_id, track_id,
+      kind, object_path, content_type, sha256)
+    select ${quote(versionId)}, track_id, kind, object_path, content_type,
+      sha256
+    from public.exam_version_audio
+    where exam_version_id = ${quote(published.versionId)}`);
+  ensureConfirmedTestProfile(owner, versionId, SHORT_TIMING);
+  const created = await newGuest(depsNow());
+  const started = await startedTimed(created.token, slug, 'lesen');
+  const key = fullKeyOf('lesen-1');
+  const saved = await saveAnswer(depsNow(), created.token, {
+    attemptId: started.attemptId,
+    ...answer('lesen-1', key),
+  });
+  expect(saved.ok).toBe(true);
+  expect(Date.now()).toBeLessThan(started.deadlineMs);
+  await waitPast(started.deadlineMs);
+  expect(statusOf(started.attemptId)).toBe('active');
+
+  const path = attemptLesenUrl(slug, started.attemptId);
+  const { context, page } = await firstRead(browser, created.token, path);
+  try {
+    await expect(page.getByTestId('submission-accepted')).toHaveAttribute(
+      'data-phase',
+      'accepted',
+    );
+    expect(await countOf(page, 'finish-attempt')).toBe(0);
+    expect(await countOf(page, 'cancel-attempt')).toBe(0);
+    expect(await countOf(page, 'attempt-review')).toBe(0);
+    expect(await countOf(page, 'attempt-timer')).toBe(0);
+  } finally {
+    await context.close();
+  }
+  expect(statusOf(started.attemptId)).toBe('submitted');
+  expect(await readResults(started.attemptId)).toEqual([]);
+  expect((await readSubmission(started.attemptId)).frozen_answers).toEqual({
+    'lesen-1': { optionId: key, revision: 1 },
+  });
+});
+
+test('repeated page read after deadline creates no second result', async ({
+  browser,
+}) => {
+  const { created, started, key, path } = await answeredBeforeDeadline();
+  const first = await firstRead(browser, created.token, path);
+  try {
+    await expectClosedWithResult(first.page);
+  } finally {
+    await first.context.close();
+  }
+  const answers = await readAnswerRows(started.attemptId);
+  expect(answers).toEqual([
+    { question_id: 'hoeren-1', option_id: key, revision: 1 },
+  ]);
+  const { frozen_answers: frozen } = await readSubmission(started.attemptId);
+  const results = await readResults(started.attemptId);
+  expect(results).toHaveLength(1);
+
+  // A late new answer and a late change of the accepted one are refused.
+  const lateWrites = [
+    answer('hoeren-2', fullKeyOf('hoeren-2')),
+    answer('hoeren-1', fullWrongOf('hoeren-1'), 2),
+  ];
+  for (const late of lateWrites) {
+    const refused = await saveAnswer(depsNow(), created.token, {
+      attemptId: started.attemptId,
+      ...late,
+    });
+    expect(refused).toEqual({ ok: false, error: 'attempt-not-found' });
+  }
+
+  const again = await firstRead(browser, created.token, path);
+  try {
+    await expectClosedWithResult(again.page);
+  } finally {
+    await again.context.close();
+  }
+  expect(statusOf(started.attemptId)).toBe('completed');
+  expect(await readAnswerRows(started.attemptId)).toEqual(answers);
+  const after = await readSubmission(started.attemptId);
+  expect(after.frozen_answers).toEqual(frozen);
+  expect(await readResults(started.attemptId)).toEqual(results);
 });

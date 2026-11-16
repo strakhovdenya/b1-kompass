@@ -19,11 +19,24 @@ export interface ServiceConfig {
 
 export const systemClock: Clock = { now: () => new Date() };
 
+// Inside one render of Server Components Next answers a repeated identical
+// GET fetch with the first response. A page that reads a row, changes it
+// through a database function and reads it again would see the state
+// before the change (#107). A request that carries its own signal is not
+// deduplicated, so every read of the client gets the current database
+// state. The signal never aborts; a caller's own signal is kept.
+const undedupedFetch: typeof fetch = (input, init) =>
+  fetch(input, {
+    ...init,
+    signal: init?.signal ?? new AbortController().signal,
+  });
+
 // The only privileged Supabase client of the runtime. It bypasses RLS, so it
 // lives in src/server and is never imported by UI code.
 export const createServiceClient = (config: ServiceConfig): ServiceClient =>
   createClient(config.url, config.secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: undedupedFetch },
   });
 
 export const readServiceConfig = (
