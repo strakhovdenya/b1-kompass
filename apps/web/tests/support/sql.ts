@@ -333,3 +333,122 @@ export const examRunTimes = (attemptId: string): ExamRunTimes =>
   psqlJson<ExamRunTimes>(`select json_build_object(
       'acceptedAt', accepted_at, 'lesenStartedAt', lesen_started_at)
     from public.attempt_runs where attempt_id = ${quote(attemptId)}`);
+
+type StoredRow = Record<string, unknown>;
+
+export interface StoredGuestAttempt {
+  attempt: StoredRow;
+  run: StoredRow | null;
+  answers: StoredRow[];
+  result: StoredRow | null;
+  events: string[];
+}
+
+export interface StoredGuest {
+  session: StoredRow | null;
+  commands: StoredRow[];
+  attempts: StoredGuestAttempt[];
+  // Every event of the visitor of the session, with the attempt it names.
+  events: { kind: string; attemptId: string | null }[];
+}
+
+// Every stored row of the given guest sessions (#85), read straight from the
+// test database in one query: the session, its commands, each attempt with
+// its run, answers, result and events, and the events of its visitor. Whole
+// rows, so a changed column is noticed as well as a new row. Equal before and
+// after means a request wrote nothing for this guest.
+export const guestRowsOf = (
+  sessionIds: readonly string[],
+): Record<string, StoredGuest> =>
+  psqlJson<Record<string, StoredGuest>>(`select coalesce(jsonb_object_agg(
+    ids.id, jsonb_build_object(
+    'session', (select to_jsonb(s) from public.guest_sessions s
+      where s.id = ids.id),
+    'commands', (select coalesce(jsonb_agg(to_jsonb(c) order by c.command_id),
+      '[]') from public.attempt_commands c where c.guest_session_id = ids.id),
+    'attempts', (select coalesce(jsonb_agg(jsonb_build_object(
+        'attempt', to_jsonb(a),
+        'run', (select to_jsonb(r) from public.attempt_runs r
+          where r.attempt_id = a.id),
+        'answers', (select coalesce(jsonb_agg(to_jsonb(x)
+          order by x.question_id), '[]')
+          from public.attempt_answers x where x.attempt_id = a.id),
+        'result', (select to_jsonb(res) from public.attempt_results res
+          where res.attempt_id = a.id),
+        'events', (select coalesce(jsonb_agg(e.kind order by e.id), '[]')
+          from public.guest_events e where e.attempt_id = a.id)
+      ) order by a.id), '[]')
+      from public.attempts a where a.guest_session_id = ids.id),
+    'events', (select coalesce(jsonb_agg(jsonb_build_object(
+        'kind', e.kind, 'attemptId', e.attempt_id) order by e.id), '[]')
+      from public.guest_events e
+      join public.guest_sessions s on s.visitor_id = e.visitor_id
+      where s.id = ids.id))), '{}')
+    from unnest(array[${sessionIds.map(quote).join(', ')}]::uuid[])
+      as ids (id)`);
+
+const rowsIn = (
+  stored: Readonly<Record<string, StoredGuest>>,
+  sessionId: string,
+): StoredGuest => {
+  const rows = stored[sessionId];
+  if (!rows) throw new Error(`no rows of the session ${sessionId}`);
+  return rows;
+};
+
+export const guestRows = (sessionId: string): StoredGuest =>
+  rowsIn(guestRowsOf([sessionId]), sessionId);
+
+const withoutPlace = (stored: StoredGuest): StoredGuest => ({
+  ...stored,
+  attempts: stored.attempts.map((item) => {
+    const { progress, updated_at: updatedAt, ...attempt } = item.attempt;
+    void progress;
+    void updatedAt;
+    return { ...item, attempt };
+  }),
+});
+
+// The same without the place of the guest, for the given sessions in their
+// order: an open page reports its place on its own, which is no change of the
+// answers, the run or the result.
+export const settledGuestRowsOf = (
+  sessionIds: readonly string[],
+): StoredGuest[] => {
+  const stored = guestRowsOf(sessionIds);
+  return sessionIds.map((id) => withoutPlace(rowsIn(stored, id)));
+};
+
+export interface ExamAttemptOwner {
+  examId: string;
+  sessionId: string;
+  attempts: number;
+}
+
+// Who holds attempts of the given exams, whatever the session: an attempt a
+// refused request created under another guest would show here. The exams of
+// a test have slugs of their own, so parallel specs never add to it.
+export const examAttemptOwners = (
+  examIds: readonly string[],
+): ExamAttemptOwner[] =>
+  psqlJson<ExamAttemptOwner[]>(`select coalesce(jsonb_agg(jsonb_build_object(
+      'examId', t.exam_id, 'sessionId', t.guest_session_id,
+      'attempts', t.n) order by t.exam_id, t.guest_session_id), '[]')
+    from (select exam_id, guest_session_id, count(*) as n
+      from public.attempts
+      where exam_id in (${examIds.map(quote).join(', ')})
+      group by exam_id, guest_session_id) t`);
+
+// A guest session whose fixed term ends the given seconds after the database
+// clock, through the test-only fixture (installM2Fixtures): its id.
+export const insertGuestEndingIn = (
+  tokenHash: string,
+  seconds: number,
+): string =>
+  psql(`select m2_test.insert_guest_ending_in(${quote(tokenHash)},
+    ${seconds})`);
+
+// Whether the term of the session is over by the clock of the database.
+export const isGuestExpired = (sessionId: string): boolean =>
+  psql(`select clock_timestamp() >= expires_at
+    from public.guest_sessions where id = ${quote(sessionId)}`) === 't';

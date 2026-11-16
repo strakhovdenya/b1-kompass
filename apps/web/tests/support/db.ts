@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AttemptReview } from '@b1k/domain';
@@ -27,6 +27,7 @@ import type {
 } from '../../src/server/guest-session/session';
 import { PILOT_EXAM_SLUG } from '../../src/server/material/published';
 import { TEST_GUEST_SESSIONS_PER_MINUTE, readTestSupabaseEnv } from './env';
+import { insertGuestEndingIn } from './sql';
 
 const env = readTestSupabaseEnv();
 
@@ -516,6 +517,53 @@ export const submitStored = async (
     ok: false,
     error: review.error === 'not-completed' ? 'unavailable' : review.error,
   };
+};
+
+// An accepted explicit start of the guest of the token at one exam (the free
+// training of the whole set unless overridden): the id of the new attempt.
+export const startedOn = async (
+  token: string,
+  slug: string,
+  overrides: Partial<StartBody> = {},
+): Promise<string> => {
+  const started = await startFor(depsNow(), token, slug, overrides);
+  if (!started.ok || started.result.outcome !== 'accepted') {
+    throw new Error(`start failed: ${JSON.stringify(started)}`);
+  }
+  return started.result.attemptId;
+};
+
+// The stored answers of an own active attempt submitted and scored.
+export const completedOn = async (
+  token: string,
+  attemptId: string,
+): Promise<void> => {
+  const done = await submitStored(depsNow(), token, { attemptId });
+  if (!done.ok) throw new Error(`complete failed: ${done.error}`);
+};
+
+export interface ShortGuest {
+  token: string;
+  sessionId: string;
+}
+
+// A guest with a token of its own whose term ends in the given seconds (the
+// fixtures of installM2Fixtures must be installed).
+export const shortGuest = (seconds: number): ShortGuest => {
+  const token = randomBytes(32).toString('base64url');
+  const sessionId = insertGuestEndingIn(hashGuestToken(token), seconds);
+  return { token, sessionId };
+};
+
+// The path of the one recording of a version inside the private bucket.
+export const audioObjectPathOf = async (versionId: string): Promise<string> => {
+  const { data, error } = await serviceDb
+    .from('exam_version_audio')
+    .select('object_path')
+    .eq('exam_version_id', versionId)
+    .single<{ object_path: string }>();
+  if (error) throw error;
+  return data.object_path;
 };
 
 export interface StoredRunSubmission {

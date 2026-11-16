@@ -187,3 +187,88 @@ export const publishNextFullVersion = async (
   if (!outcome.isNew) throw new Error(`${exam.slug} got no new version`);
   return outcome.versionId;
 };
+
+// Two independent full DTZ exams A and B of one test (#85). B is the
+// synthetic set; A is a changed copy with one task and a marker only it has,
+// so material of one exam is recognised in an answer about the other. Each
+// has a recording of its own, hence its own object and signed address, and a
+// confirmed timing profile for the timed modes.
+export const PAIR_REPLACED = 'lesen-25';
+export const PAIR_A_ONLY = 'lesen-25-a';
+export const PAIR_A_MARKER = '(Satz A)';
+
+export const PAIR_MATERIAL_A: FullMaterial = variantOf(FULL_PILOT, {
+  marker: PAIR_A_MARKER,
+  replace: { from: PAIR_REPLACED, to: PAIR_A_ONLY },
+});
+
+export interface PairedExam extends PublishedFullExam {
+  examId: string;
+  versionId: string;
+  questionIds: string[];
+}
+
+export interface ExamPair {
+  examA: PairedExam;
+  examB: PairedExam;
+}
+
+export interface PairSetup {
+  db: SupabaseClient;
+  // The owner SQL runner of the isolated test database.
+  owner: SqlRunner;
+  // Two different recordings: A and B never share an object.
+  audioA: Omit<AudioFileInput, 'trackId'>;
+  audioB: Omit<AudioFileInput, 'trackId'>;
+  timing?: TimingSettings;
+}
+
+const publishPaired = async (
+  setup: PairSetup,
+  tag: string,
+  label: 'a' | 'b',
+): Promise<PairedExam> => {
+  const material = label === 'a' ? PAIR_MATERIAL_A : FULL_PILOT;
+  const slug = `test-sec-${tag}-${label}`;
+  const title = `SEC ${tag} ${label.toUpperCase()} Übungstest`;
+  const outcome = await publishExamVersion(setup.db, {
+    slug,
+    title,
+    format: 'DTZ',
+    intent: 'new-exam',
+    content: material.content,
+    keys: material.keys,
+    audio: [
+      {
+        trackId: FULL_TRACK_ID,
+        ...(label === 'a' ? setup.audioA : setup.audioB),
+      },
+    ],
+  });
+  if (!outcome.isNew) throw new Error(`${slug} was published before`);
+  const exam = await setup.db
+    .from('exams')
+    .select('id')
+    .eq('slug', slug)
+    .single<{ id: string }>();
+  if (exam.error) throw exam.error;
+  ensureConfirmedTestProfile(
+    setup.owner,
+    outcome.versionId,
+    setup.timing ?? FULL_TIMING,
+  );
+  return {
+    slug,
+    title,
+    examId: exam.data.id,
+    versionId: outcome.versionId,
+    questionIds: material.content.questions.map((question) => question.id),
+  };
+};
+
+export const publishExamPair = async (setup: PairSetup): Promise<ExamPair> => {
+  const tag = randomUUID().slice(0, 8);
+  const examA = await publishPaired(setup, tag, 'a');
+  const examB = await publishPaired(setup, tag, 'b');
+  return { examA, examB };
+};

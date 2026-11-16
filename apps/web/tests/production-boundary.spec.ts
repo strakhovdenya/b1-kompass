@@ -361,3 +361,142 @@ test('time override attempts and cloud fixture installation are refused', async 
     ).toThrow(/non-local/);
   }
 });
+
+// M3: the owner CLI and the privileged credentials (#85) ----------------------
+//
+// The owner tools (scripts/manage-exam-library.ts with its manifest reader and
+// the publisher) run on the owner's machine only. The check reads the build
+// the E2E servers run, file by file: no chunk, manifest, source map or server
+// trace of `.next` names or contains them, the test clock wrappers or the
+// value of a key; the browser chunks also lack the name of the secret.
+
+// A string literal of each owner module that a bundler would keep. Every
+// marker is first found in its source, so a renamed message cannot turn this
+// into a search for nothing.
+const OWNER_MARKERS: readonly [string, string][] = [
+  ['scripts/manage-exam-library.ts', 'validate <manifest.json>'],
+  ['scripts/lib/owner-exam-manifest.ts', 'manifest-invalid-json'],
+  ['scripts/lib/owner-exam-manifest.ts', 'unsupported-schema-version'],
+  ['scripts/lib/owner-exam-manifest.ts', 'audio-path-traversal'],
+  ['scripts/lib/publish-exam-version.ts', 'audio-object-mismatch'],
+  ['scripts/lib/publish-exam-version.ts', 'publish_exam_version'],
+];
+
+// Names of the owner and test modules as a source map or a trace would list
+// them.
+const OWNER_MODULES = [
+  'manage-exam-library',
+  'owner-exam-manifest',
+  'publish-exam-version',
+  'manage-timing-profile',
+  'seed-pilot-question',
+  'tests/support',
+];
+
+const CLOCK_WRAPPERS = [
+  ...TEST_MARKERS,
+  'start_attempt_at',
+  'insert_guest_ending_in',
+  'save_answer_at',
+  'reconcile_attempt_at',
+];
+
+const isBuiltText = (file: string): boolean =>
+  /\.(?:[cm]?js|css|html|json|map|rsc|txt|body|meta)$/.test(file);
+
+interface BuiltFile {
+  name: string;
+  text: string;
+}
+
+const readBuilt = (directory: string): BuiltFile[] =>
+  filesUnder(directory)
+    .filter(isBuiltText)
+    .map((file) => ({
+      name: relative(file),
+      text: readFileSync(file, 'utf8'),
+    }));
+
+// The files that hold a mark, by name only: a found secret is never printed.
+const holdersOf = (files: readonly BuiltFile[], mark: string): string[] =>
+  files.filter((file) => file.text.includes(mark)).map((file) => file.name);
+
+test('m3 production excludes owner cli and privileged credentials', () => {
+  const built = path.join(WEB, '.next');
+  expect(existsSync(built), 'run `npm run build` before the E2E').toBe(true);
+  const client = readBuilt(path.join(built, 'static'));
+  const server = readBuilt(path.join(built, 'server'));
+  // The manifests and traces next to them; the compiler cache is not served.
+  const top = readdirSync(built, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && isBuiltText(entry.name))
+    .map((entry) => {
+      const file = path.join(built, entry.name);
+      return { name: relative(file), text: readFileSync(file, 'utf8') };
+    });
+  const whole = [...client, ...server, ...top];
+
+  // The reader sees the real build: the browser chunks hold the library of
+  // M3, the server chunks hold the start function and the name of the key
+  // the server reads at run time.
+  expect(
+    client.filter((file) => file.name.endsWith('.js')).length,
+  ).toBeGreaterThan(5);
+  expect(
+    server.filter((file) => file.name.endsWith('.js')).length,
+  ).toBeGreaterThan(5);
+  expect(holdersOf(client, 'exam-card-continue')).not.toEqual([]);
+  expect(holdersOf(server, 'm2_start_attempt')).not.toEqual([]);
+  expect(holdersOf(server, 'SUPABASE_SECRET_KEY')).not.toEqual([]);
+
+  // The owner CLI, its manifest reader and the publisher.
+  for (const [source, marker] of OWNER_MARKERS) {
+    const text = readFileSync(path.join(REPO_ROOT, source), 'utf8');
+    expect(text.includes(marker), `${source} has ${marker}`).toBe(true);
+    expect(holdersOf(whole, marker), marker).toEqual([]);
+  }
+  for (const name of OWNER_MODULES) {
+    expect(holdersOf(whole, name), name).toEqual([]);
+  }
+
+  // The test clock wrappers.
+  const fixtures = readFileSync(
+    path.join(WEB, 'tests', 'support', 'm2-fixtures.sql'),
+    'utf8',
+  );
+  for (const wrapper of CLOCK_WRAPPERS) {
+    if (wrapper !== 'm2-fixtures') {
+      expect(fixtures.includes(wrapper), `fixtures have ${wrapper}`).toBe(true);
+    }
+    expect(holdersOf(whole, wrapper), wrapper).toEqual([]);
+  }
+
+  // The keys: neither value anywhere in the build, and the browser chunks
+  // know neither the name of the secret nor the privileged role.
+  const { secretKey, publishableKey } = readTestSupabaseEnv();
+  expect(secretKey.length).toBeGreaterThan(20);
+  expect(holdersOf(whole, secretKey), 'secret key value').toEqual([]);
+  expect(holdersOf(client, publishableKey), 'publishable key value').toEqual(
+    [],
+  );
+  for (const name of ['SUPABASE_SECRET_KEY', 'service_role', 'sb_secret_']) {
+    expect(holdersOf(client, name), name).toEqual([]);
+  }
+
+  // What the server build traces as its files: nothing of the owner tools,
+  // the private material or the tests.
+  const traces = filesUnder(built).filter(
+    (file) => file.endsWith('.nft.json') && !file.includes(`${path.sep}cache`),
+  );
+  expect(traces.length).toBeGreaterThan(5);
+  for (const file of traces) {
+    const { files } = JSON.parse(readFileSync(file, 'utf8')) as {
+      files: string[];
+    };
+    const foreign = files.filter(
+      (traced) =>
+        !traced.includes('node_modules') &&
+        /(?:^|[\/])(?:scripts|private|tests)[\/]/.test(traced),
+    );
+    expect(foreign, relative(file)).toEqual([]);
+  }
+});

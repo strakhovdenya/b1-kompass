@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test';
 import type {
   APIRequestContext,
+  APIResponse,
   Browser,
   BrowserContext,
   Locator,
@@ -8,6 +9,7 @@ import type {
 } from '@playwright/test';
 import { GUEST_COOKIE } from '../../src/server/guest-session/cookie';
 import { readAttempts, readSessionByToken } from './db';
+import { isGuestExpired } from './sql';
 
 // Browser helpers for specs that drive several guests at once: each guest is
 // its own browser context with its own cookie, session and attempt.
@@ -368,7 +370,10 @@ export interface CommandReply {
 export interface CommandOptions {
   // The guest cookie of the request; none when null.
   token: string | null;
-  // The Origin header: the trusted one when omitted, none when null.
+  // The e2e server the request goes to: the full-set one when omitted.
+  server?: string;
+  // The Origin header: the one that server trusts when omitted, none when
+  // null.
   origin?: string | null;
   headers?: Record<string, string>;
 }
@@ -379,9 +384,14 @@ export const postCommand = async (
   request: APIRequestContext,
   pathname: string,
   body: unknown,
-  { token, origin = FULL_ORIGIN, headers = {} }: CommandOptions,
+  {
+    token,
+    server = FULL_ORIGIN,
+    origin = server,
+    headers = {},
+  }: CommandOptions,
 ): Promise<CommandReply> => {
-  const response = await request.post(`${FULL_ORIGIN}${pathname}`, {
+  const response = await request.post(`${server}${pathname}`, {
     headers: {
       'content-type': 'application/json',
       ...(token ? { cookie: `${GUEST_COOKIE}=${token}` } : {}),
@@ -397,3 +407,135 @@ export const postCommand = async (
     cacheControl: response.headers()['cache-control'] ?? '',
   };
 };
+
+// A browser context that already holds the cookie of a guest on one server.
+export const guestContextOf = async (
+  browser: Browser,
+  token: string,
+  server: string = FULL_ORIGIN,
+): Promise<BrowserContext> => {
+  const context = await browser.newContext({ baseURL: server });
+  await context.addCookies([{ name: GUEST_COOKIE, value: token, url: server }]);
+  return context;
+};
+
+export interface PageReply {
+  status: number;
+  location: string | null;
+  contentType: string;
+  cacheControl: string;
+  setCookie: string | null;
+  // Response headers a shared cache would have added.
+  cacheMarks: string[];
+  body: string;
+}
+
+export interface PageOptions {
+  // The guest cookie of the request; none when null.
+  token: string | null;
+  server?: string;
+  // The flight payload of the address instead of its HTML.
+  rsc?: boolean;
+  headers?: Record<string, string>;
+}
+
+const CACHE_MARKS = ['x-nextjs-cache', 'age', 'x-vercel-cache'];
+
+const replyOf = async (response: APIResponse): Promise<PageReply> => {
+  const headers = response.headers();
+  return {
+    status: response.status(),
+    location: headers.location ?? null,
+    contentType: headers['content-type'] ?? '',
+    cacheControl: headers['cache-control'] ?? '',
+    setCookie: headers['set-cookie'] ?? null,
+    cacheMarks: CACHE_MARKS.filter((name) => headers[name] !== undefined),
+    body: await response.text(),
+  };
+};
+
+// One GET of a page as the given guest, without following a redirect to
+// another address. An RSC request without its cache-busting parameter is
+// answered by a redirect to the same path with it: that one is followed by
+// hand with the same headers, because the cookie header is not carried over.
+export const readPage = async (
+  request: APIRequestContext,
+  pathname: string,
+  { token, server = FULL_ORIGIN, rsc = false, headers = {} }: PageOptions,
+): Promise<PageReply> => {
+  const sent = {
+    ...(token ? { cookie: `${GUEST_COOKIE}=${token}` } : {}),
+    ...(rsc ? { RSC: '1' } : {}),
+    ...headers,
+  };
+  const first = await replyOf(
+    await request.get(`${server}${pathname}`, {
+      headers: sent,
+      maxRedirects: 0,
+    }),
+  );
+  if (!rsc || first.location === null) return first;
+  const target = new URL(first.location, server);
+  if (target.pathname !== pathname) return first;
+  return replyOf(
+    await request.get(target.toString(), { headers: sent, maxRedirects: 0 }),
+  );
+};
+
+// Marks of private data inside a page, an RSC payload or a JSON answer (#85).
+
+// The path of every signed address of Storage.
+export const SIGNED_AUDIO = '/storage/v1/object/sign';
+
+// None of the marks is in the text. The text itself is not printed.
+export const expectNone = (
+  text: string,
+  marks: readonly string[],
+  where: string,
+) => {
+  for (const mark of marks) {
+    expect(text.includes(mark), `${where}: ${mark}`).toBe(false);
+  }
+};
+
+// Stored answers as the props of the screens, plain (RSC) or escaped inside
+// HTML.
+export const answerMarksOf = (
+  answers: Readonly<Record<string, string>>,
+): string[] =>
+  Object.entries(answers).flatMap(([questionId, optionId]) => [
+    `"${questionId}":"${optionId}"`,
+    `\\"${questionId}\\":\\"${optionId}\\"`,
+  ]);
+
+export interface Confirmation {
+  phaseRevision: number;
+  skipped: number;
+}
+
+// What a submission or a cancel of the attempt must confirm now, read from
+// the real status command of its owner.
+export const confirmationOf = async (
+  request: APIRequestContext,
+  attemptId: string,
+  options: CommandOptions,
+): Promise<Confirmation> => {
+  const reply = await postCommand(
+    request,
+    `/api/attempts/${attemptId}/status`,
+    {},
+    options,
+  );
+  expect(reply.status, `status of ${attemptId}`).toBe(200);
+  const { state, skipped } = reply.body.result as {
+    state: { phaseRevision: number };
+    skipped: number;
+  };
+  return { phaseRevision: state.phaseRevision, skipped };
+};
+
+// Waits for the term of a guest session to end by the database clock.
+export const untilGuestExpired = (sessionId: string, timeoutMs: number) =>
+  expect
+    .poll(() => isGuestExpired(sessionId), { timeout: timeoutMs })
+    .toBe(true);
