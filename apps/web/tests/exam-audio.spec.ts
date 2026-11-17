@@ -15,9 +15,11 @@ import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import { hashGuestToken } from '../src/server/guest-session/session';
 import type { CreatedGuest } from '../src/server/guest-session/session';
 import {
+  audioObjectPathOf,
   depsNow,
   latestVersionOf,
   newGuest,
+  readProgress,
   readResults,
   serviceDb,
   startFor,
@@ -41,8 +43,10 @@ import {
   goToHoeren,
   goToLesen,
   optionIn,
+  pausePlayer,
   playFrom,
   snapshotOf,
+  sourcePathOf,
   waitForPlayer,
 } from './support/guest-browser';
 import {
@@ -1051,4 +1055,291 @@ test('closed full phase refuses renewal and hidden playback', async ({
   await latePage.waitForTimeout(6000);
   expect(lateAsks).toHaveLength(2);
   await lateContext.close();
+});
+
+const LIBRARY = '**/exams';
+
+// The media handlers the app registers with the system (play, pause...) are
+// recorded by the page itself, so that a press of the system Play button can
+// be made through the very handler the system would call.
+const captureMediaHandlers = (context: BrowserContext) =>
+  context.addInitScript(() => {
+    const handlers: Record<string, MediaSessionActionHandler | null> = {};
+    Object.assign(window, { mediaHandlers: handlers });
+    if (!('mediaSession' in navigator)) return;
+    const session = navigator.mediaSession;
+    const original = session.setActionHandler.bind(session);
+    session.setActionHandler = (action, handler) => {
+      handlers[action] = handler;
+      original(action, handler);
+    };
+  });
+
+// Presses the system Play: false when the app has no handler for it now.
+const pressSystemPlay = (page: Page): Promise<boolean> =>
+  page.evaluate(async () => {
+    const { mediaHandlers } = window as unknown as {
+      mediaHandlers: Record<string, MediaSessionActionHandler | null>;
+    };
+    const handler = mediaHandlers.play;
+    if (!handler) return false;
+    await handler({ action: 'play' });
+    return true;
+  });
+
+// From the page of an exam to the library; a running exam asks first.
+const leaveExamToLibrary = async (page: Page) => {
+  await page.getByTestId('exam-context-library').click();
+  await page.getByTestId('timed-leave-confirm').click();
+  await page.waitForURL(LIBRARY);
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+};
+
+const leaveTrainingToLibrary = async (page: Page) => {
+  await page.getByTestId('exam-context-library').click();
+  await page.waitForURL(LIBRARY);
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+};
+
+// On the mode choice of an exam: starts the exam and waits for its recording.
+const startExamFromChoice = async (page: Page) => {
+  await expect(page.getByTestId('mode-selection')).toBeVisible();
+  await page.getByTestId('mode-option-exam').click();
+  await expect(page.getByTestId('exam-audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+    { timeout: 20_000 },
+  );
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(HOEREN_URL);
+  await expect(examAudio(page)).toHaveCount(1);
+  await expect.poll(async () => (await mediaOf(page)).paused).toBe(false);
+};
+
+const continueFromLibrary = async (page: Page, slug: string) => {
+  await page
+    .getByTestId(`exam-card-${slug}`)
+    .getByTestId('exam-card-continue')
+    .click();
+  await page.waitForURL(HOEREN_URL);
+};
+
+// The element of a stopped owner is kept in the page: it must stay silent
+// even when nothing in the document points to it any more.
+const keepOwner = (page: Page, name: string) =>
+  examAudio(page).evaluate((element: HTMLAudioElement, key: string) => {
+    Object.assign(window, { [key]: element });
+  }, name);
+
+const keptOwner = (page: Page, name: string) =>
+  page.evaluate((key: string) => {
+    const owner = (window as unknown as Record<string, HTMLAudioElement>)[key];
+    if (!owner) throw new Error(`no kept owner ${key}`);
+    return {
+      paused: owner.paused,
+      hasSource: owner.hasAttribute('src'),
+      isConnected: owner.isConnected,
+      currentTime: owner.currentTime,
+    };
+  }, name);
+
+test('multi exam navigation keeps a single active media owner', async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  // Two different recordings: two tones, two objects.
+  const examA = await publishExam(FULL_TIMING, 613);
+  const examB = await publishExam(FULL_TIMING, 440);
+  const pathA = await audioObjectPathOf(examA.versionId);
+  const pathB = await audioObjectPathOf(examB.versionId);
+  expect(pathA).not.toBe(pathB);
+  const created = await newGuest(depsNow());
+  const context = await contextWith(browser, created.token);
+  await captureMediaHandlers(context);
+  const page = await context.newPage();
+  const requested: string[] = [];
+  context.on('request', (request) => requested.push(request.url()));
+
+  // A plays.
+  await page.goto(`/practice/${examA.slug}`);
+  await startExamFromChoice(page);
+  const attemptA = attemptIdOf(page);
+  expect((await mediaOf(page)).src).toContain(pathA);
+  await keepOwner(page, 'ownerA');
+
+  // Back in the library no owner is left and the system has no Play for it.
+  await leaveExamToLibrary(page);
+  await expect(page.locator('audio')).toHaveCount(0);
+  await expect
+    .poll(async () => (await keptOwner(page, 'ownerA')).paused)
+    .toBe(true);
+  expect(await pressSystemPlay(page)).toBe(false);
+  const mark = requested.length;
+
+  // B starts and plays its own recording.
+  await page
+    .getByTestId(`exam-card-${examB.slug}`)
+    .getByTestId('exam-card-open')
+    .click();
+  await page.waitForURL(`**/practice/${examB.slug}`);
+  await startExamFromChoice(page);
+  const attemptB = attemptIdOf(page);
+  expect(attemptB).not.toBe(attemptA);
+
+  // The system Play reaches the one owner, which is B's.
+  expect(await pressSystemPlay(page)).toBe(true);
+  await expect(page.locator('audio')).toHaveCount(1);
+  const media = await mediaOf(page);
+  expect(media.paused).toBe(false);
+  expect(media.src).toContain(pathB);
+  expect(media.src).not.toContain(pathA);
+  const silent = await keptOwner(page, 'ownerA');
+  expect(silent).toMatchObject({
+    paused: true,
+    hasSource: false,
+    isConnected: false,
+  });
+  // B goes on; A does not move.
+  await expect
+    .poll(async () => (await mediaOf(page)).currentTime)
+    .toBeGreaterThan(media.currentTime + 0.5);
+  expect(await keptOwner(page, 'ownerA')).toEqual(silent);
+  expect(await pressSystemPlay(page)).toBe(true);
+  expect((await mediaOf(page)).src).toContain(pathB);
+  expect((await keptOwner(page, 'ownerA')).paused).toBe(true);
+
+  // Nothing of A was asked for after A was left.
+  const after = requested.slice(mark);
+  expect(after.filter((url) => url.includes(pathA))).toEqual([]);
+  expect(after.filter((url) => url.includes(audioPath(attemptA)))).toEqual([]);
+  // B's own recording is what the browser fetched.
+  expect(after.some((url) => url.includes(pathB))).toBe(true);
+  await context.close();
+});
+
+const positionOf = async (attemptId: string): Promise<number> => {
+  const progress = (await readProgress(attemptId)) as {
+    positionSeconds?: number;
+  } | null;
+  return progress?.positionSeconds ?? -1;
+};
+
+test('return to first exam restores its own audio position', async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const examA = await publishExam(FULL_TIMING, 613);
+  const examB = await publishExam(FULL_TIMING, 440);
+  const pathA = await audioObjectPathOf(examA.versionId);
+  const pathB = await audioObjectPathOf(examB.versionId);
+
+  // Full exam: the recording follows the server timeline of its own attempt.
+  // A began 2 s ago, B 25 s ago; going A → B → A moves nobody's timeline.
+  const created = await newGuest(depsNow());
+  const a = examAgo(created, examA, 2);
+  const b = examAgo(created, examB, 25);
+  const timesA = examRunTimes(a.attemptId);
+  const timesB = examRunTimes(b.attemptId);
+  const context = await contextWith(browser, created.token);
+  const page = await context.newPage();
+  const expectOnTimeline = (startMs: number) =>
+    expect
+      .poll(async () =>
+        Math.abs(
+          (await mediaOf(page)).currentTime - serverSecondsSince(startMs),
+        ),
+      )
+      .toBeLessThan(FULL_POSITION_TOLERANCE_SECONDS);
+
+  await page.goto(attemptUrl(examA.slug, a.attemptId));
+  await ensurePlaying(page);
+  await expectOnTimeline(a.startMs);
+  expect((await mediaOf(page)).src).toContain(pathA);
+
+  await leaveExamToLibrary(page);
+  await continueFromLibrary(page, examB.slug);
+  await ensurePlaying(page);
+  await expectOnTimeline(b.startMs);
+  expect((await mediaOf(page)).src).toContain(pathB);
+  await keepOwner(page, 'ownerB');
+
+  await leaveExamToLibrary(page);
+  await continueFromLibrary(page, examA.slug);
+  await ensurePlaying(page);
+  // A is on its own timeline, which is not the timeline of B.
+  await expectOnTimeline(a.startMs);
+  const back = await mediaOf(page);
+  expect(back.src).toContain(pathA);
+  expect(back.src).not.toContain(pathB);
+  expect(
+    Math.abs(back.currentTime - serverSecondsSince(b.startMs)),
+  ).toBeGreaterThan(15);
+  await expect(page.locator('audio')).toHaveCount(1);
+  expect(await keptOwner(page, 'ownerB')).toMatchObject({
+    paused: true,
+    hasSource: false,
+    isConnected: false,
+  });
+  expect(examRunTimes(a.attemptId)).toEqual(timesA);
+  expect(examRunTimes(b.attemptId)).toEqual(timesB);
+  await context.close();
+
+  // Free training: each attempt keeps the place it was paused at.
+  const guest = await newGuest(depsNow());
+  const ids: string[] = [];
+  for (const exam of [examA, examB]) {
+    const started = await startFor(depsNow(), guest.token, exam.slug, {
+      mode: 'training',
+      selection: 'hoeren',
+    });
+    if (!started.ok) throw new Error(`training start: ${started.failure}`);
+    ids.push(started.result.attemptId);
+  }
+  const [idA = '', idB = ''] = ids;
+  const trainingContext = await contextWith(browser, guest.token);
+  const training = await trainingContext.newPage();
+  const pauseAndStore = async (
+    attemptId: string,
+    from: number,
+    marker: string,
+  ) => {
+    await waitForPlayer(training);
+    await playFrom(training, from, marker);
+    await pausePlayer(training);
+    const pausedAt = (await snapshotOf(training)).currentTime;
+    await leaveTrainingToLibrary(training);
+    await expect
+      .poll(async () => Math.abs((await positionOf(attemptId)) - pausedAt))
+      .toBeLessThanOrEqual(SAVED_POSITION_TOLERANCE_SECONDS);
+    return pausedAt;
+  };
+
+  await training.goto(attemptUrl(examA.slug, idA));
+  const placeA = await pauseAndStore(idA, 20, 'a');
+  await continueFromLibrary(training, examB.slug);
+  const placeB = await pauseAndStore(idB, 41, 'b');
+  expect(Math.abs(placeA - placeB)).toBeGreaterThan(15);
+
+  await continueFromLibrary(training, examA.slug);
+  await waitForPlayer(training);
+  await expect
+    .poll(async () =>
+      Math.abs((await snapshotOf(training)).currentTime - placeA),
+    )
+    .toBeLessThan(SAVED_POSITION_TOLERANCE_SECONDS);
+  expect((await snapshotOf(training)).paused).toBe(true);
+  expect(await sourcePathOf(training)).toContain(pathA);
+  // The idle exam element has no source: one element carries a recording.
+  const sources = await training
+    .locator('audio')
+    .evaluateAll((items) => items.map((item) => item.hasAttribute('src')));
+  expect(sources.filter(Boolean)).toHaveLength(1);
+  // The server holds each attempt's own place.
+  expect(Math.abs((await positionOf(idA)) - placeA)).toBeLessThanOrEqual(
+    SAVED_POSITION_TOLERANCE_SECONDS,
+  );
+  expect(Math.abs((await positionOf(idB)) - placeB)).toBeLessThanOrEqual(
+    SAVED_POSITION_TOLERANCE_SECONDS,
+  );
+  await trainingContext.close();
 });
