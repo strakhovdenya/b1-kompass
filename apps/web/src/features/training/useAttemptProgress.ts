@@ -7,6 +7,32 @@ import { requestSaveProgress } from './attempt-client';
 // While the recording plays the position is saved at most this often.
 const PROGRESS_INTERVAL_MS = 10_000;
 
+export type SaveDecision = 'send' | 'defer' | 'skip';
+
+interface SaveSituation {
+  // The report changes the place the queue holds.
+  isChanged: boolean;
+  // The queue holds a place that no request has carried yet.
+  isPending: boolean;
+  isUrgent: boolean;
+  // Milliseconds until the next save is allowed; zero or less: allowed now.
+  waitMs: number;
+}
+
+// What one report does: send the place now, keep it for the timer, or leave
+// it. A place already waiting in the queue is not "unchanged": an urgent
+// report of it (a pause right after a time update) must still send it.
+export const decideSave = ({
+  isChanged,
+  isPending,
+  isUrgent,
+  waitMs,
+}: SaveSituation): SaveDecision => {
+  if (!isChanged && !isPending) return 'skip';
+  if (isUrgent || waitMs <= 0) return 'send';
+  return 'defer';
+};
+
 interface AttemptProgressInput {
   attemptId: string;
   // The block the guest is on now; a report without a block belongs to it.
@@ -82,13 +108,19 @@ export const useAttemptProgress = ({
         next.lesen = { ...previous?.lesen, ...patch.lesen };
       }
       // Opening a screen reports the place it just read: nothing to write.
-      if (JSON.stringify(next) === JSON.stringify(previous)) return;
+      const waitMs = lastSavedAt.current + PROGRESS_INTERVAL_MS - Date.now();
+      const decision = decideSave({
+        isChanged: JSON.stringify(next) !== JSON.stringify(previous),
+        isPending: isDirty.current,
+        isUrgent,
+        waitMs,
+      });
+      if (decision === 'skip') return;
       isDirty.current = true;
       progressRef.current = next;
-      const wait = lastSavedAt.current + PROGRESS_INTERVAL_MS - Date.now();
-      if (isUrgent || wait <= 0) flushProgress();
+      if (decision === 'send') flushProgress();
       else if (timer.current === undefined) {
-        timer.current = window.setTimeout(flushProgress, wait);
+        timer.current = window.setTimeout(flushProgress, waitMs);
       }
     },
     [flushProgress],
@@ -113,7 +145,9 @@ export const useAttemptProgress = ({
     return () => {
       document.removeEventListener('visibilitychange', handleHidden);
       window.removeEventListener('pagehide', flushProgress);
-      window.clearTimeout(timer.current);
+      // A link inside the app unmounts the page without pagehide: the place
+      // still waiting for the timer goes out now. A closed attempt sends none.
+      flushProgress();
     };
   }, [flushProgress]);
 
