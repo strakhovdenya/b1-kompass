@@ -30,6 +30,9 @@ import {
   attemptUrl,
   enterAndStart,
   continueThroughLibrary,
+  LIBRARY_URL,
+  finishFromShell,
+  playFrom,
 } from './support/guest-browser';
 
 // The synthetic full set: lesen-11 is the first task of the long Teil 3 text
@@ -668,4 +671,113 @@ test('public client cannot write progress', async () => {
     .eq('id', owner.attemptId);
   expect(direct.data ?? []).toEqual([]);
   expect(await readStoredAttempt(owner.attemptId)).toEqual(before);
+});
+
+// The way back to the library is a client navigation: the document stays, so
+// no pagehide and no visibilitychange tell the page that it is leaving.
+const leaveToLibrary = async (page: Page) => {
+  await page.getByTestId('exam-context-library').click();
+  await page.waitForURL(LIBRARY_URL);
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+};
+
+// The bodies of the place saves the page sends from now on.
+const watchProgressSaves = (page: Page): string[] => {
+  const bodies: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().includes('/progress')) {
+      bodies.push(request.postData() ?? '');
+    }
+  });
+  return bodies;
+};
+
+const storedPosition = async (attemptId: string): Promise<number | undefined> =>
+  (await readStoredAttempt(attemptId)).progress?.positionSeconds;
+
+test('leaving to library stores the latest recording position', async ({
+  browser,
+}) => {
+  const { context, page, attemptId } = await startGuest(browser);
+  await waitForPlayer(page);
+  await playFrom(page, 20, 'leaving');
+  // Playing on: the latest save is the seek, the later places are queued.
+  await expect.poll(() => timeOf(page)).toBeGreaterThan(22.5);
+
+  const leftAt = await timeOf(page);
+  await leaveToLibrary(page);
+
+  await expect
+    .poll(async () =>
+      Math.abs(((await storedPosition(attemptId)) ?? 0) - leftAt),
+    )
+    .toBeLessThanOrEqual(SEEK_TOLERANCE);
+  const stored = (await storedPosition(attemptId)) ?? 0;
+  expect(Math.abs(stored - leftAt)).toBeLessThanOrEqual(SEEK_TOLERANCE);
+  expect(stored).toBeGreaterThan(21.5);
+  await context.close();
+});
+
+test('leaving a completed attempt sends no place', async ({ browser }) => {
+  const { context, page, attemptId } = await startGuest(browser);
+  await waitForPlayer(page);
+  await playFrom(page, 20, 'completed');
+  await expect.poll(() => timeOf(page)).toBeGreaterThan(22.5);
+  await finishFromShell(page);
+  const before = await readStoredAttempt(attemptId);
+  const saves = watchProgressSaves(page);
+
+  await leaveToLibrary(page);
+
+  expect(saves).toEqual([]);
+  expect(await readStoredAttempt(attemptId)).toEqual(before);
+  await context.close();
+});
+
+test('paused position survives leaving to library and return', async ({
+  browser,
+}) => {
+  const { context, page, attemptId } = await startGuest(browser);
+  await waitForPlayer(page);
+  await playFrom(page, SEEK_SECONDS, 'paused');
+  // The pause comes in the same task as a time update, so the urgent report
+  // carries the place the queue already holds.
+  await audioOf(page).evaluate((element: HTMLAudioElement) => {
+    element.addEventListener('timeupdate', () => element.pause(), {
+      once: true,
+    });
+  });
+  await expect.poll(() => isPaused(page)).toBe(true);
+  const pausedAt = await timeOf(page);
+
+  await leaveToLibrary(page);
+  await expect
+    .poll(async () =>
+      Math.abs(((await storedPosition(attemptId)) ?? 0) - pausedAt),
+    )
+    .toBeLessThanOrEqual(SEEK_TOLERANCE);
+
+  await page
+    .getByTestId(`exam-card-${SLUG}`)
+    .getByTestId('exam-card-continue')
+    .click();
+  await page.waitForURL(HOEREN_URL);
+  await waitForPlayer(page);
+  expect(Math.abs((await timeOf(page)) - pausedAt)).toBeLessThanOrEqual(
+    SEEK_TOLERANCE,
+  );
+  expect(await isPaused(page)).toBe(true);
+  await context.close();
+});
+
+test('leaving without playback stores no position', async ({ browser }) => {
+  const { context, page, attemptId } = await startGuest(browser);
+  await waitForPlayer(page);
+  const saves = watchProgressSaves(page);
+
+  await leaveToLibrary(page);
+
+  expect(saves.filter((body) => body.includes('positionSeconds'))).toEqual([]);
+  expect(await storedPosition(attemptId)).toBeUndefined();
+  await context.close();
 });
