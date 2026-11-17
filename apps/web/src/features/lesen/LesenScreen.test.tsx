@@ -11,12 +11,13 @@ const question = (
   id: string,
   number: number,
   textId: string,
+  teil = 1,
 ): ExamQuestion => ({
   id,
   number,
   kind: 'single-choice',
   skill: 'lesen',
-  teil: 1,
+  teil,
   prompt: `Frage ${id}?`,
   options: [
     { id: 'a', text: 'Erste' },
@@ -171,5 +172,140 @@ describe('LesenScreen in a repeat of errors', () => {
     expect(html).not.toContain('question-card-lesen-1');
     expect(html).not.toContain('context-card-');
     expect(html).toContain('Answered: 0 of 1');
+  });
+});
+
+const ADS = [
+  'a Fahrschule Theiss, Überring 362, 50678 Köln',
+  'b Verkaufe Fahrrad.\nTel. 0221 123456',
+  'c www.fahrschule-theiss.de',
+  'd Neu: Kurse am Abend',
+  'e Zimmer frei',
+  'f Gitarrenunterricht',
+  'g Umzugshilfe',
+  'h Nachhilfe Mathe',
+];
+
+const AD_BODY = ADS.join('\n\n');
+
+// Server rendering inlines Emotion <style> tags between elements.
+const bare = (html: string) => html.replace(/<style[\s\S]*?<\/style>/g, '');
+
+const renderTeil = (teil: number, body: string, isDictionaryOn = false) =>
+  bare(
+    render({
+      questions: [question('lesen-1', 1, 't1', teil)],
+      texts: [text('t1', body)],
+      isDictionaryOn,
+    }),
+  );
+
+const adBlocks = (html: string) =>
+  html.match(/<div[^>]*data-ad-letter="[^"]*"/g) ?? [];
+
+const strip = (html: string) => html.replace(/<[^>]+>/g, '');
+
+const luminance = (hex: string): number => {
+  const [red = 0, green = 0, blue = 0] = [1, 3, 5].map((start) => {
+    const channel = parseInt(hex.slice(start, start + 2), 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+};
+
+const getContrastRatio = (a: string, b: string): number => {
+  const [light = 0, dark = 0] = [luminance(a), luminance(b)].sort(
+    (x, y) => y - x,
+  );
+  return (light + 0.05) / (dark + 0.05);
+};
+
+describe('LesenScreen Teil 2 ads', () => {
+  it('teil 2 renders each ad as a block with a letter badge', () => {
+    const html = renderTeil(2, AD_BODY);
+    expect(adBlocks(html)).toHaveLength(8);
+    for (const letter of 'abcdefgh') {
+      expect(html).toMatch(
+        new RegExp(
+          `<span[^>]*data-testid="ad-letter-${letter}"[^>]*>${letter}</span>`,
+        ),
+      );
+    }
+  });
+
+  it('teil 2 ad blocks keep paragraph text and anchors', () => {
+    const html = renderTeil(2, AD_BODY);
+    expect(
+      [...html.matchAll(/data-paragraph="(\d+)"/g)].map((match) => match[1]),
+    ).toEqual(['0', '1', '2', '3', '4', '5', '6', '7']);
+    // The text content of every block is exactly its stored paragraph.
+    for (const [index, ad] of ADS.entries()) {
+      const block = new RegExp(
+        `<div[^>]*data-testid="reading-paragraph-${index}"[^>]*>(.*?)</div>`,
+        's',
+      ).exec(html);
+      const textContent = strip(block?.[1] ?? '')
+        .replace(/&#x27;/g, "'")
+        .replace(/&amp;/g, '&');
+      expect(textContent).toBe(ad);
+    }
+  });
+
+  it('other teile get no ad blocks', () => {
+    for (const teil of [1, 3, 4, 5]) {
+      const html = renderTeil(teil, AD_BODY);
+      expect(adBlocks(html)).toHaveLength(0);
+      expect(html).not.toContain('data-testid="ad-letter-');
+      expect(html.match(/<p[^>]*data-paragraph="\d"/g)).toHaveLength(8);
+    }
+  });
+
+  it('teil 2 paragraph without letter stays plain', () => {
+    const html = renderTeil(2, 'Lesen Sie die Anzeigen.\n\na Zimmer frei');
+    expect(adBlocks(html)).toHaveLength(1);
+    expect(html).toMatch(/<p[^>]*data-paragraph="0"[^>]*>Lesen Sie/);
+    expect(html).toMatch(/<div[^>]*data-paragraph="1"/);
+  });
+
+  it('letters outside a to h get no badge', () => {
+    const html = renderTeil(
+      2,
+      'i Erste\n\nx Zweite\n\nA Dritte\n\nab Vierte\n\nb-Zimmer',
+    );
+    expect(adBlocks(html)).toHaveLength(0);
+    expect(html).not.toContain('data-testid="ad-letter-');
+  });
+
+  it('teil 2 ad block count equals paragraph count', () => {
+    expect(adBlocks(renderTeil(2, AD_BODY))).toHaveLength(
+      splitParagraphs(AD_BODY).length,
+    );
+  });
+
+  it('teil 2 question card is unchanged', () => {
+    const cardOf = (html: string) =>
+      html
+        .slice(html.indexOf('data-testid="question-card-lesen-1"'))
+        .replace(/Lesen Teil \d/, 'Lesen Teil N');
+    expect(cardOf(renderTeil(2, AD_BODY))).toBe(cardOf(renderTeil(1, AD_BODY)));
+    expect(renderTeil(2, AD_BODY)).toContain('Frage lesen-1?');
+  });
+
+  it('teil 2 dictionary zone keeps working on ad words', () => {
+    const plain = renderTeil(2, AD_BODY);
+    const marked = renderTeil(2, AD_BODY, true);
+    // Title, eight ad texts, the task and two options are zones; the letter is not.
+    expect(marked.match(/data-dictionary-text=""/g)).toHaveLength(12);
+    expect(marked).toMatch(
+      /data-testid="ad-letter-a"[^>]*>a<\/span> <p[^>]*data-testid="ad-text-0"[^>]*><span data-dictionary-text="">Fahrschule/,
+    );
+    expect(strip(marked)).toBe(strip(plain));
+    expect(marked).toContain('data-anchor="0"');
+  });
+
+  it('badge text keeps contrast of at least 4.5 to 1', () => {
+    expect(getContrastRatio('#1d4ed8', '#ffffff')).toBeGreaterThanOrEqual(4.5);
   });
 });
