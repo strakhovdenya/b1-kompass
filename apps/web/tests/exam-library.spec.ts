@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
-import type { Browser, BrowserContext, Page } from '@playwright/test';
+import type { Browser, BrowserContext, Page, Request } from '@playwright/test';
 import { PILOT_EXAM } from '../../../scripts/seed-pilot-question';
 import { saveAnswer } from '../src/server/attempts/attempts';
 import {
@@ -18,6 +18,7 @@ import {
   FULL_PILOT,
   fullWrongOf,
   publishUniqueFullExam,
+  publishUniqueFullExams,
   shortOf,
 } from './support/full-exam';
 import { createTestRecording } from './support/global-setup';
@@ -538,5 +539,140 @@ test('library cards fit a 320 px screen with two actions', async ({
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+  await context.close();
+});
+
+const MANY_EXAMS = 30;
+// Where the guest's states sit among the 30 titles: spread, not at the ends.
+const ACTIVE_A = 3;
+const ACTIVE_B = 17;
+const FINISHED_C = 29;
+
+test('catalog read remains correct with many published exams', async ({
+  browser,
+}) => {
+  const exams = await publishUniqueFullExams(
+    serviceDb,
+    recording,
+    `Lib ${tagged()}`,
+    MANY_EXAMS,
+  );
+  const { context, page, session, token } = await guestOf(browser);
+  const idA = await startTraining(token, exams[ACTIVE_A]?.slug ?? '');
+  const idB = await startTraining(token, exams[ACTIVE_B]?.slug ?? '');
+  const idC = await startTraining(token, exams[FINISHED_C]?.slug ?? '');
+  await complete(token, idC);
+  const before = countsOf(session.id);
+  expect(before).toEqual({ attempts: 3, starts: 3 });
+
+  await page.reload();
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+  for (const exam of exams)
+    await expect(cardOf(page, exam.slug)).toHaveCount(1);
+
+  // Of the whole list only these cards count; their order is the title order.
+  const own = new Set(exams.map((exam) => `exam-card-${exam.slug}`));
+  const order = await page
+    .locator('[data-testid="exam-list"] > li')
+    .evaluateAll((items) =>
+      items.map((item) => item.getAttribute('data-testid') ?? ''),
+    );
+  expect(order.filter((id) => own.has(id))).toEqual(
+    exams.map((exam) => `exam-card-${exam.slug}`),
+  );
+
+  const stored = resultsOf(session.id, exams[FINISHED_C]?.slug ?? '');
+  expect(stored.map((row) => row.attempt_id)).toEqual([idC]);
+  const attempts = new Map([
+    [ACTIVE_A, idA],
+    [ACTIVE_B, idB],
+  ]);
+  for (const [index, exam] of exams.entries()) {
+    const card = cardOf(page, exam.slug);
+    const attemptId = attempts.get(index);
+    const label = `${index} ${exam.slug}`;
+    if (attemptId !== undefined) {
+      expect(await hrefOf(page, exam.slug, 'exam-card-continue'), label).toBe(
+        `/practice/${exam.slug}/attempts/${attemptId}`,
+      );
+      await expect(card.getByTestId('exam-card-open'), label).toHaveCount(0);
+      await expect(card.getByTestId('exam-card-result'), label).toHaveCount(0);
+    } else if (index === FINISHED_C) {
+      expect(await hrefOf(page, exam.slug, 'exam-card-result'), label).toBe(
+        `/practice/${exam.slug}/attempts/${idC}`,
+      );
+      await expect(card.getByTestId('exam-card-open'), label).toBeVisible();
+      await expect(card.getByTestId('exam-card-continue'), label).toHaveCount(
+        0,
+      );
+    } else {
+      await expect(card.getByTestId('exam-card-open'), label).toBeVisible();
+      await expect(card.getByTestId('exam-card-continue'), label).toHaveCount(
+        0,
+      );
+      await expect(card.getByTestId('exam-card-result'), label).toHaveCount(0);
+    }
+  }
+  // Reading 30 cards writes nothing.
+  expect(countsOf(session.id)).toEqual(before);
+  await context.close();
+});
+
+// The audio of an attempt is prepared and signed only on an exam's own page.
+const isAudioRequest = (request: Request): boolean => {
+  const { pathname } = new URL(request.url());
+  return (
+    pathname === '/api/attempts/prepare-audio' ||
+    /^\/api\/attempts\/[^/]+\/audio$/.test(pathname) ||
+    pathname.startsWith('/storage/v1/object/sign')
+  );
+};
+
+test('catalog never prepares audio or signs urls', async ({ browser }) => {
+  const tag = tagged();
+  const exams = await Promise.all(
+    ['A', 'B', 'C'].map((label) => publishFull(`Lib ${tag} ${label}`)),
+  );
+  const { context, page, token } = await guestOf(browser);
+  const first = exams[0];
+  if (!first) throw new Error('no exam');
+  const attemptId = await startTraining(token, first.slug);
+
+  // Watched from the context, from before the library is opened again.
+  const seen: Request[] = [];
+  context.on('request', (request) => seen.push(request));
+  await page.reload();
+  await expect(page.getByTestId('exam-library')).toBeVisible();
+
+  // The links of the cards are prefetched by the router: wait for those
+  // requests of the guest's own cards and for their answers.
+  for (const exam of exams) {
+    await cardOf(page, exam.slug).scrollIntoViewIfNeeded();
+  }
+  const prefetched = (slug: string): Request[] =>
+    seen.filter((request) =>
+      new URL(request.url()).pathname.startsWith(`/practice/${slug}`),
+    );
+  for (const exam of exams) {
+    await expect.poll(() => prefetched(exam.slug).length).toBeGreaterThan(0);
+    for (const request of prefetched(exam.slug)) {
+      expect(await request.response()).not.toBeNull();
+    }
+  }
+  expect(seen.filter(isAudioRequest).map((request) => request.url())).toEqual(
+    [],
+  );
+
+  // The data of the catalog holds no signed address either.
+  const response = await page.request.get('/exams', { headers: { RSC: '1' } });
+  expect(await response.text()).not.toContain('/storage/v1/object/sign');
+
+  // The watch is real: the page of the attempt does ask for its audio.
+  await page.goto(`/practice/${first.slug}/attempts/${attemptId}`);
+  await expect(page.getByTestId('audio-status')).toHaveAttribute(
+    'data-status',
+    'ready',
+  );
+  expect(seen.filter(isAudioRequest).length).toBeGreaterThan(0);
   await context.close();
 });

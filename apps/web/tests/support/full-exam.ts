@@ -108,6 +108,43 @@ export const publishUniqueFullExam = async (
   return { slug, title };
 };
 
+// How many publications of a batch run at once: every exam still goes the
+// real owner path, but not with one connection per exam.
+const BATCH_CONCURRENCY = 5;
+
+// `count` full DTZ exams of one test, each through publishUniqueFullExam (no
+// direct inserts). Titles are `<prefix> 00`, `<prefix> 01` ...: zero padded,
+// so their title order is their index order. Slugs carry a tag of their own,
+// so parallel workers never meet. All share one recording: its object is
+// uploaded once.
+export const publishUniqueFullExams = async (
+  db: SupabaseClient,
+  audio: Omit<AudioFileInput, 'trackId'>,
+  prefix: string,
+  count: number,
+): Promise<PublishedFullExam[]> => {
+  const tag = randomUUID().slice(0, 8);
+  const width = String(count - 1).length;
+  const publishAt = (index: number) => {
+    const label = String(index).padStart(width, '0');
+    return publishUniqueFullExam(
+      db,
+      audio,
+      `${prefix} ${label}`,
+      `test-lib-${tag}-${label}`,
+    );
+  };
+  // The first one alone: it may upload the shared object that the others
+  // then find in place.
+  const published: PublishedFullExam[] = [await publishAt(0)];
+  for (let start = 1; start < count; start += BATCH_CONCURRENCY) {
+    const end = Math.min(start + BATCH_CONCURRENCY, count);
+    const indexes = Array.from({ length: end - start }, (_, i) => start + i);
+    published.push(...(await Promise.all(indexes.map(publishAt))));
+  }
+  return published;
+};
+
 // The synthetic set cut to its Hören tasks: a short set of the same exam.
 export const shortOf = (
   pilot: typeof FULL_PILOT,
