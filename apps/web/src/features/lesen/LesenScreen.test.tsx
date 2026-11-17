@@ -240,15 +240,16 @@ describe('LesenScreen Teil 2 ads', () => {
     expect(
       [...html.matchAll(/data-paragraph="(\d+)"/g)].map((match) => match[1]),
     ).toEqual(['0', '1', '2', '3', '4', '5', '6', '7']);
-    // Every block reads as its stored paragraph: letter, one space, the rest.
+    // The text content of every block is exactly its stored paragraph.
     for (const [index, ad] of ADS.entries()) {
       const block = new RegExp(
-        `data-testid="reading-paragraph-${index}"[^>]*><span[^>]*>(.)</span><p[^>]*>([^<]*)</p>`,
+        `<div[^>]*data-testid="reading-paragraph-${index}"[^>]*>(.*?)</div>`,
         's',
       ).exec(html);
-      const unescape = (value: string | undefined) =>
-        (value ?? '').replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
-      expect(`${unescape(block?.[1])} ${unescape(block?.[2])}`).toBe(ad);
+      const textContent = strip(block?.[1] ?? '')
+        .replace(/&#x27;/g, "'")
+        .replace(/&amp;/g, '&');
+      expect(textContent).toBe(ad);
     }
   });
 
@@ -298,7 +299,7 @@ describe('LesenScreen Teil 2 ads', () => {
     // Title, eight ad texts, the task and two options are zones; the letter is not.
     expect(marked.match(/data-dictionary-text=""/g)).toHaveLength(12);
     expect(marked).toMatch(
-      /data-testid="ad-letter-a"[^>]*>a<\/span><p[^>]*data-testid="ad-text-0"[^>]*><span data-dictionary-text="">Fahrschule/,
+      /data-testid="ad-letter-a"[^>]*>a<\/span> <p[^>]*data-testid="ad-text-0"[^>]*><span data-dictionary-text="">Fahrschule/,
     );
     expect(strip(marked)).toBe(strip(plain));
     expect(marked).toContain('data-anchor="0"');

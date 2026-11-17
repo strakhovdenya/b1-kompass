@@ -174,6 +174,8 @@ const AdBlock = ({ index, letter, rest }: AdBlockProps) => (
     >
       {letter}
     </Box>
+    {/* The stored space after the letter: blank text between flex items is
+        not painted, but the text content of the block stays the paragraph. */}{' '}
     <Typography
       component="p"
       variant="lesenBody"
