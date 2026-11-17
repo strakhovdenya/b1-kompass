@@ -1,8 +1,23 @@
 import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
-import { readAnswers, readAttempts, readSessionByToken } from './support/db';
-import { ANSWER_URL, LESEN_URL, enterAndStart } from './support/guest-browser';
+import {
+  depsNow,
+  newGuest,
+  readAnswers,
+  readAttempts,
+  readSessionByToken,
+  serviceDb,
+  startFor,
+} from './support/db';
+import { FULL_PILOT, publishUniqueFullExam } from './support/full-exam';
+import { createTestRecording } from './support/global-setup';
+import {
+  ANSWER_URL,
+  LESEN_URL,
+  attemptLesenUrl,
+  enterAndStart,
+} from './support/guest-browser';
 import { goToStep } from './support/release';
 
 // The synthetic full set: lesen-1..5 Teil 1, 6..10 Teil 2 (nine options),
@@ -230,3 +245,172 @@ test('long reading preserves anchor across viewport changes', async ({
   });
   await context.close();
 });
+
+// Teil 2 ads (#105): the synthetic Teil 2 text is one paragraph of its own, so
+// these tests publish a full set whose Teil 2 text is a list of ads a-h with
+// a long web and e-mail address, through the real owner path.
+const ADS = [
+  'a Fahrschule Theiss, Überring 362, 50678 Köln\nwww.fahrschule-theiss.de',
+  'b Verkaufe gebrauchtes Fahrrad, 80 Euro. Anruf: 0221 1234567',
+  'c Wohnungsverwaltung: verwaltung-sehr-langer-name@beispiel-gesellschaft-fuer-wohnungsverwaltung.example.de',
+  'd Neue Abendkurse für Anfänger und Fortgeschrittene in der Volkshochschule',
+  'e Zimmer frei ab dem ersten des Monats',
+  'f Gitarrenunterricht für Kinder und Erwachsene',
+  'g Umzugshilfe zu fairen Preisen, auch am Wochenende',
+  'h Nachhilfe in Mathematik und Physik, Klasse fünf bis zehn',
+];
+const AD_QUESTION = 6;
+const AD_TEIL_2_TEXT_ID = 'lesen-text-2';
+const AD_ORIGIN = 'http://localhost:3102';
+const AD_MATERIAL = {
+  content: {
+    ...FULL_PILOT.content,
+    texts: (FULL_PILOT.content.texts ?? []).map((item) =>
+      item.id === AD_TEIL_2_TEXT_ID
+        ? { ...item, body: ADS.join('\n\n') }
+        : item,
+    ),
+  },
+  keys: FULL_PILOT.keys,
+};
+
+const openAds = async (browser: Browser, viewport: typeof WIDE) => {
+  const exam = await publishUniqueFullExam(
+    serviceDb,
+    createTestRecording(),
+    `Ads ${Date.now()}`,
+    undefined,
+    AD_MATERIAL,
+  );
+  const created = await newGuest(depsNow());
+  const started = await startFor(depsNow(), created.token, exam.slug);
+  if (!started.ok) throw new Error(`start failed: ${started.failure}`);
+  const path = attemptLesenUrl(exam.slug, started.result.attemptId);
+  const context = await browser.newContext({ baseURL: AD_ORIGIN, viewport });
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: created.token, url: AD_ORIGIN },
+  ]);
+  const page = await context.newPage();
+  await page.goto(path);
+  await goTo(page, AD_QUESTION);
+  await expect(page.getByTestId('reading-text')).toBeVisible();
+  return { context, page, path };
+};
+
+interface Box {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+const boxesOf = (page: Page, selector: string): Promise<Box[]> =>
+  page.locator(selector).evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const { top, bottom, left, right } = node.getBoundingClientRect();
+      return { top, bottom, left, right };
+    }),
+  );
+
+const AD_BLOCKS = '[data-ad-letter]';
+const AD_BADGES = '[data-testid^="ad-letter-"]';
+
+test('teil 2 ads are separated blocks on a narrow screen', async ({
+  browser,
+}) => {
+  const { context, page } = await openAds(browser, { width: 360, height: 800 });
+  const blocks = page.locator(AD_BLOCKS);
+  await expect(blocks).toHaveCount(ADS.length);
+  for (let i = 0; i < ADS.length; i++) {
+    const block = blocks.nth(i);
+    await expect(block).toHaveCSS('border-top-width', '1px');
+    await expect(block).toHaveCSS('border-top-style', 'solid');
+    await expect(block).toHaveAttribute('data-ad-letter', 'abcdefgh'[i] ?? '');
+  }
+  const boxes = await boxesOf(page, AD_BLOCKS);
+  for (let i = 1; i < boxes.length; i++) {
+    const gap = (boxes[i]?.top ?? 0) - (boxes[i - 1]?.bottom ?? 0);
+    expect(gap).toBeGreaterThanOrEqual(8);
+  }
+  const overflow = await page.getByTestId('reading-text').evaluate((node) => ({
+    panel: node.scrollWidth - node.clientWidth,
+    page:
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth,
+  }));
+  expect(overflow.panel).toBeLessThanOrEqual(0);
+  expect(overflow.page).toBeLessThanOrEqual(0);
+  await context.close();
+});
+
+test('page disables phone and address detection', async ({ browser }) => {
+  const { context, page } = await openAds(browser, NARROW);
+  const content = await page
+    .locator('meta[name="format-detection"]')
+    .getAttribute('content');
+  expect(content).toContain('telephone=no');
+  expect(content).toContain('address=no');
+  await context.close();
+});
+
+test('hyphenation is off only in teil 2 ads', async ({ browser }) => {
+  const { context, page } = await openAds(browser, NARROW);
+  await expect(page.getByTestId('ad-text-0')).toHaveCSS('hyphens', 'none');
+  await goTo(page, 1);
+  await expect(page.getByTestId('reading-paragraph-0')).toHaveCSS(
+    'hyphens',
+    'auto',
+  );
+  await context.close();
+});
+
+test('teil 2 ad blocks add no answer keys to the page', async ({ browser }) => {
+  const { context, page, path } = await openAds(browser, WIDE);
+  const html = await (await context.request.get(path)).text();
+  expect(html).toContain('data-ad-letter');
+  expect(html).not.toContain('correctOptionId');
+  expect(html).not.toContain('correct_option_id');
+  expect(html).not.toContain('solutionOptionId');
+  expect(await page.content()).not.toContain('correctOptionId');
+  await context.close();
+});
+
+// Owner request on top of the Issue (not an acceptance criterion): the same
+// component is as clear on a 1440 px desktop as on a phone.
+for (const viewport of [WIDE, NARROW]) {
+  test(`teil 2 ads stay aligned blocks at ${viewport.width} px`, async ({
+    browser,
+  }) => {
+    const { context, page } = await openAds(browser, viewport);
+    const blocks = await boxesOf(page, AD_BLOCKS);
+    const badges = await boxesOf(page, AD_BADGES);
+    expect(blocks).toHaveLength(ADS.length);
+    expect(badges).toHaveLength(ADS.length);
+    // Blocks never overlap and their badges share one left edge.
+    for (let i = 1; i < blocks.length; i++) {
+      expect(blocks[i]?.top ?? 0).toBeGreaterThan(blocks[i - 1]?.bottom ?? 0);
+    }
+    expect(new Set(badges.map((box) => Math.round(box.left))).size).toBe(1);
+    // The text stays inside its block.
+    const texts = await boxesOf(page, '[data-testid^="ad-text-"]');
+    texts.forEach((box, i) => {
+      expect(box.right).toBeLessThanOrEqual((blocks[i]?.right ?? 0) + 0.5);
+    });
+    // Nothing runs out sideways, and the task card keeps its width.
+    const overflow = await page
+      .getByTestId('reading-text')
+      .evaluate((node) => node.scrollWidth - node.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    if (viewport.width > NARROW.width) {
+      const task = await page
+        .getByTestId(`question-card-lesen-${AD_QUESTION}`)
+        .boundingBox();
+      expect(task?.width ?? 0).toBeGreaterThan(300);
+    }
+    // The last ad can be scrolled to: the anchors of the blocks work.
+    const last = page.getByTestId(`reading-paragraph-${ADS.length - 1}`);
+    await last.evaluate((node) => node.scrollIntoView({ block: 'start' }));
+    await expect(last).toBeInViewport();
+    await context.close();
+  });
+}

@@ -16,6 +16,8 @@ import { ThemeRegistry } from '../theme/ThemeRegistry';
 export const metadata: Metadata = {
   title: 'B1 Kompass',
   description: 'German A2–B1 practice: DTZ Hören and Lesen',
+  // iOS Safari must not turn addresses and numbers of the exam text into links.
+  formatDetection: { telephone: false, address: false, email: false },
 };
 
 const RootLayout = async ({ children }: { children: ReactNode }) => {

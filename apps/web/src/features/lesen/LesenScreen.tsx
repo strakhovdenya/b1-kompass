@@ -32,6 +32,23 @@ const UNLOCK_DELAY_MS = 150;
 const PARAGRAPH_SAVE_DELAY_MS = 600;
 const PAGE_MARGIN_PX = 16;
 
+// Teil 2 is a matching task: its text is a list of ads, each starting with
+// its letter a-h and a space.
+const AD_TEIL = 2;
+const AD_PREFIX = /^([a-h]) /;
+
+export const splitAd = (
+  paragraph: string,
+  teil: number,
+): { letter: string; rest: string } | null => {
+  if (teil !== AD_TEIL) return null;
+  const match = AD_PREFIX.exec(paragraph);
+  const letter = match?.[1];
+  return letter === undefined
+    ? null
+    : { letter, rest: paragraph.slice(letter.length + 1) };
+};
+
 export const splitParagraphs = (body: string): string[] =>
   body.split(PARAGRAPH_BREAK).filter((paragraph) => paragraph.trim() !== '');
 
@@ -109,6 +126,70 @@ const restorePosition = (
   const count = paragraphsOf(panel).length;
   scrollToParagraph(panel, resolveAnchor(anchor, textId, count));
 };
+
+interface AdBlockProps {
+  index: number;
+  letter: string;
+  rest: string;
+}
+
+// One ad of Teil 2: a bordered block with its letter as a badge in a fixed
+// left column. The block carries the reading anchor; the text after the
+// letter stays one German text zone. Web and e-mail addresses are never
+// hyphenated here.
+const AdBlock = ({ index, letter, rest }: AdBlockProps) => (
+  <Box
+    data-paragraph={index}
+    data-testid={`reading-paragraph-${index}`}
+    data-ad-letter={letter}
+    sx={{
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: { xs: 1.5, md: 2 },
+      p: { xs: 1.5, md: 2 },
+      minWidth: 0,
+      border: 1,
+      borderColor: 'primary.light',
+      borderRadius: 1,
+      bgcolor: 'background.default',
+    }}
+  >
+    <Box
+      component="span"
+      data-testid={`ad-letter-${letter}`}
+      sx={{
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: { xs: 32, md: 36 },
+        height: { xs: 32, md: 36 },
+        borderRadius: 0.75,
+        bgcolor: 'primary.main',
+        color: 'primary.contrastText',
+        fontSize: '1.125rem',
+        fontWeight: 700,
+        lineHeight: 1,
+      }}
+    >
+      {letter}
+    </Box>
+    <Typography
+      component="p"
+      variant="lesenBody"
+      data-testid={`ad-text-${index}`}
+      sx={{
+        flex: 1,
+        minWidth: 0,
+        whiteSpace: 'pre-wrap',
+        hyphens: 'none',
+        overflowWrap: 'anywhere',
+      }}
+    >
+      <GermanText>{rest}</GermanText>
+    </Typography>
+  </Box>
+);
 
 interface LesenScreenProps {
   questions: readonly ExamQuestion[];
@@ -339,18 +420,28 @@ export const LesenScreen = ({
                 <GermanText>{text.title}</GermanText>
               </Typography>
               <Stack spacing={2} lang="de">
-                {paragraphs.map((paragraph, paragraphIndex) => (
-                  <Typography
-                    key={paragraphIndex}
-                    component="p"
-                    variant="lesenBody"
-                    data-paragraph={paragraphIndex}
-                    data-testid={`reading-paragraph-${paragraphIndex}`}
-                    sx={{ whiteSpace: 'pre-wrap' }}
-                  >
-                    <GermanText>{paragraph}</GermanText>
-                  </Typography>
-                ))}
+                {paragraphs.map((paragraph, paragraphIndex) => {
+                  const ad = splitAd(paragraph, question.teil);
+                  return ad ? (
+                    <AdBlock
+                      key={paragraphIndex}
+                      index={paragraphIndex}
+                      letter={ad.letter}
+                      rest={ad.rest}
+                    />
+                  ) : (
+                    <Typography
+                      key={paragraphIndex}
+                      component="p"
+                      variant="lesenBody"
+                      data-paragraph={paragraphIndex}
+                      data-testid={`reading-paragraph-${paragraphIndex}`}
+                      sx={{ whiteSpace: 'pre-wrap' }}
+                    >
+                      <GermanText>{paragraph}</GermanText>
+                    </Typography>
+                  );
+                })}
               </Stack>
             </Paper>
             <Box
