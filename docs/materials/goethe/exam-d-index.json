@@ -1,0 +1,928 @@
+{
+  "status": "INDEX_ONLY_NOT_CONTENT_SCHEMA",
+  "source": {
+    "publisher": "Goethe-Institut / telc",
+    "title": "Deutsch-Test für Zuwanderer — Modellsatz E (2009)",
+    "url": "https://www.goethe.de/resources/files/pdf209/dtz_modellsatz_e_2009_08.pdf",
+    "page": 1
+  },
+  "slug": "dtz-goethe-telc-modellsatz-e",
+  "title": "Goethe-Institut / telc — DTZ Modellsatz E (2009)",
+  "identity": {
+    "slot": "D",
+    "pilot": "A = telc Auf jeden Fall! B1.2",
+    "B": "g.a.s.t. Übungssatz 2",
+    "C": "g.a.s.t. Übungssatz 1"
+  },
+  "youtubeReference": "https://www.youtube.com/watch?v=C_5GRqjcdho",
+  "questions": [
+    {
+      "id": "hoeren-1",
+      "number": 1,
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 8,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-2",
+      "number": 2,
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 8,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-3",
+      "number": 3,
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 8,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-4",
+      "number": 4,
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 8,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-5",
+      "number": 5,
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 9,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-6",
+      "number": 6,
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 9,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-7",
+      "number": 7,
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 9,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-8",
+      "number": 8,
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 9,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-9",
+      "number": 9,
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 9,
+      "textId": null,
+      "groupId": null,
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-10",
+      "number": 10,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-1",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-11",
+      "number": 11,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-1",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-12",
+      "number": 12,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-2",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-13",
+      "number": 13,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-2",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-14",
+      "number": 14,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-3",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-15",
+      "number": 15,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-3",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-16",
+      "number": 16,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-4",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-17",
+      "number": 17,
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 10,
+      "textId": null,
+      "groupId": "hoeren-t3-pair-4",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-18",
+      "number": 18,
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "sourcePage": 11,
+      "textId": null,
+      "groupId": "hoeren-t4-shared",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-19",
+      "number": 19,
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "sourcePage": 11,
+      "textId": null,
+      "groupId": "hoeren-t4-shared",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "hoeren-20",
+      "number": 20,
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "sourcePage": 11,
+      "textId": null,
+      "groupId": "hoeren-t4-shared",
+      "trackId": "goethe-modellsatz-e-hoeren"
+    },
+    {
+      "id": "lesen-1",
+      "number": 1,
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 14,
+      "textId": "lesen-teil-1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-2",
+      "number": 2,
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 14,
+      "textId": "lesen-teil-1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-3",
+      "number": 3,
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 14,
+      "textId": "lesen-teil-1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-4",
+      "number": 4,
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 14,
+      "textId": "lesen-teil-1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-5",
+      "number": 5,
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 14,
+      "textId": "lesen-teil-1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-6",
+      "number": 6,
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "sourcePage": 16,
+      "textId": "lesen-teil-2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-7",
+      "number": 7,
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "sourcePage": 16,
+      "textId": "lesen-teil-2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-8",
+      "number": 8,
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "sourcePage": 16,
+      "textId": "lesen-teil-2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-9",
+      "number": 9,
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "sourcePage": 16,
+      "textId": "lesen-teil-2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-10",
+      "number": 10,
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "sourcePage": 16,
+      "textId": "lesen-teil-2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-11",
+      "number": 11,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 18,
+      "textId": "lesen-teil-3-text-1",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-12",
+      "number": 12,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 18,
+      "textId": "lesen-teil-3-text-1",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-13",
+      "number": 13,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 19,
+      "textId": "lesen-teil-3-text-2",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-14",
+      "number": 14,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 19,
+      "textId": "lesen-teil-3-text-2",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-15",
+      "number": 15,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 20,
+      "textId": "lesen-teil-3-text-3",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-16",
+      "number": 16,
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 20,
+      "textId": "lesen-teil-3-text-3",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-17",
+      "number": 17,
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 21,
+      "textId": "lesen-teil-4-beipackzettel",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-18",
+      "number": 18,
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 21,
+      "textId": "lesen-teil-4-beipackzettel",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-19",
+      "number": 19,
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "sourcePage": 21,
+      "textId": "lesen-teil-4-beipackzettel",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-20",
+      "number": 20,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-21",
+      "number": 21,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-22",
+      "number": 22,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-23",
+      "number": 23,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-24",
+      "number": 24,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "id": "lesen-25",
+      "number": 25,
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "sourcePage": 22,
+      "textId": "lesen-teil-5-brief",
+      "groupId": null,
+      "trackId": null
+    }
+  ],
+  "textsPlan": [
+    {
+      "id": "lesen-teil-1-register",
+      "printedPages": [
+        15
+      ],
+      "note": "Directory/menu after Lesen Teil 1 questions page 14"
+    },
+    {
+      "id": "lesen-teil-2-anzeigen",
+      "printedPages": [
+        17
+      ],
+      "note": "Eight advertisements a-h in two columns. Visual inspection mandatory; questions on page 16"
+    },
+    {
+      "id": "lesen-teil-3-text-1",
+      "printedPages": [
+        18
+      ],
+      "note": "Questions 11–12"
+    },
+    {
+      "id": "lesen-teil-3-text-2",
+      "printedPages": [
+        19
+      ],
+      "note": "Questions 13–14"
+    },
+    {
+      "id": "lesen-teil-3-text-3",
+      "printedPages": [
+        20
+      ],
+      "note": "Questions 15–16"
+    },
+    {
+      "id": "lesen-teil-4-beipackzettel",
+      "printedPages": [
+        21
+      ],
+      "note": "Questions 17–19"
+    },
+    {
+      "id": "lesen-teil-5-brief",
+      "printedPages": [
+        22
+      ],
+      "note": "Questions 20–25"
+    }
+  ],
+  "groupsPlan": [
+    {
+      "id": "hoeren-t3-pair-1",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "goethe-modellsatz-e-hoeren",
+      "questionIds": [
+        "hoeren-10",
+        "hoeren-11"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-2",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "goethe-modellsatz-e-hoeren",
+      "questionIds": [
+        "hoeren-12",
+        "hoeren-13"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-3",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "goethe-modellsatz-e-hoeren",
+      "questionIds": [
+        "hoeren-14",
+        "hoeren-15"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-4",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "goethe-modellsatz-e-hoeren",
+      "questionIds": [
+        "hoeren-16",
+        "hoeren-17"
+      ]
+    },
+    {
+      "id": "hoeren-t4-shared",
+      "kind": "shared-set",
+      "teil": 4,
+      "trackId": "goethe-modellsatz-e-hoeren",
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "questionIds": [
+        "hoeren-18",
+        "hoeren-19",
+        "hoeren-20"
+      ]
+    }
+  ],
+  "sourcePdfPrintedPages": {
+    "hoeren": [
+      8,
+      9,
+      10,
+      11
+    ],
+    "lesen": [
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22
+    ],
+    "transcripts": [
+      34,
+      35,
+      36,
+      37
+    ],
+    "answerKey": 37
+  },
+  "audio": {
+    "trackId": "goethe-modellsatz-e-hoeren",
+    "officialArchiveUrl": "https://www.goethe.de/resources/files/epub1/modellsatz.zip",
+    "archiveNotYetInspected": true,
+    "singleContinuousTrackVerified": false,
+    "sourceExpected": "sources/modellsatz-audio.zip"
+  },
+  "gate": {
+    "pdfBytesVerified": false,
+    "audioArchiveEntriesVerified": false,
+    "actualFullContentPrepared": false,
+    "examValidatePassed": false,
+    "legalPermissionConfirmed": false,
+    "published": false
+  },
+  "notes": [
+    "SourcePage values refer to PRINTED page numbers, not PDF viewer indices",
+    "Lesen independently numbered 1–25; do not forcibly renumber to 21–45",
+    "Private key and publisher files must remain in private/",
+    "Do not treat this index as a publishable manifest"
+  ]
+}
