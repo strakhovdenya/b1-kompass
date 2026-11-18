@@ -382,6 +382,7 @@ export const AttemptSubmissionControls = ({
           </Alert>
           <Button
             variant="contained"
+            color="error"
             data-testid="cancel-resend"
             onClick={onResendCancel}
             sx={ACTION_BUTTON_SX}

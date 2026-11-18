@@ -169,6 +169,10 @@ describe('AttemptSubmissionControls', () => {
       [{ phase: 'uncertain' }, ['finish-resend']],
       [{ phase: 'cancel-uncertain' }, ['cancel-resend']],
     ];
+    // Cancelling is destructive, so its confirmation and its resend are red;
+    // the matching submission buttons stay primary.
+    const destructive = new Set(['cancel-confirm', 'cancel-resend']);
+    const primary = new Set(['finish-confirm', 'finish-resend']);
     for (const locale of ['en', 'ru'] as const) {
       for (const [props, testIds] of screens) {
         const html = render(props, locale);
@@ -176,6 +180,20 @@ describe('AttemptSubmissionControls', () => {
           const css = buttonCss(html, testId);
           expect(css, `${locale} ${testId}`).toContain('min-height:48px');
           expect(css, `${locale} ${testId}`).toContain('width:100%');
+          const button = buttonOf(html, testId);
+          if (destructive.has(testId)) {
+            expect(button, `${locale} ${testId}`).toContain(
+              'MuiButton-containedError',
+            );
+          }
+          if (primary.has(testId)) {
+            expect(button, `${locale} ${testId}`).toContain(
+              'MuiButton-containedPrimary',
+            );
+            expect(button, `${locale} ${testId}`).not.toContain(
+              'MuiButton-colorError',
+            );
+          }
         }
       }
     }
