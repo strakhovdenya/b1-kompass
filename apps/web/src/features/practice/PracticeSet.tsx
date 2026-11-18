@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import type { SxProps, Theme } from '@mui/material/styles';
 import type {
   ExamGroup,
   ExamQuestion,
@@ -18,6 +19,14 @@ import { QuestionNavigator } from './QuestionNavigator';
 import type { NavigatorStep } from './QuestionNavigator';
 import { buildSteps } from './steps';
 import type { PracticeStep } from './steps';
+
+// Previous and next on a phone: two equal thumb targets in one row, at
+// least 48 px high. From md they are ordinary buttons again. Shared with the
+// Lesen screen so both blocks navigate alike.
+export const NAV_BUTTON_SX: SxProps<Theme> = {
+  flex: { xs: 1, md: 'none' },
+  minHeight: { xs: 48, md: 'auto' },
+};
 
 interface PracticeSetProps {
   questions: readonly ExamQuestion[];
@@ -145,6 +154,7 @@ export const PracticeSet = ({
           data-testid="set-previous"
           disabled={index === 0 || isSaving}
           onClick={() => setIndex(index - 1)}
+          sx={NAV_BUTTON_SX}
         >
           {t('previous')}
         </Button>
@@ -153,6 +163,7 @@ export const PracticeSet = ({
           data-testid="set-next"
           disabled={index === total - 1 || isSaving}
           onClick={() => setIndex(index + 1)}
+          sx={NAV_BUTTON_SX}
         >
           {t('next')}
         </Button>

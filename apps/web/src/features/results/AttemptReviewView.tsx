@@ -150,6 +150,7 @@ export const AttemptReviewView = ({
               data-testid="restart-attempt"
               disabled={restartStatus === 'restarting'}
               onClick={onRestart}
+              sx={{ minHeight: 48 }}
             >
               {restartStatus === 'restarting' ? t('restarting') : t('restart')}
             </Button>

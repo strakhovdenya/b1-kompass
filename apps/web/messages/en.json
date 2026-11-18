@@ -228,6 +228,8 @@
     "cancelConfirm": "Cancel without result",
     "cancelError": "The attempt was not cancelled. Please try again.",
     "cancelUncertain": "The connection was lost while cancelling. Send the same cancel again.",
+    "cancelLoading": "Getting the attempt state…",
+    "cancelSending": "Cancelling the attempt…",
     "expired": "Time is up. Only the answers saved before the end of the time count.",
     "expiredUnsaved": "{unsaved, plural, one {# choice was} other {# choices were}} not saved in time and {unsaved, plural, one {does} other {do}} not count.",
     "confirmUnopened": "{count, plural, one {# Lesen task has} other {# Lesen tasks have}} not started yet and will count as skipped."

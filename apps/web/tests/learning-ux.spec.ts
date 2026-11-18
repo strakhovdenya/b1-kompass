@@ -1,10 +1,17 @@
 import { devices, expect, test } from '@playwright/test';
 import type { Browser, Locator, Page } from '@playwright/test';
-import { fullKeyOf, fullWrongOf } from './support/full-exam';
-import { readAnswers } from './support/db';
+import { saveAnswer } from '../src/server/attempts/attempts';
+import {
+  FULL_EXAM,
+  FULL_PILOT,
+  fullKeyOf,
+  fullWrongOf,
+} from './support/full-exam';
+import { depsNow, readAnswers } from './support/db';
 import {
   HOEREN_URL,
   activeAttemptOf,
+  attemptUrl,
   audioOf,
   card,
   enterAndStart,
@@ -1303,4 +1310,353 @@ test('failed recording stays in Hören and keeps the answers', async ({
     optionIn(card(page, 'hoeren-1'), fullKeyOf('hoeren-1')),
   ).toBeChecked();
   await context.close();
+});
+
+// --- Exam actions: finish, cancel, navigation, focus ------------------------
+
+const MIN_TOUCH_PX = 48;
+const PHONES = [
+  { width: 320, height: 640 },
+  { width: 360, height: 640 },
+] as const;
+const LOCALES = ['en', 'ru'] as const;
+const SUBMIT_PATH = /\/api\/attempts\/[^/]+\/submit$/;
+
+type Locale = (typeof LOCALES)[number];
+
+const switchLocale = async (page: Page, locale: Locale) => {
+  if (locale === 'en') return;
+  await page.getByTestId('locale-ru').click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+};
+
+// The box of an element in the coordinates of the page, so that boxes of
+// elements that needed different scrolling can be compared.
+const pageBoxOf = async (locator: Locator) => {
+  await locator.scrollIntoViewIfNeeded();
+  return locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.left + window.scrollX,
+      y: rect.top + window.scrollY,
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+};
+
+// A touch target of at least 48 px that lies inside the width of the screen.
+const expectTouchTarget = async (
+  locator: Locator,
+  screen: string,
+  screenWidth: number,
+) => {
+  const box = await pageBoxOf(locator);
+  expect(box.height, `${screen}: height`).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+  expect(box.x, `${screen}: left edge`).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, `${screen}: right edge`).toBeLessThanOrEqual(
+    screenWidth,
+  );
+  return box;
+};
+
+const isFocused = (page: Page, testId: string) =>
+  expect(page.getByTestId(testId)).toBeFocused();
+
+test('mobile finish and cancel actions are clear buttons without overflow', async ({
+  browser,
+}) => {
+  for (const viewport of PHONES) {
+    for (const locale of LOCALES) {
+      const screen = `${viewport.width}px ${locale}`;
+      const { context, page } = await openGuest(browser, viewport);
+      await switchLocale(page, locale);
+      const finish = page.getByTestId('finish-attempt');
+      const cancel = page.getByTestId('cancel-attempt');
+
+      // Two different, full buttons: the finish is filled, the cancel is
+      // an outlined red button, not a link-like text.
+      await expect(finish).toHaveClass(/\bMuiButton-containedPrimary\b/);
+      await expect(cancel).toHaveClass(/\bMuiButton-outlinedError\b/);
+      await expect(cancel).not.toHaveClass(/\bMuiButton-text\b/);
+      const finishBox = await expectTouchTarget(
+        finish,
+        `${screen} finish`,
+        viewport.width,
+      );
+      const cancelBox = await expectTouchTarget(
+        cancel,
+        `${screen} cancel`,
+        viewport.width,
+      );
+      const border = await cancel.evaluate(
+        (element) => getComputedStyle(element).borderTopWidth,
+      );
+      expect(Number.parseFloat(border), `${screen}: cancel border`).toBe(2);
+
+      // One under the other with a gap, the same width, no overlap.
+      expect(cancelBox.y, `${screen}: stacked`).toBeGreaterThanOrEqual(
+        finishBox.y + finishBox.height + 8,
+      );
+      expect(Math.abs(finishBox.width - cancelBox.width)).toBeLessThanOrEqual(
+        1,
+      );
+      expect(finishBox.width).toBeGreaterThanOrEqual(viewport.width * 0.7);
+      await expectNoSidewaysScroll(page, screen);
+      await expectUsableLayout(page, screen);
+      await context.close();
+    }
+  }
+});
+
+test('mobile submission actions meet touch target and viewport limits', async ({
+  browser,
+}) => {
+  // The narrowest phone with the longest labels (Russian).
+  const narrow = PHONES[0];
+  const { context, page } = await openGuest(browser, narrow);
+  await switchLocale(page, 'ru');
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+  const checkAll = async (ids: string[], screen: string) => {
+    for (const id of ids) {
+      await expectTouchTarget(page.getByTestId(id), screen, narrow.width);
+    }
+    await expectNoSidewaysScroll(page, screen);
+  };
+
+  await page.getByTestId('finish-attempt').click();
+  const finishing = page.getByTestId('finish-confirmation');
+  await expect(finishing).toBeVisible();
+  await checkAll(['finish-confirm', 'finish-cancel'], 'finish confirmation');
+  await expectTextContained(finishing, 'finish confirmation');
+  await page.getByTestId('finish-cancel').click();
+
+  await page.getByTestId('cancel-attempt').click();
+  const cancelling = page.getByTestId('cancel-confirmation');
+  await expect(cancelling).toBeVisible();
+  await checkAll(['cancel-confirm', 'cancel-back'], 'cancel confirmation');
+  await expectTextContained(cancelling, 'cancel confirmation');
+  await page.getByTestId('cancel-back').click();
+  await checkAll(['finish-attempt', 'cancel-attempt'], 'actions');
+  await expectUsableLayout(page, 'narrowest actions');
+  await context.close();
+
+  // The desktop keeps a calm row: the finish first, the cancel next to it,
+  // both buttons of their own width.
+  const desktop = await openGuest(browser, DESKTOP);
+  const finish = await pageBoxOf(desktop.page.getByTestId('finish-attempt'));
+  const cancel = await pageBoxOf(desktop.page.getByTestId('cancel-attempt'));
+  expect(Math.abs(finish.y - cancel.y)).toBeLessThanOrEqual(2);
+  expect(finish.x + finish.width).toBeLessThanOrEqual(cancel.x);
+  expect(finish.width).toBeLessThan(DESKTOP.width / 3);
+  expect(cancel.width).toBeLessThan(DESKTOP.width / 3);
+  expect(finish.height).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+  expect(cancel.height).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+  const previous = await pageBoxOf(desktop.page.getByTestId('set-previous'));
+  const next = await pageBoxOf(desktop.page.getByTestId('set-next'));
+  expect(previous.width).toBeLessThan(DESKTOP.width / 4);
+  expect(Math.abs(previous.y - next.y)).toBeLessThanOrEqual(2);
+  expect(previous.x + previous.width).toBeLessThanOrEqual(next.x);
+  await desktop.context.close();
+});
+
+test('mobile previous next and restart have large touch targets', async ({
+  browser,
+}) => {
+  for (const viewport of PHONES) {
+    for (const locale of LOCALES) {
+      const screen = `${viewport.width}px ${locale}`;
+      const { context, page } = await openGuest(browser, viewport);
+      await switchLocale(page, locale);
+      const checkRow = async (block: string) => {
+        const previous = await expectTouchTarget(
+          page.getByTestId('set-previous'),
+          `${screen} ${block} previous`,
+          viewport.width,
+        );
+        const next = await expectTouchTarget(
+          page.getByTestId('set-next'),
+          `${screen} ${block} next`,
+          viewport.width,
+        );
+        // One row, two equal parts that do not overlap.
+        expect(Math.abs(previous.y - next.y)).toBeLessThanOrEqual(1);
+        expect(Math.abs(previous.width - next.width)).toBeLessThanOrEqual(1);
+        expect(previous.x + previous.width).toBeLessThanOrEqual(next.x);
+        expect(previous.width + next.width).toBeGreaterThanOrEqual(
+          viewport.width * 0.6,
+        );
+        await expectNoSidewaysScroll(page, `${screen} ${block}`);
+      };
+      await checkRow('hoeren');
+      await goToLesen(page);
+      await showTask(page);
+      await checkRow('lesen');
+
+      await finishFromShell(page);
+      await expectTouchTarget(
+        page.getByTestId('restart-attempt'),
+        `${screen} restart`,
+        viewport.width,
+      );
+      // The repeat of the errors keeps its own size where it is offered.
+      const repeat = page.getByTestId('repeat-errors');
+      if ((await repeat.count()) > 0) {
+        const box = await pageBoxOf(repeat);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      await expectNoSidewaysScroll(page, `${screen} review`);
+      await context.close();
+    }
+  }
+});
+
+test('mobile navigation retains boundary disabled and saved answers', async ({
+  browser,
+}) => {
+  const { context, page } = await openGuest(browser, PHONES[1]);
+  const { attemptId } = await activeAttemptOf(context);
+  const previous = page.getByTestId('set-previous');
+  const next = page.getByTestId('set-next');
+  const walkToEnd = async (limit: number) => {
+    for (let step = 0; step < limit; step++) {
+      if (await next.isDisabled()) return;
+      await next.click();
+    }
+    throw new Error('the last step was not reached');
+  };
+
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeEnabled();
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+  await next.click();
+  await expect(card(page, 'hoeren-2')).toBeVisible();
+  await expect(previous).toBeEnabled();
+  await previous.click();
+  await expect(
+    optionIn(card(page, 'hoeren-1'), fullKeyOf('hoeren-1')),
+  ).toBeChecked();
+  await expect(previous).toBeDisabled();
+  await walkToEnd(HOEREN_STEPS);
+  await expect(next).toBeDisabled();
+  await expect(previous).toBeEnabled();
+
+  await goToLesen(page);
+  await showTask(page);
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeEnabled();
+  await choose(page, 'lesen-1', fullKeyOf('lesen-1'));
+  const position = await page.getByTestId('set-position').innerText();
+  await next.click();
+  await expect(page.getByTestId('set-position')).not.toHaveText(position);
+  await previous.click();
+  // The same place: the position, the questions view and the answer stay.
+  await expect(page.getByTestId('set-position')).toHaveText(position);
+  await expect(page.getByTestId('lesen-view-questions')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(
+    optionIn(card(page, 'lesen-1'), fullKeyOf('lesen-1')),
+  ).toBeChecked();
+  await expect(previous).toBeDisabled();
+  await walkToEnd(LESEN_TASKS);
+  await expect(next).toBeDisabled();
+  await expect(previous).toBeEnabled();
+
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+    'lesen-1': fullKeyOf('lesen-1'),
+  });
+  await context.close();
+});
+
+test('submit and cancel confirmation preserve keyboard focus', async ({
+  browser,
+}) => {
+  const { context, page } = await openGuest(browser, PHONE);
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+  const submits = trackPosts(page, SUBMIT_PATH);
+
+  // Opened with the keyboard: the title takes the focus, in view, and Tab
+  // goes on to the buttons of the confirmation.
+  const expectTitleFocused = async (id: string) => {
+    const title = page.locator(`#${id}`);
+    await expect(title).toBeFocused();
+    const box = await boxOf(title);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(PHONE.height);
+  };
+
+  await page.getByTestId('finish-attempt').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('finish-confirmation')).toBeVisible();
+  await expectTitleFocused('finish-confirm-title');
+  await page.keyboard.press('Tab');
+  await isFocused(page, 'finish-confirm');
+  await page.keyboard.press('Tab');
+  await isFocused(page, 'finish-cancel');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('finish-confirmation')).toHaveCount(0);
+  await isFocused(page, 'finish-attempt');
+  await expectVisibleFocus(page, 'finish after refusal');
+
+  await page.getByTestId('cancel-attempt').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('cancel-confirmation')).toBeVisible();
+  await expectTitleFocused('cancel-confirm-title');
+  await page.keyboard.press('Tab');
+  await isFocused(page, 'cancel-confirm');
+  await page.keyboard.press('Tab');
+  await isFocused(page, 'cancel-back');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('cancel-confirmation')).toHaveCount(0);
+  await isFocused(page, 'cancel-attempt');
+  await expectVisibleFocus(page, 'cancel after refusal');
+
+  // Nothing was sent and the answers are as they were.
+  expect(submits).toEqual([]);
+  await expect(page.getByTestId('finish-attempt')).toBeEnabled();
+  await context.close();
+});
+
+test('confirmation dismissal restores focus without changing direct submit rule', async ({
+  browser,
+}) => {
+  // With the mouse the focus follows the same way.
+  const first = await openGuest(browser, PHONE);
+  const sent = trackPosts(first.page, SUBMIT_PATH);
+  await choose(first.page, 'hoeren-1', fullKeyOf('hoeren-1'));
+  await first.page.getByTestId('finish-attempt').click();
+  await expect(first.page.getByTestId('finish-confirmation')).toBeVisible();
+  await first.page.getByTestId('finish-cancel').click();
+  await isFocused(first.page, 'finish-attempt');
+  await first.page.getByTestId('cancel-attempt').click();
+  await expect(first.page.getByTestId('cancel-confirmation')).toBeVisible();
+  await first.page.getByTestId('cancel-back').click();
+  await isFocused(first.page, 'cancel-attempt');
+  expect(sent).toEqual([]);
+  await first.context.close();
+
+  // Every task answered: the submit still goes straight, without a dialog
+  // and with exactly one request.
+  const second = await openGuest(browser, PHONE);
+  const attempt = await activeAttemptOf(second.context);
+  for (const question of FULL_PILOT.content.questions) {
+    const saved = await saveAnswer(depsNow(), attempt.token, {
+      attemptId: attempt.attemptId,
+      questionId: question.id,
+      optionId: fullKeyOf(question.id),
+      revision: 1,
+    });
+    if (!saved.ok) throw new Error(`seed ${question.id}: ${saved.error}`);
+  }
+  await second.page.goto(attemptUrl(FULL_EXAM.slug, attempt.attemptId));
+  await expect(card(second.page, 'hoeren-1')).toBeVisible();
+  const submits = trackPosts(second.page, SUBMIT_PATH);
+  await second.page.getByTestId('finish-attempt').click();
+  await expect(second.page.getByTestId('attempt-review')).toBeVisible();
+  await expect(second.page.getByTestId('finish-confirmation')).toHaveCount(0);
+  expect(submits).toHaveLength(1);
+  await second.context.close();
 });
