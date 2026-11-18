@@ -117,7 +117,8 @@ describe('HoerenSingleScreen with a pair', () => {
 
   it('counts the pair as one step and every member as an answer', () => {
     const html = renderAt({ h1: 'a', h3: 'b' });
-    expect(html).toContain('Question 1 of 3');
+    // The position counts the real tasks: the pair is one step, two tasks.
+    expect(html).toContain('Question 1 of 4');
     expect(html).toContain('Answered: 2 of 4');
     expect(html).toContain('data-testid="go-to-question-3"');
   });
