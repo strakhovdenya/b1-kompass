@@ -10,6 +10,17 @@ People preparing for the DTZ usually practise with printed workbooks and a separ
 
 It is a practice tool, not a certificate. It covers Hören and Lesen only; Schreiben and Sprechen are not part of it.
 
+## Screenshots
+
+Real mobile screenshots of the working guest trainer. Click either image for the full-size view.
+
+<p align="center">
+  <a href="docs/screenshots/hoeren-mobile.jpg"><img src="docs/screenshots/hoeren-mobile.jpg" alt="B1 Kompass mobile Hören screen with audio player, question and answer options" width="240"></a>
+  <a href="docs/screenshots/results-mobile.jpg"><img src="docs/screenshots/results-mobile.jpg" alt="B1 Kompass mobile results: DTZ scores, level, repeat and review actions" width="240"></a>
+</p>
+
+<p align="center"><em>Hören (listening practice) · Results and review</em></p>
+
 ## What you can do
 
 - **Start in one click.** "Continue as guest" needs no e-mail or password. A guest session lasts 30 days from the first visit and is never extended.
