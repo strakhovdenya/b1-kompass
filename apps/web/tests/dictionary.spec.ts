@@ -1143,6 +1143,40 @@ test('selected German phrase opens external Google Translate only on activation'
   await context.close();
 });
 
+test('Google link carries the selected phrase exactly including line breaks', async ({
+  browser,
+}) => {
+  const { context, page } = await openContext(browser, true);
+  const google = await stubGoogle(context);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  const answers = trackPosts(page, ANSWER_PATH);
+  await goToLesen(page);
+  const paragraph = page.getByTestId('reading-paragraph-0');
+  await expectZones(paragraph);
+
+  // Two lines of the pre-wrapped reading text: the selection holds a real
+  // line break, which a rewriting of the text would turn into a space.
+  await selectRange(paragraph, 'Zeile 1', paragraph, 'Zeile 2');
+  const selected = await selectedText(page);
+  expect(selected).toBe('Zeile 1\nAnzeige zu Teil 1, Zeile 2');
+  const action = page.getByTestId(GOOGLE_PHRASE);
+  await expect(action).toBeVisible();
+  const expected =
+    'https://translate.google.com/?sl=de&tl=en&text=Zeile%201%0AAnzeige%20zu%20Teil%201%2C%20Zeile%202&op=translate';
+  await expect(action).toHaveAttribute('href', expected);
+  expect(google).toEqual([]);
+
+  const opened = context.waitForEvent('page');
+  await action.tap();
+  const tab = await opened;
+  await expect.poll(() => google).toEqual([expected]);
+  expect(new URL(tab.url()).searchParams.get('text')).toBe(selected);
+  await tab.close();
+  expect(lookups).toEqual([]);
+  expect(answers).toEqual([]);
+  await context.close();
+});
+
 test('invalid or out of scope selection never offers external translation', async ({
   browser,
 }) => {
