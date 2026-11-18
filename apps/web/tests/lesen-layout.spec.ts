@@ -489,6 +489,25 @@ test('desktop reading keeps two columns without narrow hint', async ({
 // --- The jump from the end of a long text to its task (#120) ---------------
 
 const JUMP = 'lesen-jump-to-question';
+
+// The reading position of the text after the page has stopped moving: the
+// anchor follows the scroll events of the page, so it is read only when two
+// reads, a moment apart, agree.
+const settledAnchor = async (reading: Locator): Promise<string> => {
+  let previous: string | null = null;
+  await expect
+    .poll(
+      async () => {
+        const current = await reading.getAttribute('data-anchor');
+        const isSettled = current !== null && current === previous;
+        previous = current;
+        return isSettled;
+      },
+      { intervals: [250] },
+    )
+    .toBe(true);
+  return previous ?? '';
+};
 const LAST_PARAGRAPH = 23;
 
 const answerPosts = (page: Page): string[] => {
@@ -524,7 +543,7 @@ test('long mobile reading offers direct jump from text to question', async ({
   await expect(jump).toBeInViewport();
   const box = await jump.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-  const anchor = await reading.getAttribute('data-anchor');
+  const anchor = await settledAnchor(reading);
   expect(Number(anchor)).toBeGreaterThan(PARAGRAPH);
   const english = await jump.innerText();
 
@@ -566,42 +585,52 @@ test('desktop reading omits jump and phone keeps selection and anchor', async ({
   // Desktop: two columns, no jump, the task beside the text.
   const wide = await openLesenAt(browser, WIDE);
   await goTo(wide.page, LONG_TASK);
-  await expect(wide.page.getByTestId(JUMP)).toBeHidden();
-  await expect(wide.page.getByTestId('lesen-view-text')).toBeHidden();
+  // The controls exist in the page (a renamed test id would not pass for
+  // "hidden") and are not shown on the desktop layout.
+  for (const testId of [JUMP, 'lesen-view-text', 'lesen-view-questions']) {
+    await expect(wide.page.getByTestId(testId)).toBeAttached();
+    await expect(wide.page.getByTestId(testId)).toBeHidden();
+  }
   const text = await wide.page.getByTestId('reading-text').boundingBox();
   const side = await card(wide.page, `lesen-${LONG_TASK}`).boundingBox();
   if (!text || !side) throw new Error('the text and the task need boxes');
   expect(side.x).toBeGreaterThanOrEqual(text.x + text.width - 1);
   await wide.context.close();
 
-  // Phone: text → task → text → task keeps the anchor, the answer, and
-  // sends the answer once.
+  // Phone: text → task → text → task keeps the reading place, the answer,
+  // and sends the answer once. The reader scrolls to the end of the text,
+  // where the jump is, and the place they stopped at is what comes back.
   const { context, page } = await openLesenAt(browser, NARROW);
   const answers = answerPosts(page);
   await goTo(page, LONG_TASK);
   const reading = page.getByTestId('reading-text');
-  const middle = page.getByTestId(`reading-paragraph-${PARAGRAPH}`);
-  await middle.evaluate((node) => node.scrollIntoView({ block: 'start' }));
-  await expect(reading).toHaveAttribute('data-anchor', `${PARAGRAPH}`);
-
-  await page.getByTestId(JUMP).click();
+  const jump = page.getByTestId(JUMP);
   const task = card(page, `lesen-${LONG_TASK}`);
-  await expect(task).toBeInViewport();
-  await choose(page, `lesen-${LONG_TASK}`, 'a');
-  expect(answers).toHaveLength(1);
+  let expectedAnswers = 0;
 
-  await page.getByTestId('lesen-view-text').click();
-  await expect(reading).toHaveAttribute('data-anchor', `${PARAGRAPH}`);
-  await expect(middle).toBeInViewport();
+  for (const optionId of ['a', 'a']) {
+    await jump.evaluate((node) => node.scrollIntoView({ block: 'nearest' }));
+    await expect(jump).toBeInViewport();
+    const anchor = await settledAnchor(reading);
+    expect(Number(anchor)).toBeGreaterThan(PARAGRAPH);
 
-  await page.getByTestId(JUMP).click();
-  await expect(optionIn(task, 'a')).toBeChecked();
-  await expect(statusOf(task)).toHaveAttribute('data-status', 'saved');
-  await page.waitForTimeout(500);
-  expect(answers).toHaveLength(1);
+    await jump.click();
+    await expect(task).toBeInViewport();
+    if (expectedAnswers === 0) {
+      await choose(page, `lesen-${LONG_TASK}`, optionId);
+      expectedAnswers = 1;
+    }
+    await expect(optionIn(task, optionId)).toBeChecked();
+    await expect(statusOf(task)).toHaveAttribute('data-status', 'saved');
+    await page.waitForTimeout(500);
+    expect(answers).toHaveLength(expectedAnswers);
 
-  await page.getByTestId('lesen-view-text').click();
-  await expect(reading).toHaveAttribute('data-anchor', `${PARAGRAPH}`);
+    await page.getByTestId('lesen-view-text').click();
+    await expect(reading).toHaveAttribute('data-anchor', anchor);
+    await expect(
+      page.getByTestId(`reading-paragraph-${anchor}`),
+    ).toBeInViewport();
+  }
   expect(await readAnswers((await attemptOf(context)).id)).toEqual({
     [`lesen-${LONG_TASK}`]: 'a',
   });
