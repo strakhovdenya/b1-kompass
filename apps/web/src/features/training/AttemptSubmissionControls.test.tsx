@@ -39,6 +39,27 @@ const render = (
     </NextIntlClientProvider>,
   );
 
+// The opening tag and the text of a button.
+const buttonOf = (html: string, testId: string): string => {
+  const match = new RegExp(
+    `<button[^>]*data-testid="${testId}"[^>]*>.*?</button>`,
+  ).exec(html);
+  if (!match) throw new Error(`no button ${testId}`);
+  return match[0];
+};
+
+// The CSS Emotion wrote for one button: its class rule and the media rules.
+const buttonCss = (html: string, testId: string): string => {
+  const [, cls] = /class="[^"]*?(css-[\w-]+MuiButton-root)/.exec(
+    buttonOf(html, testId),
+  ) ?? ['', ''];
+  const rules = [...html.matchAll(/<style[^>]*>(.*?)<\/style>/g)]
+    .map((style) => style[1] ?? '')
+    .filter((css) => css.includes(`.${cls}`));
+  if (!cls || rules.length === 0) throw new Error(`no css of ${testId}`);
+  return rules.join('');
+};
+
 const confirmation = {
   phaseRevision: 0,
   skipped: 2,
@@ -128,5 +149,135 @@ describe('AttemptSubmissionControls', () => {
     expect(render({ phase: 'cancel-failed' })).toContain(
       'data-testid="cancel-status"',
     );
+  });
+
+  it('renders full size confirmation and retry buttons in both locales', () => {
+    const cancelSummary = { phaseRevision: 0, skipped: 4, unsaved: 0 };
+    const expiry = { unsaved: 0, isResultReady: false };
+    const screens: [Partial<AttemptSubmissionControlsProps>, string[]][] = [
+      [{}, ['finish-attempt', 'cancel-attempt']],
+      [
+        { phase: 'confirming', confirmation },
+        ['finish-confirm', 'finish-cancel'],
+      ],
+      [
+        { phase: 'cancel-confirming', cancelSummary },
+        ['cancel-confirm', 'cancel-back'],
+      ],
+      [{ phase: 'accepted' }, ['result-check']],
+      [{ phase: 'expired', expiry }, ['result-check']],
+      [{ phase: 'uncertain' }, ['finish-resend']],
+      [{ phase: 'cancel-uncertain' }, ['cancel-resend']],
+    ];
+    for (const locale of ['en', 'ru'] as const) {
+      for (const [props, testIds] of screens) {
+        const html = render(props, locale);
+        for (const testId of testIds) {
+          const css = buttonCss(html, testId);
+          expect(css, `${locale} ${testId}`).toContain('min-height:48px');
+          expect(css, `${locale} ${testId}`).toContain('width:100%');
+        }
+      }
+    }
+  });
+
+  it('tells the finish and the cancel button apart in both locales', () => {
+    const cancelSummary = { phaseRevision: 0, skipped: 4, unsaved: 0 };
+    const labels = {
+      en: { finish: 'Finish attempt', cancel: 'Cancel attempt' },
+      ru: { finish: 'Завершить попытку', cancel: 'Отменить попытку' },
+    } as const;
+    for (const locale of ['en', 'ru'] as const) {
+      const html = render({}, locale);
+      const finish = buttonOf(html, 'finish-attempt');
+      const cancel = buttonOf(html, 'cancel-attempt');
+      expect(finish).toContain('MuiButton-containedPrimary');
+      expect(cancel).toContain('MuiButton-outlinedError');
+      expect(cancel).not.toContain('MuiButton-text');
+      expect(buttonCss(html, 'cancel-attempt')).toContain('border-width:2px');
+      expect(finish).toContain(labels[locale].finish);
+      expect(cancel).toContain(labels[locale].cancel);
+
+      const confirming = render(
+        { phase: 'cancel-confirming', cancelSummary },
+        locale,
+      );
+      expect(buttonOf(confirming, 'cancel-confirm')).toContain(
+        'MuiButton-containedError',
+      );
+      expect(buttonOf(confirming, 'cancel-back')).toContain(
+        'MuiButton-outlinedPrimary',
+      );
+      expect(buttonOf(confirming, 'cancel-back')).not.toContain(
+        'MuiButton-colorError',
+      );
+
+      const locked = render({ phase: 'cancelling' }, locale);
+      expect(buttonOf(locked, 'finish-attempt')).toContain('Mui-disabled');
+      expect(buttonOf(locked, 'cancel-attempt')).toContain('Mui-disabled');
+    }
+  });
+
+  it('cancel pending phases announce loading status in both locales', () => {
+    const texts = {
+      en: {
+        loading: 'Getting the attempt state…',
+        sending: 'Cancelling the attempt…',
+      },
+      ru: {
+        loading: 'Получаем состояние попытки…',
+        sending: 'Отменяем попытку…',
+      },
+    } as const;
+    for (const locale of ['en', 'ru'] as const) {
+      const loading = render({ phase: 'cancel-loading' }, locale);
+      expect(loading).toMatch(
+        /role="status"[^>]*data-testid="cancel-loading-status"[^>]*>[^<]*</,
+      );
+      expect(loading).toContain(`>${texts[locale].loading}<`);
+      expect(loading).not.toContain('data-testid="cancel-sending-status"');
+      expect(loading).not.toContain(texts[locale].sending);
+
+      const sending = render({ phase: 'cancelling' }, locale);
+      expect(sending).toMatch(
+        /role="status"[^>]*data-testid="cancel-sending-status"[^>]*>[^<]*</,
+      );
+      expect(sending).toContain(`>${texts[locale].sending}<`);
+      expect(sending).not.toContain('data-testid="cancel-loading-status"');
+
+      for (const html of [loading, sending]) {
+        // The wait is neutral: no success, no error, both commands locked.
+        expect(html).not.toContain('role="alert"');
+        expect(html).not.toContain('data-testid="cancel-status"');
+        expect(html).not.toContain('data-testid="submission-accepted"');
+        expect(buttonOf(html, 'finish-attempt')).toContain('Mui-disabled');
+        expect(buttonOf(html, 'cancel-attempt')).toContain('Mui-disabled');
+      }
+    }
+    expect(render({ phase: 'idle' })).not.toContain('role="status"');
+  });
+
+  it('failed and uncertain cancellation keeps retry alerts', () => {
+    for (const locale of ['en', 'ru'] as const) {
+      const failed = render({ phase: 'cancel-failed' }, locale);
+      expect(failed).toMatch(/role="alert"[^>]*data-testid="cancel-status"/);
+      // A refused cancel can be started again; nothing says it succeeded.
+      expect(buttonOf(failed, 'cancel-attempt')).not.toContain('Mui-disabled');
+      expect(buttonOf(failed, 'finish-attempt')).not.toContain('Mui-disabled');
+      expect(failed).not.toContain('data-testid="cancel-loading-status"');
+      expect(failed).not.toContain('data-testid="cancel-sending-status"');
+      expect(failed).not.toContain('data-testid="submission-accepted"');
+
+      const uncertain = render({ phase: 'cancel-uncertain' }, locale);
+      expect(uncertain).toMatch(
+        /role="alert"[^>]*data-testid="cancel-uncertain"/,
+      );
+      expect(buttonOf(uncertain, 'cancel-resend')).not.toContain(
+        'Mui-disabled',
+      );
+      expect(buttonOf(uncertain, 'cancel-attempt')).toContain('Mui-disabled');
+      expect(uncertain).not.toContain('data-testid="cancel-sending-status"');
+      expect(uncertain).not.toContain('data-testid="submission-accepted"');
+    }
   });
 });

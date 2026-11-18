@@ -48,14 +48,17 @@ import {
 import { createTestRecording } from './support/global-setup';
 import {
   ANSWER_URL,
+  CHOICE_URL,
   HOEREN_URL,
   PROGRESS_URL,
+  SUBMIT_URL,
   activeAttemptOf,
   attemptUrl,
   card,
   enterAndStart,
   expectStatus,
   optionIn,
+  startFromChoice,
 } from './support/guest-browser';
 import { snapshotSql } from './support/legacy-attempt';
 import {
@@ -627,6 +630,133 @@ test('submission controls cannot reopen accepted state or reuse stale confirmati
     .toSorted();
   expect(kinds).toEqual(['start', 'submit']);
   expect(await readResults(attemptId)).toHaveLength(1);
+  await context.close();
+});
+
+const STATUS_URL = '**/api/attempts/*/status';
+const CANCEL_URL = '**/api/attempts/*/cancel';
+const REFUSED = {
+  status: 400,
+  contentType: 'application/json',
+  body: JSON.stringify({ ok: false, failure: 'invalid-input' }),
+};
+
+test('submit and cancel UI preserve locks and retry behavior', async ({
+  browser,
+}) => {
+  const { context, page } = await browserGuest(browser);
+  await enterAndStart(page);
+  const guest = await activeAttemptOf(context);
+  const first = card(page, 'hoeren-1');
+  await optionIn(first, fullKeyOf('hoeren-1')).check();
+  await expectStatus(first, 'saved');
+  const finish = page.getByTestId('finish-attempt');
+  const cancelButton = page.getByTestId('cancel-attempt');
+  const kinds = async (): Promise<string[]> =>
+    (await readCommandRows(guest.sessionId)).map((row) => row.kind).toSorted();
+  const expectLocked = async () => {
+    await expect(finish).toBeDisabled();
+    await expect(cancelButton).toBeDisabled();
+  };
+
+  // Cancel, stage one: while the state of the attempt is asked for, a
+  // status is shown and neither command can start.
+  const stateGate = signal();
+  await context.route(STATUS_URL, async (route) => {
+    await stateGate.done;
+    await route.continue();
+  });
+  await cancelButton.click();
+  const loading = page.getByTestId('cancel-loading-status');
+  await expect(loading).toBeVisible();
+  await expect(loading).toHaveAttribute('role', 'status');
+  await expectLocked();
+  await expect(page.getByTestId('cancel-confirmation')).toHaveCount(0);
+  stateGate.resolve();
+  await expect(page.getByTestId('cancel-confirmation')).toBeVisible();
+  await expect(loading).toHaveCount(0);
+  await context.unroute(STATUS_URL);
+
+  // Stage two, refused: while the request runs the status is another one
+  // and nothing says it was cancelled; the refusal keeps the attempt and
+  // allows a new try.
+  const sendGate = signal();
+  await context.route(CANCEL_URL, async (route) => {
+    await sendGate.done;
+    await route.fulfill(REFUSED);
+  });
+  await page.getByTestId('cancel-confirm').click();
+  const sending = page.getByTestId('cancel-sending-status');
+  await expect(sending).toBeVisible();
+  await expect(sending).toHaveAttribute('role', 'status');
+  await expect(loading).toHaveCount(0);
+  await expectLocked();
+  await expect(page.getByTestId('cancel-status')).toHaveCount(0);
+  sendGate.resolve();
+  await expect(page.getByTestId('cancel-status')).toBeVisible();
+  await expect(sending).toHaveCount(0);
+  await expect(cancelButton).toBeEnabled();
+  await expect(finish).toBeEnabled();
+  expect(statusRow(guest.attemptId)).toBe('active');
+  expect(await kinds()).toEqual(['start']);
+  await context.unroute(CANCEL_URL);
+
+  // The answer to a cancel is lost: the same command is the only way on.
+  await context.route(CANCEL_URL, (route) => route.abort());
+  await cancelButton.click();
+  await page.getByTestId('cancel-confirm').click();
+  await expect(page.getByTestId('cancel-uncertain')).toBeVisible();
+  await expectLocked();
+  await expect(page.getByTestId('cancel-resend')).toBeEnabled();
+  expect(statusRow(guest.attemptId)).toBe('active');
+  await context.unroute(CANCEL_URL);
+  await page.getByTestId('cancel-resend').click();
+  await page.waitForURL(CHOICE_URL);
+  expect(statusRow(guest.attemptId)).toBe('cancelled');
+  expect(await kinds()).toEqual(['cancel', 'start']);
+
+  // A new attempt: a refused submit changes nothing and can be repeated.
+  await startFromChoice(page);
+  const second = await activeAttemptOf(context);
+  const next = card(page, 'hoeren-1');
+  await optionIn(next, fullKeyOf('hoeren-1')).check();
+  await expectStatus(next, 'saved');
+  await context.route(SUBMIT_URL, (route) => route.fulfill(REFUSED));
+  await finishInBrowser(page);
+  await expect(page.getByTestId('finish-status')).toBeVisible();
+  await expect(finish).toBeEnabled();
+  await expect(cancelButton).toBeEnabled();
+  expect(statusRow(second.attemptId)).toBe('active');
+  await context.unroute(SUBMIT_URL);
+
+  // The retry is locked while it runs; its answer is lost, it stays locked
+  // and sending the same command again gives exactly one result.
+  const submitGate = signal();
+  await context.route(SUBMIT_URL, async (route) => {
+    await submitGate.done;
+    await route.abort();
+  });
+  await finishInBrowser(page);
+  const sendingSubmit = page.getByTestId('submission-sending');
+  await expect(sendingSubmit).toBeVisible();
+  await expect(sendingSubmit).toHaveAttribute('role', 'status');
+  await expect(page.getByTestId('finish-status')).toHaveCount(0);
+  await expectLocked();
+  submitGate.resolve();
+  await expect(page.getByTestId('finish-uncertain')).toBeVisible();
+  await expectLocked();
+  await expect(page.getByTestId('finish-resend')).toBeEnabled();
+  expect(statusRow(second.attemptId)).toBe('active');
+  await context.unroute(SUBMIT_URL);
+  await page.getByTestId('finish-resend').click();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  expect(statusRow(second.attemptId)).toBe('completed');
+  expect(await readResults(second.attemptId)).toHaveLength(1);
+  const submits = (await readCommandRows(guest.sessionId)).filter(
+    (row) => row.kind === 'submit',
+  );
+  expect(submits).toHaveLength(1);
+  expect(submits[0]?.attempt_id).toBe(second.attemptId);
   await context.close();
 });
 

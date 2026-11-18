@@ -11,6 +11,7 @@ import Typography from '@mui/material/Typography';
 import type { ExamQuestion, ExamText, Selections } from '@b1k/domain';
 import { GermanText } from '../dictionary/GermanText';
 import { QuestionCard } from '../practice/QuestionCard';
+import { NAV_BUTTON_SX } from '../practice/PracticeSet';
 import { QuestionNavigator } from '../practice/QuestionNavigator';
 import type { NavigatorStep } from '../practice/QuestionNavigator';
 import { useTraining } from '../training/TrainingContext';
@@ -479,6 +480,7 @@ export const LesenScreen = ({
           data-testid="set-previous"
           disabled={index === 0 || isSaving}
           onClick={() => setIndex(index - 1)}
+          sx={NAV_BUTTON_SX}
         >
           {tSet('previous')}
         </Button>
@@ -487,6 +489,7 @@ export const LesenScreen = ({
           data-testid="set-next"
           disabled={index === total - 1 || isSaving}
           onClick={() => setIndex(index + 1)}
+          sx={NAV_BUTTON_SX}
         >
           {tSet('next')}
         </Button>

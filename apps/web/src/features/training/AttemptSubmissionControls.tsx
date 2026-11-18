@@ -1,10 +1,12 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import type { SxProps, Theme } from '@mui/material/styles';
 import type {
   CancelSummary,
   Expiry,
@@ -36,6 +38,27 @@ export interface AttemptSubmissionControlsProps {
   onDismiss: () => void;
 }
 
+// Local to the irreversible actions of an attempt, not a theme override of
+// every Button. 48 px is a comfortable thumb target; on a phone the buttons
+// of one row take the whole width and stack with a larger gap.
+export const ACTION_BUTTON_SX: SxProps<Theme> = {
+  minHeight: 48,
+  width: { xs: '100%', sm: 'auto' },
+};
+// The danger is not the red colour alone: the thicker border and the text
+// of the label say it too.
+export const CANCEL_BUTTON_SX: SxProps<Theme> = {
+  ...ACTION_BUTTON_SX,
+  borderWidth: 2,
+  '&:hover': { borderWidth: 2 },
+};
+const ACTION_ROW_SX: SxProps<Theme> = {
+  flexWrap: 'wrap',
+  alignSelf: { xs: 'stretch', sm: 'flex-start' },
+};
+const ACTION_ROW_SPACING = { xs: 2, sm: 1 } as const;
+const ACTION_ROW_DIRECTION = { xs: 'column', sm: 'row' } as const;
+
 // While a command is in flight or its answer was lost, no other starts.
 const LOCKED_PHASES: readonly SubmissionPhase[] = [
   'sending',
@@ -64,6 +87,30 @@ export const AttemptSubmissionControls = ({
   onDismiss,
 }: AttemptSubmissionControlsProps) => {
   const t = useTranslations('training');
+  const titleRef = useRef<HTMLParagraphElement>(null);
+  const finishRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const restoreRef = useRef<'finish' | 'cancel' | null>(null);
+
+  // A confirmation takes the place of the buttons, so the focus would be
+  // lost with them: it moves to the title of the confirmation, and a
+  // dismissal returns it to the button that opened it. The page stays put
+  // because both appear where the buttons were.
+  useEffect(() => {
+    if (phase === 'confirming' || phase === 'cancel-confirming') {
+      titleRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const target = restoreRef.current;
+    restoreRef.current = null;
+    if (target === 'finish') finishRef.current?.focus({ preventScroll: true });
+    if (target === 'cancel') cancelRef.current?.focus({ preventScroll: true });
+  }, [phase]);
+
+  const handleDismiss = () => {
+    restoreRef.current = phase === 'confirming' ? 'finish' : 'cancel';
+    onDismiss();
+  };
 
   // The end of the time is announced once, as a status of its own; only
   // the answers the server accepted before the deadline count.
@@ -91,6 +138,7 @@ export const AttemptSubmissionControls = ({
           data-testid="result-check"
           disabled={resultCheck === 'checking'}
           onClick={onCheckResult}
+          sx={ACTION_BUTTON_SX}
         >
           {t('checkResult')}
         </Button>
@@ -120,6 +168,7 @@ export const AttemptSubmissionControls = ({
             data-testid="result-check"
             disabled={resultCheck === 'checking'}
             onClick={onCheckResult}
+            sx={ACTION_BUTTON_SX}
           >
             {t('checkResult')}
           </Button>
@@ -148,7 +197,12 @@ export const AttemptSubmissionControls = ({
         data-unopened={confirmation.unopened ?? 0}
         data-total={total}
       >
-        <Typography id="finish-confirm-title" fontWeight={600}>
+        <Typography
+          id="finish-confirm-title"
+          fontWeight={600}
+          tabIndex={-1}
+          ref={titleRef}
+        >
           {t('confirmTitle')}
         </Typography>
         {isRenewed ? (
@@ -167,18 +221,25 @@ export const AttemptSubmissionControls = ({
             {t('confirmUnopened', { count: confirmation.unopened })}
           </Typography>
         ) : null}
-        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
+        <Stack
+          direction={ACTION_ROW_DIRECTION}
+          spacing={ACTION_ROW_SPACING}
+          useFlexGap
+          sx={ACTION_ROW_SX}
+        >
           <Button
             variant="contained"
             data-testid="finish-confirm"
             onClick={onConfirmSubmit}
+            sx={ACTION_BUTTON_SX}
           >
             {t('confirm')}
           </Button>
           <Button
             variant="outlined"
             data-testid="finish-cancel"
-            onClick={onDismiss}
+            onClick={handleDismiss}
+            sx={ACTION_BUTTON_SX}
           >
             {t('cancel')}
           </Button>
@@ -196,7 +257,12 @@ export const AttemptSubmissionControls = ({
         data-skipped={cancelSummary.skipped}
         data-unsaved={cancelSummary.unsaved}
       >
-        <Typography id="cancel-confirm-title" fontWeight={600}>
+        <Typography
+          id="cancel-confirm-title"
+          fontWeight={600}
+          tabIndex={-1}
+          ref={titleRef}
+        >
           {t('cancelTitle')}
         </Typography>
         {isRenewed ? (
@@ -212,19 +278,26 @@ export const AttemptSubmissionControls = ({
             {t('cancelUnsaved', { unsaved: cancelSummary.unsaved })}
           </Alert>
         ) : null}
-        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
+        <Stack
+          direction={ACTION_ROW_DIRECTION}
+          spacing={ACTION_ROW_SPACING}
+          useFlexGap
+          sx={ACTION_ROW_SX}
+        >
           <Button
             variant="contained"
             color="error"
             data-testid="cancel-confirm"
             onClick={onConfirmCancel}
+            sx={ACTION_BUTTON_SX}
           >
             {t('cancelConfirm')}
           </Button>
           <Button
             variant="outlined"
             data-testid="cancel-back"
-            onClick={onDismiss}
+            onClick={handleDismiss}
+            sx={ACTION_BUTTON_SX}
           >
             {t('cancel')}
           </Button>
@@ -234,21 +307,30 @@ export const AttemptSubmissionControls = ({
 
   const actions =
     confirming || cancelling ? null : (
-      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
+      <Stack
+        direction={ACTION_ROW_DIRECTION}
+        spacing={ACTION_ROW_SPACING}
+        useFlexGap
+        sx={ACTION_ROW_SX}
+      >
         <Button
           variant="contained"
           data-testid="finish-attempt"
           disabled={isLocked}
           onClick={onSubmit}
+          ref={finishRef}
+          sx={ACTION_BUTTON_SX}
         >
           {phase === 'sending' ? t('finishing') : t('finish')}
         </Button>
         <Button
-          variant="text"
+          variant="outlined"
           color="error"
           data-testid="cancel-attempt"
           disabled={isLocked}
           onClick={onCancel}
+          ref={cancelRef}
+          sx={CANCEL_BUTTON_SX}
         >
           {t('cancelAttempt')}
         </Button>
@@ -268,6 +350,16 @@ export const AttemptSubmissionControls = ({
           {t('finishing')}
         </Typography>
       ) : null}
+      {phase === 'cancel-loading' ? (
+        <Typography role="status" data-testid="cancel-loading-status">
+          {t('cancelLoading')}
+        </Typography>
+      ) : null}
+      {phase === 'cancelling' ? (
+        <Typography role="status" data-testid="cancel-sending-status">
+          {t('cancelSending')}
+        </Typography>
+      ) : null}
       {phase === 'uncertain' ? (
         <Stack spacing={1} sx={{ alignItems: 'flex-start' }}>
           <Alert severity="warning" role="alert" data-testid="finish-uncertain">
@@ -277,6 +369,7 @@ export const AttemptSubmissionControls = ({
             variant="contained"
             data-testid="finish-resend"
             onClick={onResendSubmit}
+            sx={ACTION_BUTTON_SX}
           >
             {t('resend')}
           </Button>
@@ -291,6 +384,7 @@ export const AttemptSubmissionControls = ({
             variant="contained"
             data-testid="cancel-resend"
             onClick={onResendCancel}
+            sx={ACTION_BUTTON_SX}
           >
             {t('resend')}
           </Button>
