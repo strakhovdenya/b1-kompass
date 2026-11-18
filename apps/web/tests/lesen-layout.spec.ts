@@ -414,3 +414,74 @@ for (const viewport of [WIDE, NARROW]) {
     await context.close();
   });
 }
+
+// --- The hint about switching between text and task (#119) ------------------
+
+const NARROWEST = { width: 320, height: 640 };
+const HINT = 'lesen-narrow-hint';
+
+const openLesenAt = async (
+  browser: Browser,
+  viewport: { width: number; height: number },
+) => {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  await enterAndStart(page);
+  await page.getByTestId('block-link-lesen').click();
+  await page.waitForURL(LESEN_URL);
+  await expect(page.getByTestId('reading-text')).toBeVisible();
+  return { context, page };
+};
+
+test('reading mode hint appears only on a narrow screen', async ({
+  browser,
+}) => {
+  const narrow = await openLesenAt(browser, NARROW);
+  const hint = narrow.page.getByTestId(HINT);
+  await expect(hint).toBeVisible();
+  await expect(hint).not.toBeEmpty();
+  // The buttons the hint names are on the screen with it.
+  await expect(narrow.page.getByTestId('lesen-view-text')).toBeVisible();
+  const english = await hint.innerText();
+  await narrow.page.getByTestId('locale-ru').click();
+  await expect(narrow.page.locator('html')).toHaveAttribute('lang', 'ru');
+  await expect(hint).toBeVisible();
+  expect(await hint.innerText()).not.toBe(english);
+  await narrow.context.close();
+
+  const wide = await openLesenAt(browser, WIDE);
+  // Out of the layout and out of the reading order of a screen reader.
+  await expect(wide.page.getByTestId(HINT)).toBeHidden();
+  await expect(wide.page.getByTestId('lesen-view-text')).toBeHidden();
+  await wide.context.close();
+});
+
+test('desktop reading keeps two columns without narrow hint', async ({
+  browser,
+}) => {
+  const wide = await openLesenAt(browser, WIDE);
+  await expect(wide.page.getByTestId(HINT)).toBeHidden();
+  const text = await wide.page.getByTestId('reading-text').boundingBox();
+  const task = await wide.page
+    .getByTestId('question-card-lesen-1')
+    .boundingBox();
+  if (!text || !task) throw new Error('the text and the task need boxes');
+  // Side by side: the task starts where the text ends, near the same top.
+  expect(task.x).toBeGreaterThanOrEqual(text.x + text.width - 1);
+  expect(Math.abs(task.y - text.y)).toBeLessThan(200);
+  await wide.context.close();
+
+  // The narrowest phone: the hint and the text stay inside the page.
+  const narrow = await openLesenAt(browser, NARROWEST);
+  await expect(narrow.page.getByTestId(HINT)).toBeVisible();
+  const widths = await narrow.page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    client: document.documentElement.clientWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
+  const hintBox = await narrow.page.getByTestId(HINT).boundingBox();
+  expect((hintBox?.x ?? 0) + (hintBox?.width ?? 0)).toBeLessThanOrEqual(
+    NARROWEST.width,
+  );
+  await narrow.context.close();
+});

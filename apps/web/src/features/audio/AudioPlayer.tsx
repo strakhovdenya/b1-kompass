@@ -356,6 +356,7 @@ export const AudioStatusLine = ({
               size="small"
               onClick={onRetry}
               data-testid="audio-retry"
+              sx={{ minHeight: 44, minWidth: 44 }}
             >
               {t('retry')}
             </Button>

@@ -546,6 +546,7 @@ export const ModeSelection = ({
                 variant="outlined"
                 data-testid="exam-audio-retry"
                 onClick={() => void prepareAudio()}
+                sx={{ minHeight: 44, minWidth: 44 }}
               >
                 {t('examAudioRetry')}
               </Button>
@@ -590,6 +591,7 @@ export const ModeSelection = ({
                 variant="outlined"
                 data-testid="guest-replacement-open"
                 onClick={() => setDialogOpen(true)}
+                sx={{ minHeight: 44, minWidth: 44 }}
               >
                 {t('replaceOpen')}
               </Button>

@@ -357,6 +357,14 @@ export const LesenScreen = ({
     <Stack spacing={{ xs: 1.5, sm: 2 }}>
       <Typography variant="body2" color="text.secondary">
         {t('intro', { count: total })}
+        <Box
+          component="span"
+          data-testid="lesen-narrow-hint"
+          sx={{ display: { xs: 'inline', md: 'none' } }}
+        >
+          {' '}
+          {t('narrowHint')}
+        </Box>
       </Typography>
       <QuestionNavigator
         steps={navigatorSteps}

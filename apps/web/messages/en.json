@@ -127,7 +127,8 @@
     "sharedSetError": "This set of questions does not match the material and cannot be shown."
   },
   "lesen": {
-    "intro": "Lesen, parts 1 to 5: {count, plural, one {# task} other {# tasks}}, one answer each. On a narrow screen switch between the text and the task; your answer and your place in the text are kept.",
+    "intro": "Lesen, parts 1 to 5: {count, plural, one {# task} other {# tasks}}, one answer each.",
+    "narrowHint": "Switch between the text and the task with the buttons below; your answer and your place in the text are kept.",
     "showText": "Text",
     "showQuestions": "Task",
     "textRegion": "Reading text",
@@ -135,7 +136,7 @@
   },
   "set": {
     "navigation": "Questions",
-    "position": "Question {current} of {total}",
+    "position": "{count, plural, one {Question {range} of {total}} other {Questions {range} of {total}}}",
     "goTo": "{count, plural, one {Go to question {number}} other {Go to questions {number}}}, {state, select, answered {answered} partial {partly answered} other {not answered}}",
     "previous": "Previous",
     "next": "Next",
@@ -236,7 +237,7 @@
   },
   "timer": {
     "label": "Time left for {skill}: {time}",
-    "context": "Timed block · {skill}",
+    "context": "{skill}",
     "left": "{time} left",
     "skill": {
       "hoeren": "Hören",

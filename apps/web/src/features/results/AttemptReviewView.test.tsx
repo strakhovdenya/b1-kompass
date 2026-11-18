@@ -201,6 +201,34 @@ describe('AttemptReviewView', () => {
     expect(html).toContain('data-question-id="lesen-1"');
   });
 
+  it('has one h1 that can take focus and shows the German text unchanged', () => {
+    const longWord = 'Donaudampfschifffahrtsgesellschaftskapitänsmützenband';
+    const long: ExamQuestion = {
+      ...question('hoeren-1', 1),
+      prompt: `Was bedeutet ${longWord}?`,
+      options: [
+        { id: 'a', text: longWord },
+        { id: 'b', text: 'Zweite' },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AttemptReviewView review={review} questions={[long]} />
+      </NextIntlClientProvider>,
+    );
+    expect(html.match(/<h1[\s>]/g)).toHaveLength(1);
+    const title = /<h1[^>]*>/.exec(html)?.[0] ?? '';
+    expect(title).toContain('id="result-title"');
+    expect(title).toContain('tabindex="-1"');
+    expect(html).toContain('aria-labelledby="result-title"');
+    expect(html.indexOf('<h1')).toBeLessThan(
+      html.indexOf('data-testid="result-score"'),
+    );
+    // The wording is the stored one, in a German zone.
+    expect(html).toContain(`Was bedeutet ${longWord}?`);
+    expect(html).toContain('lang="de"');
+  });
+
   it('escapes a script in the task text and in the options', () => {
     const hostile: ExamQuestion = {
       ...question('hoeren-1', 1),

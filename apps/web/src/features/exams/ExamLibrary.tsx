@@ -121,7 +121,14 @@ export const ExamLibrary = ({
           role="alert"
           data-testid="library-error"
           action={
-            <Button color="inherit" size="small" component={Link} href="/exams">
+            <Button
+              color="inherit"
+              size="small"
+              component={Link}
+              href="/exams"
+              data-testid="library-retry"
+              sx={{ minHeight: 44, minWidth: 44 }}
+            >
               {t('retry')}
             </Button>
           }

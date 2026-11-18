@@ -87,6 +87,9 @@ const render = (
     </NextIntlClientProvider>,
   );
 
+const timerLine = (html: string): string =>
+  /<div[^>]*role="timer"[\s\S]*?<\/div>/.exec(html)?.[0] ?? '';
+
 describe('TrainingShell', () => {
   it('shows one compact server clock above the block of a timed run', () => {
     const html = render(null, false, {
@@ -102,7 +105,8 @@ describe('TrainingShell', () => {
     // Not announced every second: no live region on the clock.
     expect(timer).not.toContain('aria-live');
     expect(html).toContain('25:00 left');
-    expect(html).toContain('Timed block · Hören');
+    // The line names the skill and the time; the mode is the header's job.
+    expect(timerLine(html)).toContain('Hören');
     expect(html).toContain('data-mode="timed-block"');
     // One line before the block links, the recording and the block page.
     const clock = html.indexOf('data-testid="attempt-timer"');
@@ -124,6 +128,25 @@ describe('TrainingShell', () => {
     });
     expect(pending).not.toContain('role="timer"');
     expect(pending).toContain('data-testid="submission-accepted"');
+  });
+
+  it('free and closed training never shows timed clock', () => {
+    expect(timerLine(render(null))).toBe('');
+    const closed = render(null, true, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 1000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    expect(timerLine(closed)).toBe('');
+    // The number of a running clock is the server's, whatever the caption.
+    const running = render(null, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 25 * 60_000,
+      skill: 'hoeren',
+      phase: 'hoeren',
+    });
+    expect(running).toContain('data-remaining-ms="1500000"');
   });
 
   it('wraps the block with the recording, block links and one finish point', () => {
@@ -290,6 +313,25 @@ describe('TrainingShell', () => {
           </TrainingShell>
         </NextIntlClientProvider>,
       );
+
+    it('timed clock context matches full exam and timed block', () => {
+      const exam = timerLine(renderExam(lesenOnly, 'lesen', lesenSummary, {}));
+      expect(exam).toContain('data-testid="attempt-timer"');
+      expect(exam).toContain('Lesen');
+      expect(exam).toContain('1:00 left');
+      expect(exam).not.toContain('Timed block');
+      const block = timerLine(
+        render(null, false, {
+          deadlineMs: DEADLINE_MS,
+          serverNowMs: DEADLINE_MS - 25 * 60_000,
+          skill: 'lesen',
+          phase: 'lesen',
+        }),
+      );
+      expect(block).toContain('Lesen');
+      expect(block).toContain('25:00 left');
+      expect(block).not.toContain('Timed block');
+    });
 
     it('counts the whole assignment and keeps answers across a phase change', () => {
       // Hören open: the shell knows only Hören, Lesen is a number.

@@ -9,7 +9,9 @@ import {
 } from './support/full-exam';
 import { depsNow, readAnswers } from './support/db';
 import {
+  ANSWER_URL,
   HOEREN_URL,
+  SUBMIT_URL,
   activeAttemptOf,
   attemptUrl,
   audioOf,
@@ -26,6 +28,7 @@ import {
   playFrom,
   scrollWithFinger,
   snapshotOf,
+  startSelection,
   waitForPlayer,
 } from './support/guest-browser';
 import {
@@ -54,6 +57,9 @@ const HYPHENATED = 'Kfz-Haftpflichtversicherung';
 const TEIL_THREE_PAIR = 10;
 const SHARED_SET_FIRST = 18;
 const HOEREN_STEPS = 14;
+// The pairs of Teil 3 and the shared set of Teil 4 are one step each, but
+// every member is a task: the position counts these.
+const HOEREN_TASKS = 20;
 const LESEN_TASKS = 25;
 const POSITION_TOLERANCE_SECONDS = 0.1;
 // The phone opens the sheet only after a finger rests this long on a word.
@@ -1054,7 +1060,7 @@ test('Hören picker respects grouped steps', async ({ browser }) => {
   const steps = page.locator('[data-testid^="go-to-question-"]');
   await expect(steps).toHaveCount(HOEREN_STEPS);
   await expect(page.getByTestId('set-position')).toContainText(
-    `1 of ${HOEREN_STEPS}`,
+    `1 of ${HOEREN_TASKS}`,
   );
   // A pair and the shared set are one step each, named by their range.
   await expect(
@@ -1659,4 +1665,368 @@ test('confirmation dismissal restores focus without changing direct submit rule'
   await expect(second.page.getByTestId('finish-confirmation')).toHaveCount(0);
   expect(submits).toHaveLength(1);
   await second.context.close();
+});
+
+// --- Result, language switch, progress and retries (#119) -------------------
+
+const MIN_RETRY_PX = 44;
+const LONG_GERMAN =
+  'Donaudampfschifffahrtsgesellschaftskapitänsmützenbandherstellungswerkstatt';
+const START_URL = '**/api/attempts/start';
+const PREPARE_URL = '**/api/attempts/prepare-audio';
+const SIGNED_URL = '**/storage/v1/object/sign/**';
+
+test('completed review opens at score with accessible heading', async ({
+  browser,
+}) => {
+  for (const viewport of [PHONE, DESKTOP]) {
+    const screen = `${viewport.width}px`;
+    const { context, page } = await openGuest(browser, viewport);
+    const submits = trackPosts(page, SUBMIT_PATH);
+    // A partial attempt: the finish button is at the foot of the page, and
+    // the page is scrolled there when the result takes its place.
+    await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+    await page.getByTestId('finish-attempt').scrollIntoViewIfNeeded();
+    await finishFromShell(page);
+
+    await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
+    const title = page.getByTestId('result-title');
+    await expect(title).toHaveAttribute('id', 'result-title');
+    await expect(title).toBeFocused();
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY), { message: screen })
+      .toBe(0);
+    const score = await boxOf(page.getByTestId('result-score'));
+    expect(score.y, `${screen}: score top`).toBeGreaterThanOrEqual(0);
+    expect(
+      score.y + score.height,
+      `${screen}: score bottom`,
+    ).toBeLessThanOrEqual(viewport.height);
+
+    // The focus only moved: the next Tab reaches a control, and nothing was
+    // sent twice.
+    await page.keyboard.press('Tab');
+    const next = await page.evaluate(
+      () => document.activeElement?.tagName.toLowerCase() ?? '',
+    );
+    expect(['a', 'button'], `${screen}: next focus`).toContain(next);
+    expect(submits).toHaveLength(1);
+    await expectNoSidewaysScroll(page, `${screen} review`);
+    await context.close();
+  }
+});
+
+// The outline of a control, the way the guest sees it, against white.
+const ringOf = (locator: Locator) =>
+  locator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const channels = (style.outlineColor.match(/[\d.]+/g) ?? [])
+      .slice(0, 3)
+      .map(Number);
+    const [red = 0, green = 0, blue = 0] = channels.map((value) => {
+      const part = value / 255;
+      return part <= 0.03928 ? part / 12.92 : ((part + 0.055) / 1.055) ** 2.4;
+    });
+    const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    return {
+      isFocusVisible: element.matches(':focus-visible'),
+      style: style.outlineStyle,
+      widthPx: Number.parseFloat(style.outlineWidth) || 0,
+      offsetPx: Number.parseFloat(style.outlineOffset) || 0,
+      contrastOnWhite: 1.05 / (luminance + 0.05),
+    };
+  });
+
+test('locale switch focus remains visible in app bar', async ({ browser }) => {
+  for (const viewport of [NARROWEST, DESKTOP]) {
+    const screen = `${viewport.width}px`;
+    const { context, page } = await openGuest(browser, viewport);
+    for (const locale of ['locale-en', 'locale-ru']) {
+      const control = page.getByTestId(locale);
+      await tabTo(page, control, `${screen} ${locale}`);
+      const ring = await ringOf(control);
+      expect(ring.isFocusVisible, `${screen} ${locale}`).toBe(true);
+      expect(ring.widthPx, `${screen} ${locale}: width`).toBeGreaterThanOrEqual(
+        3,
+      );
+      // Drawn inside the white plate of the switch, not on the blue header
+      // where a blue ring would vanish; the colour reads on that white.
+      expect(ring.offsetPx, `${screen} ${locale}: inside`).toBeLessThanOrEqual(
+        0,
+      );
+      expect(
+        ring.contrastOnWhite,
+        `${screen} ${locale}: contrast`,
+      ).toBeGreaterThanOrEqual(4.5);
+      const box = await boxOf(control);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    }
+    await context.close();
+  }
+});
+
+test('locale ring appears only for focus and switching preserves answers', async ({
+  browser,
+}) => {
+  const { context, page } = await openGuest(browser, PHONE);
+  const { attemptId } = await activeAttemptOf(context);
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+
+  // Nothing of the switch is focused: no ring is drawn on any of its parts.
+  for (const locale of ['locale-en', 'locale-ru']) {
+    const quiet = await ringOf(page.getByTestId(locale));
+    expect(quiet.isFocusVisible, locale).toBe(false);
+    expect(quiet.style, locale).toBe('none');
+  }
+  // A tap focuses the control without the keyboard ring.
+  await page.getByTestId('locale-ru').click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+  const tapped = await ringOf(page.getByTestId('locale-ru'));
+  expect(tapped.isFocusVisible).toBe(false);
+  expect(tapped.style).toBe('none');
+
+  // The keyboard switches back; the ring shows, the attempt and the answer
+  // are the same.
+  const english = page.getByTestId('locale-en');
+  await tabTo(page, english, 'locale en by keyboard');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await expect(
+    optionIn(card(page, 'hoeren-1'), fullKeyOf('hoeren-1')),
+  ).toBeChecked();
+  expect((await activeAttemptOf(context)).attemptId).toBe(attemptId);
+  expect(await readAnswers(attemptId)).toEqual({
+    'hoeren-1': fullKeyOf('hoeren-1'),
+  });
+  await context.close();
+});
+
+test('review reflows long German words without horizontal overflow', async ({
+  browser,
+}) => {
+  for (const viewport of PHONES) {
+    const screen = `${viewport.width}px`;
+    const { context, page } = await openGuest(browser, viewport);
+    await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+    await finishFromShell(page);
+    const entry = page.getByTestId('review-item').first();
+    const prompt = entry.locator('h3');
+    const original = await prompt.innerText();
+
+    // A long compound is added in the DOM of the test only, to the task
+    // text and to the answer lines; the material is not touched.
+    await appendInZone(prompt, ` ${LONG_GERMAN}`);
+    await appendInZone(entry.getByTestId('review-solution'), ` ${LONG_GERMAN}`);
+    await expectNoSidewaysScroll(page, `${screen} review`);
+    await expectTextContained(entry, `${screen} review item`);
+    expect(await prompt.innerText()).toBe(`${original} ${LONG_GERMAN}`);
+    await expect(prompt).toHaveAttribute('lang', 'de');
+    await expect(page.getByTestId('attempt-review')).toBeVisible();
+    await context.close();
+  }
+});
+
+// A finish whose answer the server has not given yet.
+const holdSubmit = async (page: Page) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(SUBMIT_URL, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.getByTestId('finish-attempt').click();
+  await page.getByTestId('finish-confirm').click();
+  await expect(page.getByTestId('submission-sending')).toHaveAttribute(
+    'role',
+    'status',
+  );
+  return release;
+};
+
+test('training displays distinct progress and one visible sending status', async ({
+  browser,
+}) => {
+  const { context, page } = await openGuest(browser, PHONE);
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+
+  // Two blocks: the counter of this block and the counter of the whole
+  // exam are both shown, and they are different lines.
+  const local = page.getByTestId('set-answered');
+  const total = page.getByTestId('training-answered');
+  await expect(local).toBeVisible();
+  await expect(total).toBeVisible();
+  expect(await local.innerText()).not.toBe(await total.innerText());
+  await expect(local).toContainText('1');
+  await expect(total).toContainText('1');
+
+  // The sending state is drawn once: on the button; the status line is for
+  // assistive technology.
+  const release = await holdSubmit(page);
+  const label = (await page.getByTestId('finish-attempt').innerText()).trim();
+  const drawn = await page.getByTestId('training-shell').evaluate(
+    (root, text) =>
+      Array.from(root.querySelectorAll('*')).filter((element) => {
+        const own = Array.from(element.childNodes)
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent ?? '')
+          .join('')
+          .trim();
+        if (own !== text) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 2 && rect.height > 2;
+      }).length,
+    label,
+  );
+  expect(drawn).toBe(1);
+  const status = await boxOf(page.getByTestId('submission-sending'));
+  expect(status.width).toBeLessThanOrEqual(1);
+  expect(status.height).toBeLessThanOrEqual(1);
+  release();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await context.close();
+
+  // One skill, one block: the block counter already says it all.
+  const single = await browser.newContext({ viewport: PHONE });
+  const alone = await single.newPage();
+  await enterAtChoice(alone);
+  await startSelection(alone, 'hoeren');
+  await expect(alone.getByTestId('set-answered')).toBeVisible();
+  await expect(alone.getByTestId('training-answered')).toHaveCount(0);
+  await single.close();
+});
+
+test('sending announcement stays accessible without duplicate visible status', async ({
+  browser,
+}) => {
+  const { context, page } = await openGuest(browser, PHONE);
+  await choose(page, 'hoeren-1', fullKeyOf('hoeren-1'));
+  const release = await holdSubmit(page);
+
+  // The words are in the status for a screen reader while the server has
+  // not answered; nothing claims an accepted result yet.
+  const status = page.getByTestId('submission-sending');
+  await expect(status).toHaveAttribute('role', 'status');
+  await expect(status).not.toBeEmpty();
+  await expect(page.getByTestId('submission-accepted')).toHaveCount(0);
+  await expect(page.getByTestId('attempt-review')).toHaveCount(0);
+  await expect(page.getByTestId('result-score')).toHaveCount(0);
+  await expect(page.getByTestId('finish-attempt')).toBeDisabled();
+
+  release();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await expect(page.getByTestId('submission-sending')).toHaveCount(0);
+  await context.close();
+});
+
+// A retry control a thumb can hit, inside the width of the screen.
+const expectRetryTarget = async (
+  locator: Locator,
+  screen: string,
+  screenWidth: number,
+) => {
+  await expect(locator).toBeVisible();
+  const box = await pageBoxOf(locator);
+  expect(box.width, `${screen}: width`).toBeGreaterThanOrEqual(MIN_RETRY_PX);
+  expect(box.height, `${screen}: height`).toBeGreaterThanOrEqual(MIN_RETRY_PX);
+  expect(box.x, `${screen}: left edge`).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, `${screen}: right edge`).toBeLessThanOrEqual(
+    screenWidth,
+  );
+};
+
+test('error retry buttons have mobile touch targets', async ({ browser }) => {
+  for (const viewport of PHONES) {
+    const screen = `${viewport.width}px`;
+
+    // A save that fails: the answer stays, the retry is a full target.
+    const saving = await openGuest(browser, viewport);
+    await saving.page.route(ANSWER_URL, (route) => route.abort());
+    const target = card(saving.page, 'hoeren-1');
+    await optionIn(target, fullKeyOf('hoeren-1')).check();
+    await expectStatus(target, 'error');
+    await expectRetryTarget(
+      target.getByTestId('save-retry'),
+      `${screen} save`,
+      viewport.width,
+    );
+    await expectNoSidewaysScroll(saving.page, `${screen} save error`);
+    await saving.context.close();
+
+    // A recording that cannot be loaded.
+    const hearing = await browser.newContext({ viewport });
+    await hearing.route(SIGNED_URL, (route) => route.abort());
+    const hearingPage = await hearing.newPage();
+    await enterAndStart(hearingPage);
+    await expectRetryTarget(
+      hearingPage.getByTestId('audio-retry'),
+      `${screen} audio`,
+      viewport.width,
+    );
+    await expectNoSidewaysScroll(hearingPage, `${screen} audio error`);
+    await hearing.close();
+
+    // The preparation of the exam recording, and a start that the guest's
+    // remaining term cannot carry.
+    const choosing = await browser.newContext({ viewport });
+    const choice = await choosing.newPage();
+    await enterAtChoice(choice);
+    await choice.route(PREPARE_URL, (route) =>
+      route.fulfill({ status: 500, json: {} }),
+    );
+    await choice.getByTestId('mode-option-exam').click();
+    await expect(choice.getByTestId('exam-audio-status')).toHaveAttribute(
+      'data-status',
+      'error',
+    );
+    await expectRetryTarget(
+      choice.getByTestId('exam-audio-retry'),
+      `${screen} exam audio`,
+      viewport.width,
+    );
+    await choice.unroute(PREPARE_URL);
+    await choice.getByTestId('mode-option-timed-block').click();
+    await choice.getByTestId('selection-option-hoeren').click();
+    await choice.route(START_URL, (route) =>
+      route.fulfill({
+        status: 200,
+        json: { ok: false, failure: 'guest-too-short' },
+      }),
+    );
+    await choice.getByTestId('start-attempt').click();
+    await choice.getByTestId('guest-replacement-cancel').click();
+    await expectRetryTarget(
+      choice.getByTestId('guest-replacement-open'),
+      `${screen} replacement`,
+      viewport.width,
+    );
+    await expectNoSidewaysScroll(choice, `${screen} start error`);
+    await choosing.close();
+  }
+});
+
+test('retry controls appear only for genuine failures', async ({ browser }) => {
+  const { context, page } = await openGuest(browser, PHONE);
+  const target = card(page, 'hoeren-1');
+  // No failure yet: no retry anywhere.
+  await expect(page.getByTestId('save-retry')).toHaveCount(0);
+  await expect(page.getByTestId('audio-retry')).toHaveCount(0);
+  await optionIn(target, fullKeyOf('hoeren-1')).check();
+  await expectStatus(target, 'saved');
+  await expect(page.getByTestId('save-retry')).toHaveCount(0);
+
+  // A failed save offers the retry; the retry saves and takes itself away.
+  await page.route(ANSWER_URL, (route) => route.abort());
+  await optionIn(target, fullWrongOf('hoeren-1')).check();
+  await expectStatus(target, 'error');
+  await expect(target.getByRole('alert')).toBeVisible();
+  const retry = target.getByTestId('save-retry');
+  await expect(retry).toBeVisible();
+  await page.unroute(ANSWER_URL);
+  await retry.click();
+  await expectStatus(target, 'saved');
+  await expect(page.getByTestId('save-retry')).toHaveCount(0);
+  await context.close();
 });

@@ -127,7 +127,8 @@
     "sharedSetError": "Этот набор вопросов не совпадает с материалом и не может быть показан."
   },
   "lesen": {
-    "intro": "Lesen, части 1–5: {count, plural, one {# задание} few {# задания} many {# заданий} other {# задания}}, в каждом один ответ. На узком экране переключайтесь между текстом и заданием: ответ и место в тексте сохраняются.",
+    "intro": "Lesen, части 1–5: {count, plural, one {# задание} few {# задания} many {# заданий} other {# задания}}, в каждом один ответ.",
+    "narrowHint": "Переключайтесь между текстом и заданием кнопками ниже: ответ и место в тексте сохраняются.",
     "showText": "Текст",
     "showQuestions": "Задание",
     "textRegion": "Текст для чтения",
@@ -135,7 +136,7 @@
   },
   "set": {
     "navigation": "Вопросы",
-    "position": "Вопрос {current} из {total}",
+    "position": "{count, plural, =1 {Вопрос {range} из {total}} other {Вопросы {range} из {total}}}",
     "goTo": "{count, plural, one {Перейти к вопросу {number}} other {Перейти к вопросам {number}}}, {state, select, answered {отвечено} partial {отвечено частично} other {без ответа}}",
     "previous": "Назад",
     "next": "Далее",
@@ -236,7 +237,7 @@
   },
   "timer": {
     "label": "Осталось времени на {skill}: {time}",
-    "context": "Блок на время · {skill}",
+    "context": "{skill}",
     "left": "Осталось {time}",
     "skill": {
       "hoeren": "Hören",
