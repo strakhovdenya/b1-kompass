@@ -24,10 +24,16 @@ import { isLocale } from '@b1k/domain';
 import { requestDictionaryEntry } from './client';
 import { DictionaryCard } from './DictionaryCard';
 import { DictionaryHeaderToggle } from './DictionaryHeaderToggle';
-import { wordAtPoint, wordOfCurrentSelection, zoneOf } from './dom';
+import {
+  phraseOfCurrentSelection,
+  wordAtPoint,
+  wordOfCurrentSelection,
+  zoneOf,
+} from './dom';
 import type { WordHit } from './dom';
 import type { DictionaryEntry, PartState } from './entry';
 import { DictionaryActiveContext } from './GermanText';
+import { googleTranslateHref } from './links';
 import { CLOSED, createLookupController } from './lookup';
 import type { LookupAnswer, LookupController, LookupState } from './lookup';
 import { useDictionarySetting } from './settings';
@@ -38,9 +44,14 @@ import { useDictionarySetting } from './settings';
 // - desktop: a non-modal Popper beside the word after a 500 ms hover, a
 //   double click or the selection of one word; it stays while the pointer is
 //   on it and closes on Escape, a click outside or the close button;
-// - phone: holding a finger still on a word for 1500 ms opens a bottom sheet
-//   (a persistent Drawer, no scroll lock); a tap, a scroll or a moving finger
-//   never opens it, and the system selection stays;
+// - phone: a short tap on a word opens a bottom sheet at once (a persistent
+//   Drawer, no scroll lock). Touch and hold belongs to the browser: its
+//   native selection, handles, menu and copy stay, and a hold, a scroll, a
+//   moving finger or a cancelled touch never opens the card;
+// - a German fragment selected inside one text zone (by the system handles
+//   on a phone, or several words with the mouse) offers one explicit link
+//   to the external Google Translate page. Nothing leaves the page until it
+//   is activated, and the fragment never reaches our dictionary lookup;
 // - keyboard and screen readers: one button translates the selected word. It
 //   is the first control inside the boundary, shown only while it has the
 //   focus; focus moves into the card and returns to the button on close.
@@ -83,13 +94,53 @@ const SKIP_ACTION_SX = {
 } as const;
 
 export const HOVER_DELAY_MS = 500;
-// A finger must rest on one word this long before the sheet opens, and may
-// drift this far (CSS pixels) while it does.
-export const LONG_PRESS_MS = 1500;
-const LONG_PRESS_TOLERANCE_PX = 10;
+// A tap is a touch released within this distance (CSS pixels) of its start
+// and before the browser's own long press (selection) takes over. This only
+// classifies a finished touch: nothing waits for it, the card opens on the
+// release of a tap.
+const TAP_TOLERANCE_PX = 10;
+export const TAP_MAX_MS = 450;
 // How long after a release the click it may produce is still swallowed.
 const CLICK_AFTER_RELEASE_MS = 400;
 const MAX_REMEMBERED = 200;
+
+// The two gestures are explained only where a finger is the pointer; CSS
+// decides, so the server and the first client render agree.
+const TOUCH_HINT_SX = {
+  display: 'none',
+  mb: 0,
+  lineHeight: 1.3,
+  '@media (pointer: coarse)': { display: 'block' },
+} as const;
+
+interface Press {
+  id: number;
+  x: number;
+  y: number;
+  startMs: number;
+}
+
+const distance = (event: PointerEvent, press: Press): number =>
+  Math.hypot(event.clientX - press.x, event.clientY - press.y);
+
+const hasSelection = (): boolean => {
+  const selection = window.getSelection();
+  return selection !== null && !selection.isCollapsed;
+};
+
+// The external action sits above the bottom safe area, clear of the
+// selection handles and menu the browser draws beside the text.
+const PHRASE_ACTION_SX = {
+  position: 'fixed',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  bottom: 'calc(12px + env(safe-area-inset-bottom))',
+  zIndex: 'snackbar',
+  maxWidth: 'calc(100vw - 24px)',
+  minHeight: 44,
+  boxShadow: 4,
+  whiteSpace: 'normal',
+} as const;
 
 type Presentation = 'popper' | 'sheet';
 
@@ -141,6 +192,8 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
   const [state, setState] = useState<LookupState>(CLOSED);
   const [opened, setOpened] = useState<Opened | null>(null);
   const [notice, setNotice] = useState(false);
+  const [phrase, setPhrase] = useState<string | null>(null);
+  const isPhrasePinned = useRef(false);
   const slot = useSyncExternalStore(
     subscribeNothing,
     findHeaderSlot,
@@ -251,8 +304,7 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
     const root = rootRef.current;
     if (!enabled || !root) return;
     let hoverTimer = 0;
-    let pressTimer = 0;
-    let press: { x: number; y: number } | null = null;
+    let press: Press | null = null;
     let isClickSuppressed = false;
     let suppressTimer = 0;
     let pointerType = 'mouse';
@@ -260,12 +312,12 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
     const clearHover = () => window.clearTimeout(hoverTimer);
 
     const cancelPress = () => {
-      window.clearTimeout(pressTimer);
       press = null;
     };
 
-    // Touch and pen: a pending long press on the word under the finger.
-    // Nothing is prevented here, so the native scroll stays untouched.
+    // Touch and pen: a candidate tap on the word under the finger. Nothing
+    // is prevented here, so the native scroll, zoom and selection stay.
+    // A touch that starts while text is selected only ends that selection.
     const handlePointerDown = (event: PointerEvent) => {
       pointerType = event.pointerType;
       clearHover();
@@ -273,27 +325,35 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       isClickSuppressed = false;
       if (event.pointerType === 'mouse' || !event.isPrimary) return;
       if (!zoneOf(event.target as Node, root)) return;
-      const start = { x: event.clientX, y: event.clientY };
-      press = start;
-      pressTimer = window.setTimeout(() => {
-        if (press !== start) return;
-        press = null;
-        const hit = wordAtPoint(start.x, start.y, root);
-        if (!hit) return;
-        // The click that may follow the release must not act on the word.
-        isClickSuppressed = true;
-        openWord(hit, 'sheet', null);
-      }, LONG_PRESS_MS);
+      if (hasSelection()) return;
+      press = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        startMs: event.timeStamp,
+      };
+    };
+
+    // A short, still release of the same finger with no selection is a tap:
+    // the word under it opens at once.
+    const handlePointerUp = (event: PointerEvent) => {
+      const start = press;
+      press = null;
+      if (!start || event.pointerId !== start.id) return;
+      if (event.timeStamp - start.startMs > TAP_MAX_MS) return;
+      if (distance(event, start) > TAP_TOLERANCE_PX) return;
+      if (hasSelection()) return;
+      const hit = wordAtPoint(start.x, start.y, root);
+      if (!hit) return;
+      // The click that follows the release must not act on the word again
+      // or choose the answer of the label the word sits in.
+      isClickSuppressed = true;
+      openWord(hit, 'sheet', null);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
       if (event.pointerType !== 'mouse') {
-        if (!press) return;
-        const moved = Math.hypot(
-          event.clientX - press.x,
-          event.clientY - press.y,
-        );
-        if (moved > LONG_PRESS_TOLERANCE_PX) cancelPress();
+        if (press && distance(event, press) > TAP_TOLERANCE_PX) cancelPress();
         return;
       }
       if (event.buttons !== 0) return;
@@ -318,16 +378,17 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
 
     // The click of a release follows it at once; a flag left over from a
     // release without a click must not swallow a later keyboard click.
-    const handlePointerRelease = () => {
-      cancelPress();
+    const handlePointerRelease = (event: PointerEvent) => {
+      if (event.type === 'pointerup') handlePointerUp(event);
+      else cancelPress();
       window.clearTimeout(suppressTimer);
       suppressTimer = window.setTimeout(() => {
         isClickSuppressed = false;
       }, CLICK_AFTER_RELEASE_MS);
     };
 
-    // After a long press the release must neither open the word a second
-    // time nor choose the answer of the label the word sits in.
+    // After a tap the click must neither open the word a second time nor
+    // choose the answer of the label the word sits in.
     const handleClickCapture = (event: MouseEvent) => {
       if (!isClickSuppressed) return;
       isClickSuppressed = false;
@@ -335,15 +396,27 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       event.stopPropagation();
     };
 
+    // A selection that appears under the finger (the browser's long press)
+    // makes the touch a selection gesture, never a tap.
+    const handleSelectionChange = () => {
+      if (press && hasSelection()) cancelPress();
+    };
+
     root.addEventListener('pointerdown', handlePointerDown);
     root.addEventListener('pointermove', handlePointerMove);
     root.addEventListener('pointerleave', clearHover);
     root.addEventListener('mouseup', handleMouseUp);
     root.addEventListener('click', handleClickCapture, true);
+    // Chrome on Android reports its long press as a context menu.
+    root.addEventListener('contextmenu', cancelPress);
     document.addEventListener('pointerup', handlePointerRelease);
     document.addEventListener('pointercancel', handlePointerRelease);
-    // A scroll of the page or of any inner box ends the wait.
-    document.addEventListener('scroll', cancelPress, true);
+    document.addEventListener('selectionchange', handleSelectionChange);
+    // A scroll of the page or of any inner box is not a tap.
+    document.addEventListener('scroll', cancelPress, {
+      capture: true,
+      passive: true,
+    });
     return () => {
       clearHover();
       cancelPress();
@@ -353,11 +426,47 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       root.removeEventListener('pointerleave', clearHover);
       root.removeEventListener('mouseup', handleMouseUp);
       root.removeEventListener('click', handleClickCapture, true);
+      root.removeEventListener('contextmenu', cancelPress);
       document.removeEventListener('pointerup', handlePointerRelease);
       document.removeEventListener('pointercancel', handlePointerRelease);
+      document.removeEventListener('selectionchange', handleSelectionChange);
       document.removeEventListener('scroll', cancelPress, true);
     };
   }, [enabled, openWord]);
+
+  // The explicit Google action follows the selection while the translator
+  // is on. It reads only the selected text of one zone and sends nothing:
+  // the link leaves the page only when it is activated.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!enabled || !root) return;
+    let isTouch = false;
+    const handlePointerDown = (event: PointerEvent) => {
+      isTouch = event.pointerType !== 'mouse';
+    };
+    const handleSelectionChange = () => {
+      const hit = phraseOfCurrentSelection(root);
+      // One word selected by mouse or keyboard opens its own card, which
+      // carries its Google link; a finger's long press on one word (the
+      // start of a phrase selection) already offers the action.
+      const next = hit && (isTouch || !hit.isOneWord) ? hit.phrase : null;
+      // Pressing the action may clear the selection before its click.
+      if (next === null && isPhrasePinned.current) return;
+      // A new phrase selection is a new gesture: a bottom sheet left open by
+      // an earlier tap closes, so it never hides the action it sits under.
+      if (next !== null && openedRef.current?.presentation === 'sheet') {
+        close();
+      }
+      setPhrase(next);
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      setPhrase(null);
+    };
+  }, [enabled, close]);
 
   const isOpen = opened !== null;
   useEffect(() => {
@@ -392,6 +501,11 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
     if (node && buttonRef.current?.contains(node)) return;
     close();
   };
+
+  const unpinPhrase = () => {
+    isPhrasePinned.current = false;
+  };
+  const phraseHref = phrase ? googleTranslateHref(phrase, target) : null;
 
   const anchor = useMemo(() => (opened ? anchorOf(opened) : null), [opened]);
   // A translator switched off in another tab hides the card here as well.
@@ -442,9 +556,39 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
                 {t('selectOneWord')}
               </Typography>
             ) : null}
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              component="p"
+              data-testid="dictionary-touch-hint"
+              sx={TOUCH_HINT_SX}
+            >
+              {t('touchHint')}
+            </Typography>
           </>
         ) : null}
         {children}
+        {phraseHref ? (
+          <Button
+            component="a"
+            href={phraseHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            variant="contained"
+            size="small"
+            data-testid="dictionary-google-phrase"
+            onPointerDown={() => {
+              isPhrasePinned.current = true;
+            }}
+            onPointerCancel={unpinPhrase}
+            onBlur={unpinPhrase}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={unpinPhrase}
+            sx={PHRASE_ACTION_SX}
+          >
+            {t('translatePhrase')}
+          </Button>
+        ) : null}
       </Box>
       {card && anchor && opened?.presentation === 'popper' ? (
         <Popper

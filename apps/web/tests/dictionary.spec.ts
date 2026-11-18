@@ -31,6 +31,7 @@ import {
   snapshotOf,
   waitForPlayer,
 } from './support/guest-browser';
+import { goToStep } from './support/release';
 import { psql, quote } from './support/sql';
 
 // The word dictionary on the synthetic full set, against the real local
@@ -47,9 +48,12 @@ const LONG_TASK = 11;
 const PARAGRAPH = 12;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PHONE = devices['Pixel 7'];
-// A finger must rest this long on a word before the phone opens the sheet.
-const LONG_PRESS_MS = 1500;
-const PAST_LONG_PRESS_MS = LONG_PRESS_MS + 400;
+// A short tap opens the sheet of a word at once (#120). A finger resting
+// this long is the browser's own long press (text selection): well past a
+// tap and past the 1500 ms hold that #66 used before.
+const HOLD_MS = 1900;
+const GOOGLE_PHRASE = 'dictionary-google-phrase';
+const GOOGLE_PAGES = 'https://translate.google.com/**';
 
 const cardOf = (page: Page): Locator => page.getByTestId('dictionary-card');
 const wordOf = (page: Page): Locator => page.getByTestId('dictionary-word');
@@ -135,6 +139,70 @@ const openContext = async (
   return { context, page };
 };
 
+// The German words are text zones only once the page is hydrated with the
+// translator on.
+const expectZones = (locator: Locator) =>
+  expect(locator.locator('[data-dictionary-text]').first()).toBeVisible();
+
+const clearSelection = (page: Page) =>
+  page.evaluate(() => window.getSelection()?.removeAllRanges());
+
+// Selects text of the material as the system handles leave it: one range
+// from the first occurrence of `from` to the end of the first occurrence
+// of `to` (the same text node or a later one) inside the locators.
+const selectRange = async (
+  from: Locator,
+  fromText: string,
+  to: Locator = from,
+  toText: string = fromText,
+) => {
+  const start = await from.evaluateHandle((element, target) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const index = node.textContent?.indexOf(target) ?? -1;
+      if (index !== -1) return { node, index };
+    }
+    throw new Error(`${target} is not in the element`);
+  }, fromText);
+  await to.evaluate(
+    (element, { begin, target }) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const index = node.textContent?.indexOf(target) ?? -1;
+        if (index === -1) continue;
+        const range = document.createRange();
+        range.setStart(begin.node, begin.index);
+        range.setEnd(node, index + target.length);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+      throw new Error(`${target} is not in the element`);
+    },
+    { begin: start, target: toText },
+  );
+  await start.dispose();
+};
+
+const selectedText = (page: Page) =>
+  page.evaluate(() => window.getSelection()?.toString() ?? '');
+
+// Every request to the external Google Translate page is answered here by
+// a stub: no test leaves the machine, and each request is counted.
+const stubGoogle = async (context: BrowserContext): Promise<string[]> => {
+  const seen: string[] = [];
+  await context.route(GOOGLE_PAGES, async (route) => {
+    seen.push(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!doctype html><title>stub</title>',
+    });
+  });
+  return seen;
+};
+
 const optionLabel = (cardLocator: Locator, optionId: string): Locator =>
   cardLocator.locator('label').filter({
     has: cardLocator.page().locator(`input[value="${optionId}"]`),
@@ -204,7 +272,10 @@ test('dictionary opens for Lesen word on desktop and mobile', async ({
   await page.waitForTimeout(800);
   await expect(cardOf(page)).toBeHidden();
   expect(lookups.length).toBe(before);
+  // The phrase is offered to the external page only, never to the lookup.
+  await expect(page.getByTestId(GOOGLE_PHRASE)).toBeVisible();
   await page.mouse.click(5, 5);
+  await expect(page.getByTestId(GOOGLE_PHRASE)).toHaveCount(0);
 
   // Resting the mouse on a word for about half a second.
   const teil = await wordBox(paragraph, 'Teil');
@@ -215,15 +286,16 @@ test('dictionary opens for Lesen word on desktop and mobile', async ({
   await expect(cardOf(page)).toBeHidden();
   await desktop.context.close();
 
-  // Phone: holding a finger on the word opens the bottom sheet; the page is
-  // not locked.
+  // Phone: a short tap on the word opens the bottom sheet; the page is not
+  // locked.
   const phone = await openContext(browser, true);
   await goToLesen(phone.page);
+  await expectZones(phone.page.getByTestId('reading-paragraph-0'));
   const tap = await wordBox(
     phone.page.getByTestId('reading-paragraph-0'),
     'Anzeige',
   );
-  await holdTouch(phone.page, tap, PAST_LONG_PRESS_MS);
+  await phone.page.touchscreen.tap(tap.x, tap.y);
   const sheet = cardOf(phone.page);
   await expect(sheet).toBeVisible();
   await expect(sheet).toHaveAttribute('data-presentation', 'sheet');
@@ -246,69 +318,70 @@ test('dictionary opens for Lesen word on desktop and mobile', async ({
   await phone.context.close();
 });
 
+// #66 named this test after its 1500 ms hold; the owner's decision of
+// 2026-11-18 (#120) replaced the hold by a short tap, and the long press now
+// belongs to the browser's text selection. The name stays: closed issues
+// refer to it.
 test('mobile dictionary requires 1500ms stationary long press', async ({
   browser,
 }) => {
   const { context, page } = await openContext(browser, true);
   await goToLesen(page);
+  const paragraph = page.getByTestId('reading-paragraph-0');
+  await expectZones(paragraph);
   const lookups = trackPosts(page, LOOKUP_PATH);
-  const point = await wordBox(
-    page.getByTestId('reading-paragraph-0'),
-    'Anzeige',
-  );
+  const point = await wordBox(paragraph, 'Anzeige');
   const pad = await touchPadOf(page);
-  // Every wait ends well after 1500 ms from the touch start, so a timer that
-  // was not cancelled would have opened the sheet by then.
-  const expectNothing = async (elapsedMs: number) => {
-    await page.waitForTimeout(Math.max(PAST_LONG_PRESS_MS - elapsedMs, 0));
-    await expect(cardOf(page)).toHaveCount(0);
-    expect(lookups).toEqual([]);
+  // Each step waits well past the old 1500 ms, so no delayed opening of any
+  // kind could hide behind it.
+  const expectNothing = async (step: string) => {
+    await page.waitForTimeout(HOLD_MS);
+    await expect(cardOf(page), step).toHaveCount(0);
+    expect(lookups, step).toEqual([]);
+    await clearSelection(page);
   };
 
-  // A tap, however it is timed, and a hold released before the delay.
-  await page.touchscreen.tap(point.x, point.y);
-  await expectNothing(0);
+  // A stationary hold for the full old delay, and longer: the browser's
+  // long press, never the card.
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(HOLD_MS);
+  await expect(cardOf(page)).toHaveCount(0);
+  await pad.up();
+  await expectNothing('hold');
   await pad.down(point.x, point.y);
   await page.waitForTimeout(550);
   await pad.up();
-  await expectNothing(550);
+  await expectNothing('hold of 550 ms');
 
   // A finger that drifts further than the tolerance.
   await pad.down(point.x, point.y);
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(100);
   await pad.move(point.x + 24, point.y);
-  await page.waitForTimeout(PAST_LONG_PRESS_MS);
   await pad.up();
-  await expectNothing(PAST_LONG_PRESS_MS);
+  await expectNothing('drift');
 
   // A cancelled touch.
   await pad.down(point.x, point.y);
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(100);
   await pad.cancel();
-  await expectNothing(300);
+  await expectNothing('cancel');
 
   // A scroll: the page really scrolls and no lookup is asked. A short screen
   // makes the page taller than the viewport.
   await page.setViewportSize({ width: 412, height: 420 });
-  const scrollable = await wordBox(
-    page.getByTestId('reading-paragraph-0'),
-    'Anzeige',
-  );
+  const scrollable = await wordBox(paragraph, 'Anzeige');
   const scrolled = await scrollWithFinger(page, pad, scrollable);
   expect(scrolled.after).not.toBe(scrolled.before);
-  await expectNothing(PAST_LONG_PRESS_MS);
+  await expectNothing('scroll');
 
-  // A stationary hold for the full delay opens the sheet exactly once; the
-  // release and the click after it add no second lookup.
-  const held = await wordBox(
-    page.getByTestId('reading-paragraph-0'),
-    'Anzeige',
-  );
-  await pad.down(held.x, held.y);
-  await page.waitForTimeout(PAST_LONG_PRESS_MS);
-  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  // A short tap opens the sheet at once and exactly once; the release and
+  // the click after it add no second lookup.
+  const tapped = await wordBox(paragraph, 'Anzeige');
+  await page.touchscreen.tap(tapped.x, tapped.y);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet', {
+    timeout: 1000,
+  });
   await expect(wordOf(page)).toHaveText('Anzeige');
-  await pad.up();
   await page.waitForTimeout(500);
   expect(lookups).toHaveLength(1);
   await context.close();
@@ -536,14 +609,15 @@ test('word interaction cannot submit answer', async ({ browser }) => {
   await setTranslator(page, true);
   await context.close();
 
-  // Phone: holding a finger on the option text opens the sheet, not the
-  // answer, and the release does not choose it either.
+  // Phone: a tap on the option text opens the sheet, not the answer, and
+  // the click of the release does not choose it either.
   const phone = await openContext(browser, true);
   const phoneAttempt = await activeAttemptOf(phone.context);
   const phoneAnswers = trackPosts(phone.page, ANSWER_PATH);
   const phoneCard = card(phone.page, 'hoeren-1');
+  await expectZones(optionLabel(phoneCard, 'a'));
   const tap = await wordBox(optionLabel(phoneCard, 'a'), 'Antwort');
-  await holdTouch(phone.page, tap, PAST_LONG_PRESS_MS);
+  await phone.page.touchscreen.tap(tap.x, tap.y);
   await expect(cardOf(phone.page)).toHaveAttribute(
     'data-presentation',
     'sheet',
@@ -965,4 +1039,277 @@ test('synonym opens its own lookup', async ({ browser }) => {
     .sort();
   expect(targets).toEqual(['en', 'ru']);
   await context.close();
+});
+
+// --- A selected phrase and the external Google Translate page (#120) -------
+
+// Selects the whole content of an element, as a guest's handles might.
+const selectContents = (locator: Locator) =>
+  locator.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+
+const toRussian = async (page: Page) => {
+  await page.getByTestId('locale-ru').click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+};
+
+test('selected German phrase opens external Google Translate only on activation', async ({
+  browser,
+}) => {
+  const { context, page } = await openContext(browser, true);
+  const google = await stubGoogle(context);
+  const { attemptId } = await activeAttemptOf(context);
+  const answers = trackPosts(page, ANSWER_PATH);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  await goToLesen(page);
+  const paragraph = page.getByTestId('reading-paragraph-0');
+  await expectZones(paragraph);
+  const action = page.getByTestId(GOOGLE_PHRASE);
+  await expect(action).toHaveCount(0);
+  let tabs = 0;
+  context.on('page', () => {
+    tabs += 1;
+  });
+
+  // A long press starts the native selection; the handles extend it over
+  // several words of the same text.
+  const start = await wordBox(paragraph, 'Anzeige');
+  await holdTouch(page, start, HOLD_MS);
+  await selectRange(paragraph, 'Anzeige zu Teil 1');
+  await expect(action).toBeVisible();
+  const english =
+    'https://translate.google.com/?sl=de&tl=en&text=Anzeige%20zu%20Teil%201&op=translate';
+  await expect(action).toHaveAttribute('href', english);
+  await expect(action).toHaveAttribute('target', '_blank');
+  await expect(action).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(action).toHaveAccessibleName(/Google/);
+  // The selection is still the browser's, and nothing has left the page.
+  await page.waitForTimeout(800);
+  expect(await selectedText(page)).toBe('Anzeige zu Teil 1');
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(google).toEqual([]);
+  expect(tabs).toBe(0);
+  expect(lookups).toEqual([]);
+
+  // Only the activation opens exactly this text, in a new tab.
+  const opened = context.waitForEvent('page');
+  await action.tap();
+  const tab = await opened;
+  await expect.poll(() => google).toEqual([english]);
+  expect(tab.url()).toBe(english);
+  await tab.close();
+  expect(lookups).toEqual([]);
+  await clearSelection(page);
+
+  // Umlauts, brackets and the Russian interface: the gap text of Teil 5.
+  await toRussian(page);
+  await goToStep(page, 20);
+  const gap = page.getByTestId('reading-paragraph-0');
+  await expectZones(gap);
+  await selectRange(gap, 'eine Lücke [40] im Satz.');
+  const russian =
+    'https://translate.google.com/?sl=de&tl=ru&text=eine%20L%C3%BCcke%20%5B40%5D%20im%20Satz.&op=translate';
+  await expect(action).toHaveAttribute('href', russian);
+  await page.waitForTimeout(500);
+  expect(google).toEqual([english]);
+  expect(lookups).toEqual([]);
+
+  // A bottom sheet left open by an earlier tap does not hide the action: a
+  // new phrase selection closes the sheet and offers the link. Only the tap
+  // on the single word was looked up, never the phrase.
+  await clearSelection(page);
+  const brief = await wordBox(gap, 'Brief');
+  await page.touchscreen.tap(brief.x, brief.y);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Brief');
+  await expect(action).toHaveCount(0);
+  await selectRange(gap, 'Brief hat eine');
+  await expect(action).toBeVisible();
+  await expect(cardOf(page)).toHaveCount(0);
+  await expect(action).toHaveAttribute(
+    'href',
+    'https://translate.google.com/?sl=de&tl=ru&text=Brief%20hat%20eine&op=translate',
+  );
+  await page.waitForTimeout(500);
+  expect(google).toEqual([english]);
+  expect(lookups).toHaveLength(1);
+  expect(answers).toEqual([]);
+  expect(await readAnswers(attemptId)).toEqual({});
+  await context.close();
+});
+
+test('invalid or out of scope selection never offers external translation', async ({
+  browser,
+}) => {
+  const { context, page } = await openContext(browser, true);
+  const google = await stubGoogle(context);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  await goToLesen(page);
+  const paragraph = page.getByTestId('reading-paragraph-0');
+  await expectZones(paragraph);
+  let tabs = 0;
+  context.on('page', () => {
+    tabs += 1;
+  });
+  const action = page.getByTestId(GOOGLE_PHRASE);
+  const expectNoAction = async (step: string) => {
+    await page.waitForTimeout(400);
+    await expect(action, step).toHaveCount(0);
+    await expect(cardOf(page), step).toHaveCount(0);
+  };
+
+  // An empty selection: a caret inside the text.
+  await paragraph.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const node = walker.nextNode();
+    if (!node) throw new Error('no text');
+    const range = document.createRange();
+    range.setStart(node, 3);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await expectNoAction('caret');
+
+  // Outside the German zones: the exam title of the page header and the
+  // interface hint inside the boundary.
+  await selectContents(page.getByTestId('exam-context-title'));
+  await expectNoAction('outside the boundary');
+  await selectContents(page.getByTestId('dictionary-touch-hint'));
+  await expectNoAction('interface text');
+
+  // Across two zones: from the title of the text into its first paragraph.
+  await selectRange(
+    page.getByTestId('reading-text').locator('h2'),
+    'Text zu',
+    paragraph,
+    'Anzeige zu',
+  );
+  await expectNoAction('two zones');
+
+  // More than 300 code points inside one zone (added in this test's DOM
+  // only; the material is never touched).
+  const zone = paragraph.locator('[data-dictionary-text]').first();
+  await zone.evaluate((element) => {
+    element.append(
+      document.createTextNode(` ${'Straßenbahnhaltestelle '.repeat(16)}`),
+    );
+  });
+  await selectContents(zone);
+  expect([...(await selectedText(page))].length).toBeGreaterThan(300);
+  await expectNoAction('too long');
+
+  // A valid phrase is offered; with the translator off it is not.
+  await selectRange(paragraph, 'Anzeige zu Teil 1');
+  await expect(action).toBeVisible();
+  await toggleOf(page).tap();
+  await expect(toggleOf(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(action).toHaveCount(0);
+  await selectRange(paragraph, 'Anzeige zu Teil 1');
+  await expectNoAction('translator off');
+  expect(await selectedText(page)).toBe('Anzeige zu Teil 1');
+
+  expect(google).toEqual([]);
+  expect(tabs).toBe(0);
+  expect(lookups).toEqual([]);
+  await context.close();
+});
+
+test('dictionary keeps desktop word selection and mobile answer safety', async ({
+  browser,
+}) => {
+  const desktop = await openContext(browser);
+  const { page } = desktop;
+  const google = await stubGoogle(desktop.context);
+  const target = card(page, 'hoeren-1');
+  const prompt = target.locator('h2');
+  await expectZones(prompt);
+  // No phone hint on a mouse screen.
+  await expect(page.getByTestId('dictionary-touch-hint')).toBeHidden();
+
+  // Hover: a non-modal card beside the word, named by its title.
+  const frage = await wordBox(prompt, 'Frage');
+  await page.mouse.move(frage.x, frage.y);
+  await expect(wordOf(page)).toHaveText('Frage');
+  const popper = cardOf(page);
+  await expect(popper).toHaveAttribute('data-presentation', 'popper');
+  await expect(popper).toHaveAttribute('role', 'dialog');
+  await expect(popper).toHaveAttribute('aria-modal', 'false');
+  await expect(popper).toHaveAccessibleName(/Frage/);
+  await page.keyboard.press('Escape');
+  await expect(popper).toBeHidden();
+  await page.mouse.move(5, 5);
+
+  // One word selected with the mouse: its card, no external phrase action.
+  await page.mouse.move(frage.left + 1, frage.y);
+  await page.mouse.down();
+  await page.mouse.move(frage.right - 1, frage.y, { steps: 5 });
+  await page.mouse.up();
+  await expect(wordOf(page)).toHaveText('Frage');
+  await expect(page.getByTestId(GOOGLE_PHRASE)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+
+  // Keyboard: the translate action takes a selected word, Escape returns
+  // the focus; the switch keeps its name and state.
+  await selectRange(prompt, 'Frage');
+  const translate = page.getByTestId('dictionary-translate-selection');
+  await translate.focus();
+  await page.keyboard.press('Enter');
+  await expect(wordOf(page)).toHaveText('Frage');
+  await page.keyboard.press('Escape');
+  await expect(translate).toBeFocused();
+  await expect(toggleOf(page)).toHaveAccessibleName(/\S/);
+  await expect(toggleOf(page)).toHaveAttribute('aria-pressed', 'true');
+
+  // The phrase action is a link the keyboard reaches; focus alone goes
+  // nowhere, Enter opens the page.
+  await selectRange(prompt, 'Frage 1 (hoeren');
+  const phrase = page.getByTestId(GOOGLE_PHRASE);
+  await expect(phrase).toBeVisible();
+  await expect(phrase).toHaveAccessibleName(/Google/);
+  await phrase.focus();
+  await expect(phrase).toBeFocused();
+  await page.waitForTimeout(400);
+  expect(google).toEqual([]);
+  const opened = desktop.context.waitForEvent('page');
+  await page.keyboard.press('Enter');
+  const tab = await opened;
+  await expect.poll(() => google.length).toBe(1);
+  expect(tab.url()).toContain('tl=en');
+  expect(tab.url()).toContain('text=Frage%201%20(hoeren');
+  await tab.close();
+  await desktop.context.close();
+
+  // Phone: a tap on a word of an option opens its sheet and leaves the
+  // answer; the radio itself then chooses it at once.
+  const phone = await openContext(browser, true);
+  const answers = trackPosts(phone.page, ANSWER_PATH);
+  const lookups = trackPosts(phone.page, LOOKUP_PATH);
+  const { attemptId } = await activeAttemptOf(phone.context);
+  const phoneCard = card(phone.page, 'hoeren-1');
+  await expectZones(optionLabel(phoneCard, 'c'));
+  const word = await wordBox(optionLabel(phoneCard, 'c'), 'Antwort');
+  await phone.page.touchscreen.tap(word.x, word.y);
+  await expect(cardOf(phone.page)).toHaveAttribute(
+    'data-presentation',
+    'sheet',
+  );
+  await expect(optionIn(phoneCard, 'c')).not.toBeChecked();
+  await phone.page.waitForTimeout(400);
+  expect(answers).toEqual([]);
+  expect(lookups).toHaveLength(1);
+  await phone.page.getByTestId('dictionary-close').click();
+  await optionIn(phoneCard, 'c').tap();
+  await expectStatus(phoneCard, 'saved');
+  expect(answers).toHaveLength(1);
+  expect(lookups).toHaveLength(1);
+  expect(await readAnswers(attemptId)).toEqual({ 'hoeren-1': 'c' });
+  await phone.context.close();
 });

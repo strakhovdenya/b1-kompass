@@ -1,3 +1,4 @@
+import { normalizePhrase } from './links';
 import { wordAt, wordOfSelection } from './word';
 
 // Reading a word out of the page without changing it: the caret position
@@ -95,4 +96,26 @@ export const wordOfCurrentSelection = (root: Element): WordHit | null => {
   if (!zone) return null;
   const word = wordOfSelection(selection.toString());
   return word ? { word, range: range.cloneRange() } : null;
+};
+
+export interface PhraseHit {
+  phrase: string;
+  isOneWord: boolean;
+}
+
+// The selection as German text of exactly one zone of the boundary: both
+// ends lie in the same zone, so a selection across zones, into a control
+// or outside the boundary gives nothing. Only the selected text is read.
+export const phraseOfCurrentSelection = (root: Element): PhraseHit | null => {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const zone = zoneOf(range.startContainer, root);
+  if (!zone || zoneOf(range.endContainer, root) !== zone) return null;
+  const selected = selection.toString();
+  const phrase = normalizePhrase(selected);
+  if (!phrase) return null;
+  return { phrase, isOneWord: wordOfSelection(selected) !== null };
 };

@@ -149,6 +149,62 @@ describe('TrainingShell', () => {
     expect(running).toContain('data-remaining-ms="1500000"');
   });
 
+  it('closed and free states have no sticky clock', () => {
+    const running = render(null, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 25 * 60_000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    // The one clock of an open timed run is the pinned phone line.
+    expect(timerLine(running)).toContain('data-pinned="phone"');
+    expect(running.match(/data-pinned=/g)).toHaveLength(1);
+    expect(running).toContain('position:sticky');
+
+    // A free training has neither a clock nor an empty pinned box.
+    const free = render(null);
+    expect(free).not.toContain('role="timer"');
+    expect(free).not.toContain('data-pinned');
+    expect(free).not.toContain('position:sticky');
+
+    // A run whose result is pending (submitted or closed) shows no clock.
+    const closed = render(null, true, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 1000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    expect(closed).not.toContain('role="timer"');
+    expect(closed).not.toContain('data-pinned');
+    expect(closed).not.toContain('position:sticky');
+
+    // The completed review has no clock either.
+    const reviewed = render(review, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS - 1000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    expect(reviewed).not.toContain('role="timer"');
+    expect(reviewed).not.toContain('data-pinned');
+    expect(reviewed).not.toContain('position:sticky');
+
+    // An expired clock is no longer pinned and keeps the server deadline:
+    // reaching zero never extends the time.
+    const expired = render(null, false, {
+      deadlineMs: DEADLINE_MS,
+      serverNowMs: DEADLINE_MS + 5000,
+      skill: 'lesen',
+      phase: 'lesen',
+    });
+    const line = timerLine(expired);
+    expect(line).toContain('data-state="zero"');
+    expect(line).toContain('data-pinned="none"');
+    expect(line).toContain('data-remaining-ms="0"');
+    expect(line).toContain(`data-deadline-ms="${DEADLINE_MS}"`);
+    expect(expired).not.toContain('position:sticky');
+  });
+
   it('wraps the block with the recording, block links and one finish point', () => {
     const html = render(null);
     expect(html).toContain('block page');

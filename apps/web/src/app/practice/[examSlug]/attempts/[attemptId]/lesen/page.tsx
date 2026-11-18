@@ -11,6 +11,23 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+// The one h1 of the page. On a phone the exam context line above already
+// shows the exam title, so the heading is kept for screen readers and the
+// document outline only and gives its space to the first task.
+const PAGE_TITLE_SX = {
+  '@media (max-width: 599.95px)': {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    m: '-1px',
+    p: 0,
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    whiteSpace: 'nowrap',
+    border: 0,
+  },
+} as const;
+
 interface LesenPageProps {
   params: Promise<{ examSlug: string; attemptId: string }>;
 }
@@ -42,8 +59,14 @@ const LesenPage = async ({ params }: LesenPageProps) => {
   if (practice.review) return null;
 
   return (
-    <Stack spacing={3}>
-      <Typography component="h1" variant="h5" lang="de">
+    <Stack spacing={{ xs: 1.5, sm: 3 }}>
+      <Typography
+        component="h1"
+        variant="h5"
+        lang="de"
+        data-testid="page-title"
+        sx={PAGE_TITLE_SX}
+      >
         {practice.examTitle}
       </Typography>
       <LesenScreen
