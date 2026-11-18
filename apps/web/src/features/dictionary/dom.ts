@@ -1,4 +1,4 @@
-import { normalizePhrase } from './links';
+import { checkedPhrase } from './links';
 import { wordAt, wordOfSelection } from './word';
 
 // Reading a word out of the page without changing it: the caret position
@@ -115,7 +115,7 @@ export const phraseOfCurrentSelection = (root: Element): PhraseHit | null => {
   const zone = zoneOf(range.startContainer, root);
   if (!zone || zoneOf(range.endContainer, root) !== zone) return null;
   const selected = selection.toString();
-  const phrase = normalizePhrase(selected);
+  const phrase = checkedPhrase(selected);
   if (!phrase) return null;
   return { phrase, isOneWord: wordOfSelection(selected) !== null };
 };
