@@ -157,8 +157,17 @@ export const HoerenSingleScreen = ({
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
   return (
-    <Stack spacing={{ xs: 1.5, sm: 3 }} data-testid="hoeren-screen">
-      <Typography variant="body2" color="text.secondary">
+    <Stack spacing={{ xs: 1, sm: 3 }} data-testid="hoeren-screen">
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{
+          // A phone gives the first answer the room: the notes stay whole,
+          // only their size and line height are a little tighter.
+          fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+          lineHeight: { xs: 1.4, sm: 1.43 },
+        }}
+      >
         {t('intro', describeIntro(shown, pairGroups, sharedSetGroups))}
       </Typography>
       <PracticeSet

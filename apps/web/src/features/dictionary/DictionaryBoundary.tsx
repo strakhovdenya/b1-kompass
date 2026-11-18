@@ -108,7 +108,8 @@ const MAX_REMEMBERED = 200;
 // decides, so the server and the first client render agree.
 const TOUCH_HINT_SX = {
   display: 'none',
-  mb: 0.5,
+  mb: 0,
+  lineHeight: 1.3,
   '@media (pointer: coarse)': { display: 'block' },
 } as const;
 
