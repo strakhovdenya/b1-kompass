@@ -43,7 +43,20 @@ export const LocaleSwitcher = ({ changeLocale }: LocaleSwitcherProps) => {
           lang={item}
           aria-label={t(item)}
           data-testid={`locale-${item}`}
-          sx={{ minWidth: 48, minHeight: 44, px: 1, fontWeight: 700 }}
+          sx={{
+            minWidth: 48,
+            minHeight: 44,
+            px: 1,
+            fontWeight: 700,
+            // The switch sits on a white plate in the blue header: the theme
+            // ring (blue, outside the button) would melt into the header
+            // there. The ring is drawn inside the button, on the plate.
+            '&.Mui-focusVisible': {
+              outline: (theme) => `3px solid ${theme.palette.primary.dark}`,
+              outlineOffset: '-3px',
+              zIndex: 1,
+            },
+          }}
         >
           {t(`short.${item}`)}
         </ToggleButton>

@@ -565,6 +565,7 @@ export const TrainingShell = ({
             expiry={submission.expiry}
             answered={answered}
             total={total}
+            showTotal={blocks.length > 1 || total !== questions.length}
             onSubmit={submission.submit}
             onConfirmSubmit={submission.confirmSubmit}
             onResendSubmit={submission.resendSubmit}

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -88,6 +89,15 @@ export const AttemptReviewView = ({
   const locale = useLocale();
   const { skills } = review;
   const byId = new Map(questions.map((question) => [question.id, question]));
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+
+  // The result opens at its score, whatever the position of the page was when
+  // the last answer was sent: the page goes to its top and the screen reader
+  // starts at the title. Focus only moves; nothing is sent or cancelled.
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+    titleRef.current?.focus({ preventScroll: true });
+  }, []);
 
   return (
     <Paper
@@ -95,10 +105,18 @@ export const AttemptReviewView = ({
       variant="outlined"
       aria-labelledby="result-title"
       data-testid="attempt-review"
-      sx={{ p: { xs: 2, sm: 3 } }}
+      // Long German compounds wrap inside the card instead of widening it.
+      sx={{ p: { xs: 2, sm: 3 }, minWidth: 0, overflowWrap: 'anywhere' }}
     >
       <Stack spacing={2}>
-        <Typography id="result-title" component="h2" variant="h6">
+        <Typography
+          id="result-title"
+          ref={titleRef}
+          component="h1"
+          variant="h6"
+          tabIndex={-1}
+          data-testid="result-title"
+        >
           {t('title')}
         </Typography>
         <Typography variant="h5" component="p" data-testid="result-score">

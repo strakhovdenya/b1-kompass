@@ -210,7 +210,13 @@ const SaveStatusLine = ({ status, onRetry }: SaveStatusLineProps) => {
         data-status={status}
         action={
           onRetry ? (
-            <Button color="inherit" size="small" onClick={onRetry}>
+            <Button
+              color="inherit"
+              size="small"
+              onClick={onRetry}
+              data-testid="save-retry"
+              sx={{ minHeight: 44, minWidth: 44 }}
+            >
               {t('retry')}
             </Button>
           ) : null

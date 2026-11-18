@@ -28,6 +28,9 @@ export interface AttemptSubmissionControlsProps {
   expiry?: Expiry | null;
   answered: number;
   total: number;
+  // False where the block's own counter already shows these numbers (a short
+  // set of one skill): two lines with one count would only repeat it.
+  showTotal?: boolean;
   onSubmit: () => void;
   onConfirmSubmit: () => void;
   onResendSubmit: () => void;
@@ -56,6 +59,19 @@ const ACTION_ROW_SX: SxProps<Theme> = {
   flexWrap: 'wrap',
   alignSelf: { xs: 'stretch', sm: 'flex-start' },
 };
+// The sending status is announced to assistive technology; the button already
+// shows "Checking…", so the same words are not drawn a second time.
+const VISUALLY_HIDDEN: SxProps<Theme> = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  m: '-1px',
+  p: 0,
+  border: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
 const ACTION_ROW_SPACING = { xs: 2, sm: 1 } as const;
 const ACTION_ROW_DIRECTION = { xs: 'column', sm: 'row' } as const;
 
@@ -77,6 +93,7 @@ export const AttemptSubmissionControls = ({
   expiry = null,
   answered,
   total,
+  showTotal = true,
   onSubmit,
   onConfirmSubmit,
   onResendSubmit,
@@ -339,14 +356,20 @@ export const AttemptSubmissionControls = ({
 
   return (
     <Stack spacing={1.5} sx={{ alignItems: 'flex-start' }}>
-      <Typography data-testid="training-answered">
-        {t('answered', { answered, total })}
-      </Typography>
+      {showTotal ? (
+        <Typography data-testid="training-answered">
+          {t('answered', { answered, total })}
+        </Typography>
+      ) : null}
       {confirming}
       {cancelling}
       {actions}
       {phase === 'sending' ? (
-        <Typography role="status" data-testid="submission-sending">
+        <Typography
+          role="status"
+          data-testid="submission-sending"
+          sx={VISUALLY_HIDDEN}
+        >
           {t('finishing')}
         </Typography>
       ) : null}

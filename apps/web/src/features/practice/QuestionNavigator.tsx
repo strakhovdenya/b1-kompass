@@ -41,6 +41,20 @@ const groupByTeil = (steps: readonly NavigatorStep[]): NavigatorGroup[] => {
   return groups;
 };
 
+// Where the step on screen lies among the real tasks: the first and the last
+// task number it covers counted from the start of the list, and the total of
+// tasks. A pair of Teil 3 or a Teil 4 set is one step but several tasks.
+const positionOf = (steps: readonly NavigatorStep[], index: number) => {
+  const before = steps
+    .slice(0, index)
+    .reduce((sum, step) => sum + step.count, 0);
+  const count = steps[index]?.count ?? 1;
+  const total = steps.reduce((sum, step) => sum + step.count, 0);
+  const first = before + 1;
+  const range = count > 1 ? `${first}–${before + count}` : `${first}`;
+  return { count, range, total };
+};
+
 interface QuestionNavigatorProps {
   steps: readonly NavigatorStep[];
   // The zero-based position of the step on screen.
@@ -97,6 +111,7 @@ export const QuestionNavigator = ({
   const [isOpen, setIsOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const current = steps[index];
+  const position = positionOf(steps, index);
 
   // Escape closes the open list and returns the focus to its button. The
   // dictionary card is the layer above: while it is open, it consumes
@@ -135,7 +150,7 @@ export const QuestionNavigator = ({
           data-testid="set-position"
           sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}
         >
-          {t('position', { current: index + 1, total: steps.length })}
+          {t('position', position)}
         </Typography>
         <Button
           ref={toggleRef}

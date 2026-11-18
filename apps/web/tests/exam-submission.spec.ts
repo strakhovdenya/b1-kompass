@@ -2146,3 +2146,50 @@ test('early full submit counts hidden lesen tasks in skipped', async () => {
   expect(await readEventKinds(attemptId)).toEqual(['start', 'finish']);
   expect(await readAnswerRows(attemptId)).toEqual(before);
 });
+
+// The result page opened again (#119) -------------------------------------------------
+
+test('direct completed review remains read only and focus safe', async ({
+  browser,
+}) => {
+  const { context, page } = await browserGuest(browser);
+  await enterAndStart(page);
+  const { attemptId } = await activeAttemptOf(context);
+  const target = card(page, 'hoeren-1');
+  await optionIn(target, fullKeyOf('hoeren-1')).check();
+  await expectStatus(target, 'saved');
+  await finishInBrowser(page);
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  expect(statusRow(attemptId)).toBe('completed');
+  const results = await readResults(attemptId);
+  expect(results).toHaveLength(1);
+
+  // Opened again by its address: the same result, nothing to answer or send,
+  // the title takes the focus and the next Tab reaches a control.
+  const submits: Request[] = [];
+  page.on('request', (request) => {
+    if (isSubmit(request)) submits.push(request);
+  });
+  await page.goto(page.url());
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await expect(page.getByTestId('result-title')).toBeFocused();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
+  await expect(page.getByTestId('finish-attempt')).toHaveCount(0);
+  await expect(page.getByTestId('cancel-attempt')).toHaveCount(0);
+  await expect(page.locator('input[type="radio"]')).toHaveCount(0);
+  await page.keyboard.press('Tab');
+  const focused = await page.evaluate(
+    () => document.activeElement?.tagName.toLowerCase() ?? '',
+  );
+  expect(['a', 'button']).toContain(focused);
+
+  // The other block of the same result, and back: still one result.
+  await page.getByTestId('block-link-lesen').click();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  await page.getByTestId('block-link-hoeren').click();
+  await expect(page.getByTestId('attempt-review')).toBeVisible();
+  expect(submits).toEqual([]);
+  expect(statusRow(attemptId)).toBe('completed');
+  expect(await readResults(attemptId)).toEqual(results);
+  await context.close();
+});

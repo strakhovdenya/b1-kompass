@@ -14,8 +14,10 @@ interface AttemptTimerProps {
   onZero: () => void;
 }
 
-// One compact line above the block: the mode, the skill and the time left by
-// the server's clock. role="timer" without a live region: it is not
+// One compact line above the block: the skill and the time left by the
+// server's clock. The mode (timed block or full exam) is named once by the
+// exam context header, so this line never claims one. role="timer" without a
+// live region: it is not
 // announced every second; the end of the time is announced by the
 // submission status of the shell.
 export const AttemptTimer = ({
