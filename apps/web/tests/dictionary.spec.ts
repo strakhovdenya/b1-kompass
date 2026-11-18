@@ -1118,6 +1118,26 @@ test('selected German phrase opens external Google Translate only on activation'
   await page.waitForTimeout(500);
   expect(google).toEqual([english]);
   expect(lookups).toEqual([]);
+
+  // A bottom sheet left open by an earlier tap does not hide the action: a
+  // new phrase selection closes the sheet and offers the link. Only the tap
+  // on the single word was looked up, never the phrase.
+  await clearSelection(page);
+  const brief = await wordBox(gap, 'Brief');
+  await page.touchscreen.tap(brief.x, brief.y);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Brief');
+  await expect(action).toHaveCount(0);
+  await selectRange(gap, 'Brief hat eine');
+  await expect(action).toBeVisible();
+  await expect(cardOf(page)).toHaveCount(0);
+  await expect(action).toHaveAttribute(
+    'href',
+    'https://translate.google.com/?sl=de&tl=ru&text=Brief%20hat%20eine&op=translate',
+  );
+  await page.waitForTimeout(500);
+  expect(google).toEqual([english]);
+  expect(lookups).toHaveLength(1);
   expect(answers).toEqual([]);
   expect(await readAnswers(attemptId)).toEqual({});
   await context.close();

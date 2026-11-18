@@ -452,6 +452,11 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       const next = hit && (isTouch || !hit.isOneWord) ? hit.phrase : null;
       // Pressing the action may clear the selection before its click.
       if (next === null && isPhrasePinned.current) return;
+      // A new phrase selection is a new gesture: a bottom sheet left open by
+      // an earlier tap closes, so it never hides the action it sits under.
+      if (next !== null && openedRef.current?.presentation === 'sheet') {
+        close();
+      }
       setPhrase(next);
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
@@ -461,7 +466,7 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
       document.removeEventListener('selectionchange', handleSelectionChange);
       setPhrase(null);
     };
-  }, [enabled]);
+  }, [enabled, close]);
 
   const isOpen = opened !== null;
   useEffect(() => {
@@ -563,7 +568,7 @@ export const DictionaryBoundary = ({ children }: DictionaryBoundaryProps) => {
           </>
         ) : null}
         {children}
-        {phraseHref && opened?.presentation !== 'sheet' ? (
+        {phraseHref ? (
           <Button
             component="a"
             href={phraseHref}
