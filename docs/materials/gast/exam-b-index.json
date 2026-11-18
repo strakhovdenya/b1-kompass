@@ -1,0 +1,875 @@
+{
+  "status": "INDEX_ONLY_NOT_CONTENT_SCHEMA",
+  "source": {
+    "publisher": "g.a.s.t.",
+    "title": "Deutsch-Test für Zuwanderer — Übungssatz 2",
+    "url": "https://www.gast.de/fileadmin/gast.de/GAST/5_DTZ/PDF/gast_DTZ_UEbungssatz_2.pdf",
+    "page": 1
+  },
+  "format": "DTZ",
+  "recommendedSlug": "dtz-gast-uebungssatz-2",
+  "title": "DTZ Übungssatz 2 — g.a.s.t.",
+  "questions": [
+    {
+      "number": 1,
+      "questionId": "hoeren-1",
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 10,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 2,
+      "questionId": "hoeren-2",
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 10,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 3,
+      "questionId": "hoeren-3",
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 10,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 4,
+      "questionId": "hoeren-4",
+      "skill": "hoeren",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 10,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 5,
+      "questionId": "hoeren-5",
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 11,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 6,
+      "questionId": "hoeren-6",
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 11,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 7,
+      "questionId": "hoeren-7",
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 11,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 8,
+      "questionId": "hoeren-8",
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 11,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 9,
+      "questionId": "hoeren-9",
+      "skill": "hoeren",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 11,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": null,
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 10,
+      "questionId": "hoeren-10",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-1",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 11,
+      "questionId": "hoeren-11",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-1",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 12,
+      "questionId": "hoeren-12",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-2",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 13,
+      "questionId": "hoeren-13",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-2",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 14,
+      "questionId": "hoeren-14",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-3",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 15,
+      "questionId": "hoeren-15",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-3",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 16,
+      "questionId": "hoeren-16",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-4",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 17,
+      "questionId": "hoeren-17",
+      "skill": "hoeren",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 12,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t3-pair-4",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 18,
+      "questionId": "hoeren-18",
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "sourcePage": 13,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t4-set",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 19,
+      "questionId": "hoeren-19",
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "sourcePage": 13,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t4-set",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 20,
+      "questionId": "hoeren-20",
+      "skill": "hoeren",
+      "teil": 4,
+      "kind": "shared-choice",
+      "sourcePage": 13,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "textId": null,
+      "groupId": "hoeren-t4-set",
+      "trackId": "exam-b-hoeren"
+    },
+    {
+      "number": 21,
+      "questionId": "lesen-21",
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 14,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 22,
+      "questionId": "lesen-22",
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 14,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 23,
+      "questionId": "lesen-23",
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 14,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 24,
+      "questionId": "lesen-24",
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 14,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 25,
+      "questionId": "lesen-25",
+      "skill": "lesen",
+      "teil": 1,
+      "kind": "single-choice",
+      "sourcePage": 14,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t1-register",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 26,
+      "questionId": "lesen-26",
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 16,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "textId": "lesen-t2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 27,
+      "questionId": "lesen-27",
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 16,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "textId": "lesen-t2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 28,
+      "questionId": "lesen-28",
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 16,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "textId": "lesen-t2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 29,
+      "questionId": "lesen-29",
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 16,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "textId": "lesen-t2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 30,
+      "questionId": "lesen-30",
+      "skill": "lesen",
+      "teil": 2,
+      "kind": "single-choice",
+      "sourcePage": 16,
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "x"
+      ],
+      "textId": "lesen-t2-anzeigen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 31,
+      "questionId": "lesen-31",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 18,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t3-text-1",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 32,
+      "questionId": "lesen-32",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 18,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t3-text-1",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 33,
+      "questionId": "lesen-33",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 19,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t3-text-2",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 34,
+      "questionId": "lesen-34",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 19,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t3-text-2",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 35,
+      "questionId": "lesen-35",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "true-false",
+      "sourcePage": 20,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t3-text-3",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 36,
+      "questionId": "lesen-36",
+      "skill": "lesen",
+      "teil": 3,
+      "kind": "single-choice",
+      "sourcePage": 20,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t3-text-3",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 37,
+      "questionId": "lesen-37",
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "sourcePage": 21,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t4-informationen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 38,
+      "questionId": "lesen-38",
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "sourcePage": 21,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t4-informationen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 39,
+      "questionId": "lesen-39",
+      "skill": "lesen",
+      "teil": 4,
+      "kind": "true-false",
+      "sourcePage": 21,
+      "optionIds": [
+        "a",
+        "b"
+      ],
+      "textId": "lesen-t4-informationen",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 40,
+      "questionId": "lesen-40",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 41,
+      "questionId": "lesen-41",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 42,
+      "questionId": "lesen-42",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 43,
+      "questionId": "lesen-43",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 44,
+      "questionId": "lesen-44",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    },
+    {
+      "number": 45,
+      "questionId": "lesen-45",
+      "skill": "lesen",
+      "teil": 5,
+      "kind": "single-choice",
+      "sourcePage": 22,
+      "optionIds": [
+        "a",
+        "b",
+        "c"
+      ],
+      "textId": "lesen-t5-brief",
+      "groupId": null,
+      "trackId": null
+    }
+  ],
+  "textResourcePlan": [
+    {
+      "id": "lesen-t1-register",
+      "sourcePage": 15,
+      "notes": "Preserve headings and layout of register/catalogue"
+    },
+    {
+      "id": "lesen-t2-anzeigen",
+      "sourcePage": 17,
+      "notes": "Preserve labels a–h and full text of eight two-column advertisements; visually verify each"
+    },
+    {
+      "id": "lesen-t3-text-1",
+      "sourcePage": 18,
+      "notes": "Questions 31–32: first true/false, second a/b/c"
+    },
+    {
+      "id": "lesen-t3-text-2",
+      "sourcePage": 19,
+      "notes": "Questions 33–34: first true/false, second a/b/c"
+    },
+    {
+      "id": "lesen-t3-text-3",
+      "sourcePage": 20,
+      "notes": "Questions 35–36: first true/false, second a/b/c"
+    },
+    {
+      "id": "lesen-t4-informationen",
+      "sourcePage": 21,
+      "notes": "Questions 37–39 true/false; visually check headings and lines"
+    },
+    {
+      "id": "lesen-t5-brief",
+      "sourcePage": 22,
+      "notes": "Gap markers 40–45 and separate Beispiel"
+    }
+  ],
+  "groupPlan": [
+    {
+      "id": "hoeren-t3-pair-1",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "exam-b-hoeren",
+      "questionIds": [
+        "hoeren-10",
+        "hoeren-11"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-2",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "exam-b-hoeren",
+      "questionIds": [
+        "hoeren-12",
+        "hoeren-13"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-3",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "exam-b-hoeren",
+      "questionIds": [
+        "hoeren-14",
+        "hoeren-15"
+      ]
+    },
+    {
+      "id": "hoeren-t3-pair-4",
+      "kind": "pair",
+      "teil": 3,
+      "trackId": "exam-b-hoeren",
+      "questionIds": [
+        "hoeren-16",
+        "hoeren-17"
+      ]
+    },
+    {
+      "id": "hoeren-t4-set",
+      "kind": "shared-set",
+      "teil": 4,
+      "trackId": "exam-b-hoeren",
+      "questionIds": [
+        "hoeren-18",
+        "hoeren-19",
+        "hoeren-20"
+      ],
+      "optionIds": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ]
+    }
+  ],
+  "audio": {
+    "trackId": "exam-b-hoeren",
+    "officialUrl": "https://www.gast.de/fileadmin/gast.de/GAST/5_DTZ/Audio/gast_Deutsch-Test_fuer_Zuwanderer_UEbungssatz_2.mp3",
+    "fileCount": "direct-mp3-link-one-resource",
+    "downloaded": false,
+    "integrityVerified": false,
+    "durationSeconds": null
+  },
+  "warnings": [
+    "Not a valid examContentSchema: prompts, options, reading texts and examples not transcribed",
+    "copyright permission for publication not established",
+    "MP3 bytes not downloaded/tested",
+    "Issue #79 spec was clarified, but full-DTZ validation is not yet implemented"
+  ]
+}
