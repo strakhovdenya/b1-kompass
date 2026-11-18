@@ -15,6 +15,7 @@ import { alpha } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { ExamQuestion, PublicContextItem } from '@b1k/domain';
 import { GermanText } from '../dictionary/GermanText';
+import { STICKY_CLOCK_CLEARANCE } from '../training/AttemptTimer';
 
 // 'error' can be retried; 'refused' cannot be saved any more (the attempt is
 // no longer active).
@@ -192,6 +193,10 @@ const optionSx = (isSelected: boolean, isClosed: boolean): SxProps<Theme> => ({
     color: isClosed ? 'text.primary' : undefined,
   },
   '&:has(.Mui-focusVisible)': { borderColor: 'primary.dark' },
+  // A row reached by keyboard or scrolled to stops below the pinned clock
+  // of a timed run on a phone instead of under it.
+  scrollMarginTop: STICKY_CLOCK_CLEARANCE,
+  '& input': { scrollMarginTop: STICKY_CLOCK_CLEARANCE },
 });
 
 interface SaveStatusLineProps {

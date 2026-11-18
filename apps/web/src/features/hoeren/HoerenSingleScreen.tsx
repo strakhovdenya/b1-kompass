@@ -157,7 +157,7 @@ export const HoerenSingleScreen = ({
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
   return (
-    <Stack spacing={3} data-testid="hoeren-screen">
+    <Stack spacing={{ xs: 1.5, sm: 3 }} data-testid="hoeren-screen">
       <Typography variant="body2" color="text.secondary">
         {t('intro', describeIntro(shown, pairGroups, sharedSetGroups))}
       </Typography>

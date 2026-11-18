@@ -14,6 +14,7 @@ import { QuestionCard } from '../practice/QuestionCard';
 import { NAV_BUTTON_SX } from '../practice/PracticeSet';
 import { QuestionNavigator } from '../practice/QuestionNavigator';
 import type { NavigatorStep } from '../practice/QuestionNavigator';
+import { STICKY_CLOCK_CLEARANCE } from '../training/AttemptTimer';
 import { useTraining } from '../training/TrainingContext';
 
 // The reading position: the paragraph of a text the guest has read up to.
@@ -80,12 +81,23 @@ const isPanelScrollable = (panel: HTMLElement): boolean =>
 const isShown = (element: HTMLElement): boolean =>
   element.getClientRects().length > 0;
 
+// The height of the clock line a timed run pins to the top of a phone
+// screen; the page scrolls a paragraph to just below it, not under it.
+const PINNED_CLOCK = '[data-testid="attempt-timer"][data-pinned="phone"]';
+const pinnedClockHeight = (): number => {
+  const clock = document.querySelector<HTMLElement>(PINNED_CLOCK);
+  if (!clock || getComputedStyle(clock).position !== 'sticky') return 0;
+  return clock.offsetHeight;
+};
+
 const paragraphsOf = (panel: HTMLElement): HTMLElement[] =>
   Array.from(panel.querySelectorAll<HTMLElement>('[data-paragraph]'));
 
 // The first paragraph that still reaches into the visible part of the text.
 const readFirstVisible = (panel: HTMLElement): number | null => {
-  const top = isPanelScrollable(panel) ? panel.getBoundingClientRect().top : 0;
+  const top = isPanelScrollable(panel)
+    ? panel.getBoundingClientRect().top
+    : pinnedClockHeight();
   const paragraphs = paragraphsOf(panel);
   const index = paragraphs.findIndex(
     (paragraph) => paragraph.getBoundingClientRect().bottom > top + 1,
@@ -113,7 +125,7 @@ const scrollToParagraph = (panel: HTMLElement, index: number) => {
     const isInView = top >= 0 && top + height <= window.innerHeight;
     if (!isInView) window.scrollBy(0, top - PAGE_MARGIN_PX);
   } else {
-    window.scrollBy(0, targetTop);
+    window.scrollBy(0, targetTop - pinnedClockHeight());
   }
 };
 
@@ -240,7 +252,10 @@ export const LesenScreen = ({
   );
   const anchorsRef = useRef(anchors);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const switchRef = useRef<HTMLDivElement | null>(null);
+  const taskRef = useRef<HTMLElement | null>(null);
   const isLocked = useRef(false);
+  const shouldFocusTask = useRef(false);
 
   const question = lesen[index];
   const text = texts.find((item) => item.id === question?.textId) ?? null;
@@ -322,6 +337,21 @@ export const LesenScreen = ({
     return () => cancelAnimationFrame(frame);
   }, [view, textId]);
 
+  // The jump from the end of a text shows the task from its start: the
+  // panel switch comes to the top (below a pinned clock) and the task takes
+  // the focus without a second scroll. The text keeps its anchor.
+  useEffect(() => {
+    if (view !== 'questions' || !shouldFocusTask.current) return;
+    shouldFocusTask.current = false;
+    switchRef.current?.scrollIntoView({ block: 'start' });
+    taskRef.current?.focus({ preventScroll: true });
+  }, [view]);
+
+  const jumpToTask = () => {
+    shouldFocusTask.current = true;
+    setView('questions');
+  };
+
   if (!question) {
     return <Alert severity="warning">{tPractice('unavailable')}</Alert>;
   }
@@ -375,9 +405,13 @@ export const LesenScreen = ({
       {text ? (
         <>
           <Stack
+            ref={switchRef}
             direction="row"
             spacing={1}
-            sx={{ display: { xs: 'flex', md: 'none' } }}
+            sx={{
+              display: { xs: 'flex', md: 'none' },
+              scrollMarginTop: STICKY_CLOCK_CLEARANCE,
+            }}
           >
             {(['text', 'questions'] as const).map((item) => (
               <Button
@@ -454,13 +488,32 @@ export const LesenScreen = ({
                   );
                 })}
               </Stack>
+              <Button
+                variant="contained"
+                fullWidth
+                data-testid="lesen-jump-to-question"
+                onClick={jumpToTask}
+                sx={{
+                  display: { xs: 'flex', md: 'none' },
+                  mt: 2,
+                  minHeight: 44,
+                }}
+              >
+                {t('jumpToQuestion', { number: question.number })}
+              </Button>
             </Paper>
             <Box
+              ref={taskRef}
+              component="section"
+              tabIndex={-1}
+              aria-label={t('taskRegion', { number: question.number })}
+              data-testid="lesen-task"
               sx={{
                 display: {
                   xs: view === 'questions' ? 'block' : 'none',
                   md: 'block',
                 },
+                '&:focus:not(:focus-visible)': { outline: 'none' },
               }}
             >
               <QuestionCard

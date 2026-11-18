@@ -1,18 +1,23 @@
 import { devices, expect, test } from '@playwright/test';
 import type { Browser, Locator, Page } from '@playwright/test';
 import { saveAnswer } from '../src/server/attempts/attempts';
+import { GUEST_COOKIE } from '../src/server/guest-session/cookie';
 import {
   FULL_EXAM,
   FULL_PILOT,
+  FULL_TIMING,
   fullKeyOf,
   fullWrongOf,
 } from './support/full-exam';
-import { depsNow, readAnswers } from './support/db';
+import { depsNow, latestVersionOf, newGuest, readAnswers } from './support/db';
 import {
   ANSWER_URL,
+  FULL_ORIGIN,
   HOEREN_URL,
+  LESEN_URL,
   SUBMIT_URL,
   activeAttemptOf,
+  attemptLesenUrl,
   attemptUrl,
   audioOf,
   card,
@@ -38,6 +43,12 @@ import {
   openGuestPage,
   tabTo,
 } from './support/release';
+import {
+  examRunTimes,
+  installM2Fixtures,
+  secondsAgoSql,
+  startExamAt,
+} from './support/sql';
 
 // Mobile-first learning screens on the synthetic full set (20 Hören with
 // pairs and a shared set, 25 Lesen): the recording that belongs to Hören, one
@@ -62,9 +73,13 @@ const HOEREN_STEPS = 14;
 const HOEREN_TASKS = 20;
 const LESEN_TASKS = 25;
 const POSITION_TOLERANCE_SECONDS = 0.1;
-// The phone opens the sheet only after a finger rests this long on a word.
-const LONG_PRESS_MS = 1500;
-const PAST_LONG_PRESS_MS = LONG_PRESS_MS + 400;
+// A short tap opens the sheet of a word at once (#120); a finger resting this
+// long is the browser's own long press, which selects text and never opens
+// the card. The hold is well past both the tap and the old 1500 ms delay.
+const HOLD_MS = 1900;
+const COMPACT = { width: 360, height: 640 };
+const SMALLEST = { width: 320, height: 568 };
+const PHONE_390 = { width: 390, height: 844 };
 
 const openGuest = async (
   browser: Browser,
@@ -152,6 +167,19 @@ const selectWord = (locator: Locator, word: string) =>
     }
     throw new Error(`${target} is not in the element`);
   }, word);
+
+// Selects a phrase of one German zone as the system handles do after a long
+// press: a single DOM range from the first to the last word.
+const selectPhrase = (locator: Locator, phrase: string) =>
+  selectWord(locator, phrase);
+
+const clearSelection = (page: Page) =>
+  page.evaluate(() => window.getSelection()?.removeAllRanges());
+
+// The German words are text zones only once the page is hydrated with the
+// translator on: a touch before that would act on the plain label.
+const expectWordZones = (locator: Locator) =>
+  expect(locator.locator('[data-dictionary-text]').first()).toBeVisible();
 
 interface TypeScale {
   fontPx: number;
@@ -390,6 +418,86 @@ test('first Hören screen shows prompt and first option', async ({
   const player = await boxOf(page.getByTestId('audio-player'));
   expect(player.height).toBeLessThanOrEqual(120);
   await context.close();
+
+  // Enlarged text (#62): the answers wrap inside their rows, never clipped,
+  // and the player stays reachable.
+  const enlarged = await openGuest(browser, SMALL_PHONE, true);
+  await waitForPlayer(enlarged.page);
+  const enlargedCard = card(enlarged.page, 'hoeren-1');
+  const rows = enlargedCard.locator('label.MuiFormControlLabel-root');
+  expect(await rows.count()).toBeGreaterThanOrEqual(2);
+  for (let index = 0; index < (await rows.count()); index++) {
+    await expectTextContained(textOf(rows.nth(index)), `enlarged row ${index}`);
+  }
+  await expectNoSidewaysScroll(enlarged.page, 'enlarged first Hören screen');
+  await expect(enlarged.page.getByTestId('audio-toggle')).toBeVisible();
+  await enlarged.context.close();
+});
+
+// The phone of a guest: touch, a coarse pointer and a mobile viewport.
+const openPhone = async (
+  browser: Browser,
+  viewport: { width: number; height: number },
+) => {
+  const context = await browser.newContext({ ...devices['Pixel 7'], viewport });
+  const page = await context.newPage();
+  return { context, page };
+};
+
+test('compact first Hoeren viewport shows prompt and first option at 360x640', async ({
+  browser,
+}) => {
+  const { context, page } = await openPhone(browser, COMPACT);
+  await enterAndStart(page);
+  const target = card(page, 'hoeren-1');
+  await expect(target).toBeVisible();
+  await expectWordZones(target);
+  const hints: string[] = [];
+  for (const locale of ['en', 'ru'] as const) {
+    if (locale === 'ru') {
+      await switchLocale(page, 'ru');
+      await expectWordZones(target);
+    }
+    await waitForPlayer(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+    // One h1, the exam title, for screen readers and the outline; the
+    // visible title is the one-line exam context above.
+    const heading = page.getByRole('heading', { level: 1 });
+    await expect(heading).toHaveCount(1);
+    await expect(heading).toHaveText(FULL_EXAM.title);
+    await expect(page.getByTestId('exam-context-title')).toBeVisible();
+    await expect(page.getByTestId('exam-context-library')).toBeVisible();
+
+    // The compact instructions stay: the task count and the answer rule.
+    const intro = page.getByTestId('hoeren-screen').locator('p').first();
+    await expect(intro).toBeVisible();
+    await expect(intro).toContainText(String(HOEREN_TASKS));
+
+    // The phone hint of the translator is short and above the tasks.
+    const hint = page.getByTestId('dictionary-touch-hint');
+    await expect(hint).toBeVisible();
+    hints.push(await hint.innerText());
+    const hintBox = await boxOf(hint);
+    expect(hintBox.height).toBeLessThanOrEqual(48);
+
+    // The prompt and the first answer row lie inside the first screen,
+    // without an initial scroll; the player is there too.
+    const prompt = await boxOf(target.locator('h2'));
+    expect(prompt.y).toBeGreaterThanOrEqual(0);
+    expect(prompt.y + prompt.height).toBeLessThanOrEqual(COMPACT.height);
+    const first = await boxOf(rowOf(target, 'a'));
+    expect(first.y).toBeGreaterThanOrEqual(hintBox.y + hintBox.height);
+    expect(
+      first.y + first.height,
+      `${locale}: first answer below the first screen`,
+    ).toBeLessThanOrEqual(COMPACT.height);
+    await expect(page.getByTestId('audio-toggle')).toBeInViewport();
+    await expectNoSidewaysScroll(page, `${locale} 360x640 first screen`);
+  }
+  expect(hints[0]).not.toBe(hints[1]);
+  await context.close();
 });
 
 // --- Translator: one control in the header ---------------------------------
@@ -515,7 +623,7 @@ test('off header translator never requests lookup', async ({ browser }) => {
     rowOf(card(phonePage, 'hoeren-1'), 'a'),
     'Antwort',
   );
-  await holdTouch(phonePage, tap, PAST_LONG_PRESS_MS);
+  await holdTouch(phonePage, tap, HOLD_MS);
   await expect(cardOf(phonePage)).toHaveCount(0);
   expect(phoneLookups).toEqual([]);
   await phone.close();
@@ -527,19 +635,32 @@ test('mobile word tap does not choose radio', async ({ browser }) => {
   await enterAndStart(page);
   const { attemptId } = await activeAttemptOf(context);
   const answers = trackPosts(page, ANSWER_PATH);
+  const lookups = trackPosts(page, LOOKUP_PATH);
   const target = card(page, 'hoeren-1');
+  await expectWordZones(rowOf(target, 'a'));
   const statusBefore = await target
     .getByTestId('save-status')
     .getAttribute('data-status');
 
+  // A short tap on the word of an option opens its sheet at once (#120)
+  // and never chooses the answer the word belongs to.
   const tap = await wordPoint(rowOf(target, 'a'), 'Antwort');
   await page.touchscreen.tap(tap.x, tap.y);
-  await page.waitForTimeout(700);
-  await expect(cardOf(page)).toHaveCount(0);
-  await expect(optionIn(target, 'a')).not.toBeChecked();
-  // Only holding the word opens the sheet, and it still does not choose.
-  await holdTouch(page, tap, PAST_LONG_PRESS_MS);
   await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Antwort');
+  await expect(optionIn(target, 'a')).not.toBeChecked();
+  await page.waitForTimeout(700);
+  expect(lookups).toHaveLength(1);
+  await page.getByTestId('dictionary-close').click();
+  await expect(cardOf(page)).toHaveCount(0);
+
+  // Holding the word is the browser's selection gesture: no sheet, no
+  // lookup, still no answer.
+  await clearSelection(page);
+  await holdTouch(page, tap, HOLD_MS);
+  await page.waitForTimeout(500);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(lookups).toHaveLength(1);
   await expect(optionIn(target, 'a')).not.toBeChecked();
   await expect(target.getByTestId('save-status')).toHaveAttribute(
     'data-status',
@@ -563,47 +684,52 @@ test('mobile long press ignores taps scroll and early selection while preserving
   const pad = await touchPadOf(page);
   // The words are text zones only once the page is hydrated and the
   // translator is on: a touch before that would choose the answer.
-  await expect(
-    rowOf(target, 'b').locator('[data-dictionary-text]').first(),
-  ).toBeVisible();
+  await expectWordZones(rowOf(target, 'b'));
   // The screen can still settle (player, status): the point is read again
   // right before each touch.
   const pointOfWord = () => wordPoint(rowOf(target, 'b'), 'Antwort');
 
-  // Taps, a hold released early and a native selection of the word before
-  // the delay: no lookup, no answer.
-  const tapped = await pointOfWord();
-  await page.touchscreen.tap(tapped.x, tapped.y);
-  await page.waitForTimeout(400);
+  // A long hold (the browser's long press), a hold that becomes a native
+  // selection of the word, and a selection already on the page: no lookup,
+  // no answer, and the selection stays the browser's.
+  const held = await pointOfWord();
+  await holdTouch(page, held, HOLD_MS);
+  await page.waitForTimeout(500);
+  await expect(cardOf(page)).toHaveCount(0);
+  await clearSelection(page);
   const word = await pointOfWord();
   await pad.down(word.x, word.y);
   await selectWord(rowOf(target, 'b'), 'Antwort');
-  await page.waitForTimeout(1000);
-  await expect(cardOf(page)).toHaveCount(0);
+  await page.waitForTimeout(300);
   await pad.up();
-  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await page.waitForTimeout(500);
   await expect(cardOf(page)).toHaveCount(0);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    'Antwort',
+  );
   expect(lookups).toEqual([]);
   expect(answers).toEqual([]);
+  await clearSelection(page);
 
   // A finger scroll over the word moves the page and starts nothing.
   const drag = await pointOfWord();
   const scrolled = await scrollWithFinger(page, pad, drag);
   expect(scrolled.after).not.toBe(scrolled.before);
-  await page.waitForTimeout(PAST_LONG_PRESS_MS);
+  await page.waitForTimeout(500);
   await expect(cardOf(page)).toHaveCount(0);
   expect(lookups).toEqual([]);
   expect(answers).toEqual([]);
   await page.evaluate(() => window.scrollTo(0, 0));
+  await clearSelection(page);
 
   // The radio itself still chooses at once, a tap included.
   await optionIn(target, 'a').tap();
   await expectStatus(target, 'saved');
   expect(answers).toHaveLength(1);
 
-  // A long press opens one sheet for the word and changes no answer.
+  // A short tap opens one sheet for the word and changes no answer.
   const again = await pointOfWord();
-  await holdTouch(page, again, PAST_LONG_PRESS_MS);
+  await page.touchscreen.tap(again.x, again.y);
   await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
   await page.waitForTimeout(500);
   expect(lookups).toHaveLength(1);
@@ -2029,4 +2155,440 @@ test('retry controls appear only for genuine failures', async ({ browser }) => {
   await expectStatus(target, 'saved');
   await expect(page.getByTestId('save-retry')).toHaveCount(0);
   await context.close();
+});
+
+// --- Phones (#120): pinned clock, Lesen jump, tap and long press -----------
+
+const LESEN_LONG_TASK = 11;
+const BEGIN_LESEN_PATH = /\/api\/attempts\/[^/]+\/begin-lesen$/;
+const H_SECONDS = FULL_TIMING.hoerenSeconds;
+const T_SECONDS = FULL_TIMING.transitionSeconds;
+const ALL_IDS = FULL_PILOT.content.questions.map((question) => question.id);
+const PIN_ROW_SELECTOR = 'label:has(input[type="radio"])';
+const MAX_CLOCK_HEIGHT_PX = 56;
+
+const clockOf = (page: Page): Locator => page.getByTestId('attempt-timer');
+
+// A timed block of one skill, started from the choice like a guest does.
+const startTimedBlock = async (page: Page, selection: 'hoeren' | 'lesen') => {
+  await enterAtChoice(page);
+  await page.getByTestId('mode-option-timed-block').click();
+  await page.getByTestId(`selection-option-${selection}`).click();
+  await page.getByTestId('start-attempt').click();
+  await page.waitForURL(selection === 'lesen' ? LESEN_URL : HOEREN_URL);
+  await expect(clockOf(page)).toBeVisible();
+};
+
+// A full exam of the test set whose Hören started the given seconds ago,
+// placed through the admission kernel (nothing waits 25 minutes), opened on
+// a phone of a new guest.
+const openExamPhone = async (
+  browser: Browser,
+  viewport: { width: number; height: number },
+  secondsAgo: number,
+) => {
+  installM2Fixtures();
+  const exam = await latestVersionOf(FULL_EXAM.slug);
+  if (!exam) throw new Error('the test exam is missing');
+  const created = await newGuest(depsNow());
+  const attemptId = startExamAt(
+    created.guest.sessionId,
+    exam,
+    ALL_IDS,
+    secondsAgoSql(secondsAgo),
+  );
+  const { context, page } = await openPhone(browser, viewport);
+  await context.addCookies([
+    { name: GUEST_COOKIE, value: created.token, url: FULL_ORIGIN },
+  ]);
+  return { context, page, attemptId };
+};
+
+interface ClockReport {
+  position: string;
+  top: number;
+  height: number;
+  scrolledY: number;
+  naturalTop: number;
+  rows: number;
+  covered: string[];
+}
+
+// Every answer row brought to the top of the screen (as keyboard focus or
+// the Lesen jump does) starts below the pinned clock and is the element under
+// its own top; at the end of the page the clock still sits at the top.
+const readClock = (rowSelector: string): ClockReport | null => {
+  const clock = document.querySelector('[data-testid="attempt-timer"]');
+  if (!clock) return null;
+  window.scrollTo(0, 0);
+  const naturalTop = clock.getBoundingClientRect().top;
+  const rows = [...document.querySelectorAll(rowSelector)].filter(
+    (row) => row.getClientRects().length > 0,
+  );
+  const covered: string[] = [];
+  for (const row of rows) {
+    row.scrollIntoView({ block: 'start' });
+    const pinned = clock.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    const hit = document.elementFromPoint(
+      box.left + box.width / 2,
+      box.top + 4,
+    );
+    const isClear =
+      box.top >= pinned.bottom - 0.5 && hit !== null && row.contains(hit);
+    if (!isClear) covered.push((row.textContent ?? '').trim().slice(0, 30));
+  }
+  window.scrollTo(0, document.documentElement.scrollHeight);
+  const end = clock.getBoundingClientRect();
+  const scrolledY = window.scrollY;
+  window.scrollTo(0, 0);
+  return {
+    position: getComputedStyle(clock).position,
+    top: end.top,
+    height: end.height,
+    scrolledY,
+    naturalTop,
+    rows: rows.length,
+    covered,
+  };
+};
+
+const expectPinnedClockClear = async (
+  page: Page,
+  screen: string,
+  minRows: number,
+) => {
+  await expect(clockOf(page)).toHaveAttribute('data-pinned', 'phone');
+  const report = await page.evaluate(readClock, PIN_ROW_SELECTOR);
+  if (!report) throw new Error(`${screen}: no clock`);
+  expect(report.position, `${screen}: clock not pinned`).toBe('sticky');
+  expect(report.scrolledY, `${screen}: nothing to scroll`).toBeGreaterThan(0);
+  expect(report.top, `${screen}: clock left the screen`).toBeGreaterThanOrEqual(
+    -0.5,
+  );
+  // It sticks at the top once the page has scrolled past its place in the
+  // flow; a page that scrolls less keeps it where it stands.
+  const expectedTop = Math.max(0, report.naturalTop - report.scrolledY);
+  expect(report.top, `${screen}: clock not at the top`).toBeLessThanOrEqual(
+    expectedTop + 1,
+  );
+  expect(report.height).toBeLessThanOrEqual(MAX_CLOCK_HEIGHT_PX);
+  expect(report.rows).toBeGreaterThanOrEqual(minRows);
+  expect(report.covered, `${screen}: rows under the clock`).toEqual([]);
+  await expectUsableLayout(page, screen);
+  await expectNoSidewaysScroll(page, screen);
+};
+
+test('timed mobile clock remains visible while answers stay tappable', async ({
+  browser,
+}) => {
+  // A timed Hören block on a 360 px phone.
+  const block = await openPhone(browser, COMPACT);
+  await startTimedBlock(block.page, 'hoeren');
+  const answers = trackPosts(block.page, ANSWER_PATH);
+  const target = card(block.page, 'hoeren-1');
+  await expectWordZones(target);
+  await expectPinnedClockClear(block.page, 'timed hoeren 360', 3);
+  // A row scrolled to the top is still chosen by a tap of its radio.
+  await rowOf(target, 'b').evaluate((row) =>
+    row.scrollIntoView({ block: 'start' }),
+  );
+  await expect(clockOf(block.page)).toBeInViewport();
+  await optionIn(target, 'b').tap();
+  await expectStatus(target, 'saved');
+  expect(answers).toHaveLength(1);
+  // The step switch takes its taps with the clock pinned.
+  await block.page.getByTestId('set-next').tap();
+  await expect(card(block.page, 'hoeren-2')).toBeVisible();
+  await expect(clockOf(block.page)).toBeInViewport();
+  await block.context.close();
+
+  // The Lesen phase of a full exam: the text and the task.
+  const exam = await openExamPhone(browser, COMPACT, H_SECONDS + T_SECONDS + 5);
+  await exam.page.goto(attemptLesenUrl(FULL_EXAM.slug, exam.attemptId));
+  await expect(exam.page.getByTestId('training-shell')).toHaveAttribute(
+    'data-phase',
+    'lesen',
+  );
+  await expectPinnedClockClear(exam.page, 'exam lesen text 360', 0);
+  await exam.page.getByTestId('lesen-view-questions').tap();
+  await expectPinnedClockClear(exam.page, 'exam lesen task 360', 3);
+  const lesen = card(exam.page, 'lesen-1');
+  await optionIn(lesen, 'c').tap();
+  await expectStatus(lesen, 'saved');
+  expect(await readAnswers(exam.attemptId)).toEqual({ 'lesen-1': 'c' });
+  await exam.context.close();
+});
+
+test('mobile tap translates word while native long press selects text', async ({
+  browser,
+}) => {
+  const { context, page } = await openPhone(browser, COMPACT);
+  await enterAndStart(page);
+  const { attemptId } = await activeAttemptOf(context);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  const answers = trackPosts(page, ANSWER_PATH);
+  const target = card(page, 'hoeren-1');
+  await expectWordZones(rowOf(target, 'b'));
+  const hint = page.getByTestId('dictionary-touch-hint');
+  await expect(hint).toBeVisible();
+  await expect(hint).not.toBeEmpty();
+  const englishHint = await hint.innerText();
+
+  // Nothing on the German text takes the selection, scroll or zoom away.
+  const zone = target.locator('[data-dictionary-text]').first();
+  const styles = await zone.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { select: style.userSelect, touch: style.touchAction };
+  });
+  expect(styles.select).not.toBe('none');
+  expect(styles.touch).not.toBe('none');
+  const viewportMeta =
+    (await page.locator('meta[name="viewport"]').getAttribute('content')) ?? '';
+  expect(viewportMeta).not.toMatch(/user-scalable\s*=\s*(no|0)/);
+
+  // A short tap on one word: at once one sheet and one lookup, no answer.
+  const word = await wordPoint(rowOf(target, 'b'), 'Antwort');
+  await page.touchscreen.tap(word.x, word.y);
+  await expect(cardOf(page)).toHaveCount(1);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Antwort');
+  await page.waitForTimeout(500);
+  expect(lookups).toHaveLength(1);
+  await expect(optionIn(target, 'b')).not.toBeChecked();
+  await page.getByTestId('dictionary-close').click();
+  await expect(cardOf(page)).toHaveCount(0);
+
+  // Touch and hold, then the handles extend the selection to a phrase: the
+  // selection stays the browser's, no card opens by itself, only the
+  // explicit external action is offered.
+  const prompt = target.locator('h2');
+  const phrase = 'Frage 1 (hoeren Teil 1)';
+  await clearSelection(page);
+  const pad = await touchPadOf(page);
+  const held = await wordPoint(prompt, 'Frage');
+  await pad.down(held.x, held.y);
+  await page.waitForTimeout(HOLD_MS);
+  await selectPhrase(prompt, phrase);
+  await pad.up();
+  await page.waitForTimeout(500);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    phrase,
+  );
+  await expect(page.getByTestId('dictionary-google-phrase')).toBeVisible();
+  expect(lookups).toHaveLength(1);
+  expect(answers).toEqual([]);
+  await clearSelection(page);
+
+  // Lesen: the same hint and the same tap on a word of the text.
+  await goToLesen(page);
+  await expect(hint).toBeVisible();
+  const paragraph = page.getByTestId('reading-paragraph-0');
+  await expectWordZones(paragraph);
+  const reading = await wordPoint(paragraph, 'Anzeige');
+  await page.touchscreen.tap(reading.x, reading.y);
+  await expect(cardOf(page)).toHaveAttribute('data-presentation', 'sheet');
+  await expect(wordOf(page)).toHaveText('Anzeige');
+  await page.getByTestId('dictionary-close').click();
+  await page.waitForTimeout(300);
+  expect(lookups).toHaveLength(2);
+
+  // The hint is localized.
+  await switchLocale(page, 'ru');
+  await expect(hint).toBeVisible();
+  expect(await hint.innerText()).not.toBe(englishHint);
+  expect(answers).toEqual([]);
+  expect(await readAnswers(attemptId)).toEqual({});
+  await context.close();
+});
+
+test('combined compact layout preserves controls on smallest phones', async ({
+  browser,
+}) => {
+  for (const viewport of [SMALLEST, PHONE_390]) {
+    const screen = `${viewport.width}x${viewport.height}`;
+    // The first Hören screen of a training with the phone hint.
+    const first = await openPhone(browser, viewport);
+    await enterAndStart(first.page);
+    await expectWordZones(card(first.page, 'hoeren-1'));
+    await expect(first.page.getByTestId('dictionary-touch-hint')).toBeVisible();
+    await expectNoSidewaysScroll(first.page, `${screen} hoeren`);
+    await expectUsableLayout(first.page, `${screen} hoeren`);
+    await first.context.close();
+
+    // A timed Lesen block: the pinned clock, the long text, its jump and the
+    // task never take each other's taps.
+    const timed = await openPhone(browser, viewport);
+    await startTimedBlock(timed.page, 'lesen');
+    await goToStep(timed.page, LESEN_LONG_TASK);
+    await expect(timed.page.getByTestId('reading-text')).toBeVisible();
+    await expectPinnedClockClear(timed.page, `${screen} timed lesen text`, 0);
+    const jump = timed.page.getByTestId('lesen-jump-to-question');
+    await jump.evaluate((button) => button.scrollIntoView({ block: 'end' }));
+    await expect(clockOf(timed.page)).toBeInViewport();
+    const pinned = await boxOf(clockOf(timed.page));
+    const jumpBox = await boxOf(jump);
+    expect(jumpBox.y).toBeGreaterThanOrEqual(pinned.y + pinned.height);
+    expect(jumpBox.height).toBeGreaterThanOrEqual(44);
+    await jump.tap();
+    const task = card(timed.page, `lesen-${LESEN_LONG_TASK}`);
+    await expect(task).toBeInViewport();
+    await expectPinnedClockClear(timed.page, `${screen} timed lesen task`, 2);
+    await timed.context.close();
+  }
+});
+
+test('off dictionary and native text selection do not submit answers', async ({
+  browser,
+}) => {
+  const { context, page } = await openPhone(browser, COMPACT);
+  await enterAndStart(page);
+  const { attemptId } = await activeAttemptOf(context);
+  const lookups = trackPosts(page, LOOKUP_PATH);
+  const answers = trackPosts(page, ANSWER_PATH);
+  const target = card(page, 'hoeren-1');
+  await expectWordZones(rowOf(target, 'b'));
+  const pad = await touchPadOf(page);
+  const pointOfWord = () => wordPoint(rowOf(target, 'b'), 'Antwort');
+  const expectQuiet = async (step: string) => {
+    await page.waitForTimeout(500);
+    await expect(cardOf(page), step).toHaveCount(0);
+    expect(lookups, step).toEqual([]);
+    expect(answers, step).toEqual([]);
+    for (const id of ['a', 'b', 'c']) {
+      await expect(optionIn(target, id), step).not.toBeChecked();
+    }
+  };
+
+  // On: a long hold on a word of an option.
+  let point = await pointOfWord();
+  await holdTouch(page, point, HOLD_MS);
+  await expectQuiet('hold');
+  await clearSelection(page);
+
+  // On: a hold extended by the handles to the whole option text.
+  point = await pointOfWord();
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(600);
+  await selectPhrase(rowOf(target, 'b'), 'Antwort b');
+  await pad.move(point.x + 30, point.y);
+  await pad.up();
+  await expectQuiet('extended selection');
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    'Antwort b',
+  );
+  await clearSelection(page);
+
+  // On: a cancelled touch, and a finger that drags and lifts at once.
+  point = await pointOfWord();
+  await pad.down(point.x, point.y);
+  await page.waitForTimeout(100);
+  await pad.cancel();
+  await expectQuiet('pointercancel');
+  point = await pointOfWord();
+  await pad.down(point.x, point.y);
+  await pad.move(point.x, point.y + 30);
+  await pad.up();
+  await expectQuiet('drag');
+
+  // On: a finger scroll that starts on the word.
+  const scrolled = await scrollWithFinger(page, pad, await pointOfWord());
+  expect(scrolled.after).not.toBe(scrolled.before);
+  await expectQuiet('scroll');
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await clearSelection(page);
+
+  // On: a tap beside the words, on the empty corner of the task card.
+  const cardBox = await boxOf(target);
+  await page.touchscreen.tap(cardBox.x + cardBox.width - 6, cardBox.y + 6);
+  await expectQuiet('tap outside a word');
+
+  // Off: no hint, a selection is plain text and nothing is looked up.
+  await toggleOf(page).tap();
+  await expect(toggleOf(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('dictionary-touch-hint')).toHaveCount(0);
+  await selectPhrase(rowOf(target, 'c'), 'Antwort c');
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    'Antwort c',
+  );
+  await expect(page.getByTestId('dictionary-google-phrase')).toHaveCount(0);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(lookups).toEqual([]);
+  expect(answers).toEqual([]);
+  await clearSelection(page);
+  point = await pointOfWord();
+  await holdTouch(page, point, HOLD_MS);
+  await page.waitForTimeout(500);
+  await expect(cardOf(page)).toHaveCount(0);
+  expect(lookups).toEqual([]);
+  await clearSelection(page);
+
+  // Off: the words of an option are an ordinary label again.
+  const plain = await pointOfWord();
+  await page.touchscreen.tap(plain.x, plain.y);
+  await expect(optionIn(target, 'b')).toBeChecked();
+  await expectStatus(target, 'saved');
+  expect(lookups).toEqual([]);
+  expect(await readAnswers(attemptId)).toEqual({ 'hoeren-1': 'b' });
+  await context.close();
+});
+
+test('exam Lesen transition keeps clock clear and answers accessible', async ({
+  browser,
+}) => {
+  const exam = await openExamPhone(browser, COMPACT, H_SECONDS + 5);
+  const { page, attemptId } = exam;
+  const begins = trackPosts(page, BEGIN_LESEN_PATH);
+  const answers = trackPosts(page, ANSWER_PATH);
+  await page.goto(attemptUrl(FULL_EXAM.slug, attemptId));
+  await expect(page.getByTestId('transition-screen')).toBeVisible();
+  await expect(clockOf(page)).toHaveCount(0);
+  await page.getByTestId('begin-lesen').tap();
+  await page.waitForURL(LESEN_URL);
+  const shell = page.getByTestId('training-shell');
+  await expect(shell).toHaveAttribute('data-phase', 'lesen');
+  await expect(clockOf(page)).toHaveAttribute('data-pinned', 'phone');
+  expect(begins).toHaveLength(1);
+  const started = examRunTimes(attemptId).lesenStartedAt;
+  expect(started).not.toBeNull();
+  const deadline = await clockOf(page).getAttribute('data-deadline-ms');
+
+  // At the top the clock is in the flow above the new screen.
+  const atTop = await boxOf(clockOf(page));
+  const text = await boxOf(page.getByTestId('reading-text'));
+  expect(text.y).toBeGreaterThanOrEqual(atTop.y + atTop.height);
+  await expectPinnedClockClear(page, 'exam lesen text', 0);
+
+  // The long text of Teil 3: the jump at its end brings the task below the
+  // pinned clock and gives it the focus.
+  await goToStep(page, LESEN_LONG_TASK);
+  const jump = page.getByTestId('lesen-jump-to-question');
+  await jump.evaluate((button) => button.scrollIntoView({ block: 'end' }));
+  await expect(clockOf(page)).toBeInViewport();
+  await jump.tap();
+  const task = card(page, `lesen-${LESEN_LONG_TASK}`);
+  await expect(task).toBeInViewport();
+  await expect(page.getByTestId('lesen-task')).toBeFocused();
+  const taskBox = await boxOf(task);
+  const pinned = await boxOf(clockOf(page));
+  expect(taskBox.y).toBeGreaterThanOrEqual(pinned.y + pinned.height);
+  await expectPinnedClockClear(page, 'exam lesen task', 2);
+  await optionIn(task, 'a').tap();
+  await expectStatus(task, 'saved');
+  expect(answers).toHaveLength(1);
+
+  // The server phase and the Lesen deadline did not move.
+  await expect(shell).toHaveAttribute('data-phase', 'lesen');
+  expect(begins).toHaveLength(1);
+  expect(examRunTimes(attemptId).lesenStartedAt).toBe(started);
+  await expect(clockOf(page)).toHaveAttribute(
+    'data-deadline-ms',
+    deadline ?? '',
+  );
+  expect(await readAnswers(attemptId)).toEqual({
+    [`lesen-${LESEN_LONG_TASK}`]: 'a',
+  });
+  await exam.context.close();
 });
