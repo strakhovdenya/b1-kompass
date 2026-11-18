@@ -76,21 +76,56 @@ The rest of this document is for engineers. It states what the code does, why it
 ## System overview
 
 ```mermaid
-flowchart LR
-  B["Browser<br/>React client components"] -->|"page requests,<br/>fetch to /api/attempts/*"| N
-  subgraph V["Vercel: Next.js 16"]
-    N["App Router<br/>server components and route handlers"] --> S["src/server<br/>resolveGuestSession, attempts, audio"]
+flowchart TB
+  subgraph LEARNER["1. Learner - guest user"]
+    direction LR
+    L["Learner"] --> B["Phone or computer<br/>Browser with React UI"]
   end
-  S -->|"service_role: RPC and reads"| DB[("Supabase PostgreSQL<br/>RLS on, no rights for anon and authenticated")]
-  S -->|"service_role: signed URL, 10 min"| ST[("Supabase Storage<br/>private bucket exam-sources")]
-  B -.->|"audio bytes with the signed URL"| ST
-  O["Owner machine<br/>scripts/: validate, publish, audit-audio"] -->|"service_role"| DB
-  O -->|"upload recording"| ST
-  D["packages/domain<br/>schemas, scoring, term rules"] -.-> N
-  D -.-> B
+
+  subgraph ADMIN["2. Project owner - administrator"]
+    direction LR
+    O["Project owner"] --> C["Owner's computer<br/>Trusted publishing CLI"]
+  end
+
+  subgraph WEB["3. Vercel - Next.js 16"]
+    direction LR
+    N["App Router<br/>Pages and API routes"] --> S["Trusted server code<br/>src/server"]
+  end
+
+  subgraph DATA["4. Supabase - data and files"]
+    direction LR
+    DB[("PostgreSQL<br/>Exams, sessions, answers, results")]
+    ST[("Private Storage<br/>Exam recordings")]
+  end
+
+  subgraph SHARED["5. Shared TypeScript library - not a service"]
+    D["packages/domain<br/>Schemas, scoring, guest rules"]
+  end
+
+  B -->|"Page and API requests"| N
+  S -->|"Authorized DB operations"| DB
+  S -->|"Create signed audio URL (10 min)"| ST
+  B -->|"Download audio using signed URL"| ST
+  C -->|"Publish exams with privileged access"| DB
+  C -->|"Upload exam recordings"| ST
+
+  B -.->|"Uses shared contracts"| D
+  S -.->|"Uses domain rules"| D
+  C -.->|"Uses validation rules"| D
+
+  classDef person fill:#e8f0fe,stroke:#2563eb,color:#1e3a8a
+  classDef server fill:#eef7f1,stroke:#389466,color:#175b3a
+  classDef data fill:#f3ecff,stroke:#8062c3,color:#4d2984
+  classDef shared fill:#fff6db,stroke:#b68c24,color:#745000
+  class L,B,O,C person
+  class N,S server
+  class DB,ST data
+  class D shared
 ```
 
-The browser never talks to Supabase with credentials. It sends requests to Next.js; only `apps/web/src/server` and `scripts/` hold the privileged client. The audio bytes are the one exception on the data path: the server hands out a short-lived signed URL and the browser reads the file from Storage directly, so the app does not proxy large files.
+**How to read the diagram:** A learner uses the public React application in a browser. The project owner (administrator) publishes verified exams from a separate computer using trusted CLI tools; there is no browser-based admin dashboard. Solid arrows represent network and data operations; dashed arrows represent imported shared TypeScript code, not network requests.
+
+Only the trusted Next.js server and the owner's CLI use privileged Supabase credentials. The browser never receives those credentials: for audio playback it downloads bytes directly from private Storage using a short-lived signed URL issued by the server.
 
 ## Monorepo and module boundaries
 
